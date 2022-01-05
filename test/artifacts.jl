@@ -25,35 +25,6 @@ function create_artifact_chmod(f::Function)
     end
 end
 
-# This function returns (as a string) the UUID of the `Pkg` module that is currently
-# being tested.
-function get_my_pkg_uuid_string()
-    pkg_id = Base.identify_package(Pkg, "Pkg")
-    @test pkg_id isa Base.PkgId
-    uuid = (pkg_id.uuid)::Base.UUID
-    uuid_string = string(uuid)::String
-    return uuid_string
-end
-
-# This function opens a `Project.toml` file, changes any lines of the form `Pkg = "..."`
-# to use the UUID corresponding to the `Pkg` module that is currently being tested, and 
-# writes the modified project file back to disk.
-function change_pkg_uuid_in_deps_section(project_filename::AbstractString)
-    pkg_uuid_string = get_my_pkg_uuid_string()
-    project_dict = TOML.parsefile(project_filename)
-    if haskey(project_dict, "deps")
-        deps = project_dict["deps"]
-        for k in keys(deps)
-            if k == "Pkg"
-                deps[k] = pkg_uuid_string
-            end
-        end
-    end
-    open(project_filename, "w") do io 
-        TOML.print(io, project_dict)
-    end
-end
-
 @testset "Artifact Creation" begin
     # We're going to ensure that our artifact creation does in fact give git-tree-sha1's.
     creators = [
@@ -688,7 +659,6 @@ end
         # loads overridden package artifacts.
         Pkg.activate(depot_container) do
             copy_test_package(depot_container, "ArtifactOverrideLoading")
-            change_pkg_uuid_in_deps_section(joinpath(depot_container, "ArtifactOverrideLoading", "Project.toml"))
             add_this_pkg()
             Pkg.develop(Pkg.Types.PackageSpec(
                 name="ArtifactOverrideLoading",

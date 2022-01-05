@@ -4,6 +4,7 @@ import ..Pkg # ensure we are using the correct Pkg
 using Test
 using UUIDs
 using Pkg
+using Preferences
 
 using ..Utils
 test_test(fn, name; kwargs...) = Pkg.test(name; test_fn=fn, kwargs...)
@@ -35,6 +36,21 @@ test_test(fn; kwargs...)       = Pkg.test(;test_fn=fn, kwargs...)
             x = get(Pkg.Types.Context().env.manifest, UUID("7876af07-990d-54b4-ab0e-23690620f79a"), nothing)
             @test x !== nothing
             @test x.version == v"0.4.0"
+        end
+    end end
+end
+
+@testset "Preferences sandboxing" begin
+    # Preferences should be copied over into sandbox
+    temp_pkg_dir() do project_path; mktempdir() do tmp
+        copy_test_package(tmp, "Sandbox_PreservePreferences")
+        Pkg.activate(joinpath(tmp, "Sandbox_PreservePreferences"))
+        test_test("Foo") do
+            uuid =  UUID("48898bec-3adb-11e9-02a6-a164ba74aeae")
+            @test !Preferences.has_preference(uuid, "does_not_exist")
+            @test Preferences.load_preference(uuid, "toy") == "car"
+            @test Preferences.load_preference(uuid, "tree") == "birch"
+            @test Preferences.load_preference(uuid, "default") == "default"
         end
     end end
 end

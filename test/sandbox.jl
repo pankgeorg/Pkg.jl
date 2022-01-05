@@ -40,7 +40,53 @@ test_test(fn; kwargs...)       = Pkg.test(;test_fn=fn, kwargs...)
     end end
 end
 
-@testset "Preferences sandboxing" begin
+@testset "Preferences sandboxing without test/Project.toml" begin
+    # Preferences should be copied over into sandbox
+    temp_pkg_dir() do project_path; mktempdir() do tmp
+        copy_test_package(tmp, "Sandbox_PreservePreferences")
+        Pkg.activate(joinpath(tmp, "Sandbox_PreservePreferences"))
+        test_test() do
+            uuid =  UUID("3872bf94-3adb-11e9-01dc-bf80c7641364")
+            @test !Preferences.has_preference(uuid, "does_not_exist")
+            @test Preferences.load_preference(uuid, "tree") == "birch"
+            @test Preferences.load_preference(uuid, "default") === nothing
+        end
+    end end
+end
+
+@testset "Preferences sandboxing with test/Project.toml" begin
+    # Preferences should be copied over into sandbox
+    temp_pkg_dir() do project_path; mktempdir() do tmp
+        copy_test_package(tmp, "Sandbox_PreservePreferences")
+        Pkg.activate(joinpath(tmp, "Sandbox_PreservePreferences"))
+
+        # Create fake test/Project.toml and test/LocalPreferences.toml
+        open(joinpath(tmp, "Sandbox_PreservePreferences", "test", "Project.toml"), write=true) do io
+            print(io, """
+            [deps]
+            Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+            """)
+        end
+        Preferences.set_preferences!(
+            joinpath(tmp, "Sandbox_PreservePreferences", "test", "LocalPreferences.toml"),
+            "Sandbox_PreservePreferences",
+            "scent" => "juniper",
+        )
+
+        # This test should have completely different preferences
+        test_test() do
+            uuid =  UUID("3872bf94-3adb-11e9-01dc-bf80c7641364")
+            @test !Preferences.has_preference(uuid, "does_not_exist")
+            # `tree` has no mapping because we do not know anything about the project
+            # in the root directory; test environments are not stacked!
+            @test Preferences.load_preference(uuid, "tree") === nothing
+            @test Preferences.load_preference(uuid, "scent") == "juniper"
+            @test Preferences.load_preference(uuid, "default") === nothing
+        end
+    end end
+end
+
+@testset "Nested Preferences sandboxing" begin
     # Preferences should be copied over into sandbox
     temp_pkg_dir() do project_path; mktempdir() do tmp
         copy_test_package(tmp, "Sandbox_PreservePreferences")
@@ -50,7 +96,7 @@ end
             @test !Preferences.has_preference(uuid, "does_not_exist")
             @test Preferences.load_preference(uuid, "toy") == "car"
             @test Preferences.load_preference(uuid, "tree") == "birch"
-            @test Preferences.load_preference(uuid, "default") == "default"
+            @test Preferences.load_preference(uuid, "default") === nothing
         end
     end end
 end

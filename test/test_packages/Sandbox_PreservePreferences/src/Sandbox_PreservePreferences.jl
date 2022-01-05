@@ -1,4 +1,4 @@
-module Sandbox_PreserveTestDeps
+module Sandbox_PreservePreferences
 
 greet() = print("Hello World!")
 

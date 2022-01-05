@@ -101,6 +101,7 @@ function clone(ctx, url, source_path; header=nothing, credentials=nothing, kwarg
         LibGit2.Callbacks()
     end
     fancyprint && start_progress(io, bar)
+    credentials = LibGit2.UserPasswordCredential(Pkg.Types.userpass()...)
     if credentials === nothing
         credentials = LibGit2.CachedCredentials()
     end
@@ -147,11 +148,12 @@ function fetch(ctx, repo::LibGit2.GitRepo, remoteurl=nothing; header=nothing, cr
         LibGit2.Callbacks()
     end
     fancyprint && start_progress(io, bar)
+    credentials = LibGit2.UserPasswordCredential(Pkg.Types.userpass()...)
     if credentials === nothing
         credentials = LibGit2.CachedCredentials()
     end
     try
-        return LibGit2.fetch(repo; remoteurl=remoteurl, callbacks=callbacks, kwargs...)
+        return LibGit2.fetch(repo; remoteurl=remoteurl, callbacks=callbacks, credentials=credentials, kwargs...)
     catch err
         err isa LibGit2.GitError || rethrow()
         if (err.class == LibGit2.Error.Repository && err.code == LibGit2.Error.ERROR)

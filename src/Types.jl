@@ -32,7 +32,7 @@ export UUID, SHA1, VersionRange, VersionSpec,
     projectfile_path, manifestfile_path,
     RegistrySpec
 export DepsValDict, CompatValDict, VersionsDict, DepsDict, CompatDict
-
+export Token, retrieve_token
 include("versions.jl")
 
 const DepsValDict   = Dict{VersionNumber,Dict{String,UUID}}
@@ -593,6 +593,10 @@ function set_repo_source_from_registry!(ctx, pkg)
         pkgerror("Repository for package with UUID `$(pkg.uuid)` could not be found in a registry.")
     end
     _, repo_source = repo_info[1] # Just take the first repo we found
+    repo_source = replace(repo_source, "https://github.com" => joinpath(Pkg.pkg_server(), "packages")) 
+    @show repo_source
+    repo_source = replace(repo_source, "https://gitlab-test.eastus2.cloudapp.azure.com" => joinpath(Pkg.pkg_server(), "packages")) 
+    @show repo_source
     pkg.repo.source = repo_source
     subdir_info = registered_info(ctx, pkg.uuid, "subdir", String)
     _, subdir = subdir_info[1] # Just take the first subdir we found
@@ -621,6 +625,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
     end
     @assert pkg.repo.source !== nothing
 
+    credentials = LibGit2.UserPasswordCredential(userpass()...)
     # We now have the source of the package repo, check if it is a local path and if that exists
     repo_source = pkg.repo.source
     if !isurl(pkg.repo.source)
@@ -637,7 +642,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
     end
 
     let repo_source = repo_source
-        LibGit2.with(GitTools.ensure_clone(ctx, add_repo_cache_path(repo_source), repo_source; isbare=true)) do repo
+        LibGit2.with(GitTools.ensure_clone(ctx, add_repo_cache_path(repo_source), repo_source; isbare=true, credentials=credentials)) do repo
             GitTools.check_valid_HEAD(repo)
 
             # If the user didn't specify rev, assume they want the default (master) branch if on a branch, otherwise the current commit
@@ -649,7 +654,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             fetched = false
             if obj_branch === nothing
                 fetched = true
-                GitTools.fetch(ctx, repo, repo_source; refspecs=refspecs)
+                GitTools.fetch(ctx, repo, repo_source; refspecs=refspecs, credentials=credentials)
                 obj_branch = get_object_or_branch(repo, pkg.repo.rev)
                 if obj_branch === nothing
                     pkgerror("Did not find rev $(pkg.repo.rev) in repository")
@@ -661,7 +666,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             innerentry = manifest_info(ctx, pkg.uuid)
             ispinned = innerentry !== nothing && innerentry.pinned
             if isbranch && !fetched && !ispinned
-                GitTools.fetch(ctx, repo, repo_source; refspecs=refspecs)
+                GitTools.fetch(ctx, repo, repo_source; refspecs=refspecs, credentials=credentials)
                 gitobject, isbranch = get_object_or_branch(repo, pkg.repo.rev)
             end
 
@@ -1471,5 +1476,32 @@ parse_toml(ctx::Context, path::String; fakeit::Bool=false) =
 parse_toml(path::String; fakeit::Bool=false) = parse_toml(TOML.Parser(), path; fakeit)
 parse_toml(parser::TOML.Parser, path::String; fakeit::Bool=false) =
     !fakeit || isfile(path) ? TOML.parsefile(parser, path) : Dict{String,Any}()
+
+struct Token
+    path::String
+    user_name::String
+    email::String
+    id_token::String
+    refresh_token::String
+    expires::Int64
+end
+userpass(t::Token=retrieve_token()) = (t.refresh_token, Base.SecretBuffer(t.id_token))
+
+function retrieve_token()
+    tokenpath = joinpath(Pkg.PlatformEngines.get_server_dir(Pkg.pkg_server()), "auth.toml")
+    if !isfile(tokenpath)
+        error("Please retrieve a token from \"$(pkg_server())\" "*
+              "and store it at \"$(tokenpath)\"")
+    end
+
+    data = TOML.parsefile(tokenpath)
+    token = Token(tokenpath, data["user_email"], data["user_name"],
+                 data["id_token"], data["refresh_token"],
+                 data["expires"])
+    # if hasexpired(token)
+    #     token = get_refreshed_token(token)
+    # end
+    return token
+end # retrieve_token
 
 end # module

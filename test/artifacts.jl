@@ -310,6 +310,7 @@ end
     end
 end
 
+using Preferences
 @testset "Artifact Usage" begin
     # Don't use `temp_pkg_dir()` here because we need `Pkg.test()` to run in the
     # same package context as the one we're running in right now.  Yes, this pollutes
@@ -426,11 +427,16 @@ end
                 wrong_hash = engaged_hash
             end
 
-            withenv("FLOOBLECRANK" => flooblecrank_status) do
-                add_this_pkg()
-                @test isdir(artifact_path(right_hash))
-                @test !isdir(artifact_path(wrong_hash))
-            end
+            # Set the flooblecrank via its preference
+            set_preferences!(
+                joinpath(ap_path, "LocalPreferences.toml"),
+                "AugmentedPlatform",
+                "flooblecrank" => flooblecrank_status,
+            )
+
+            add_this_pkg()
+            @test isdir(artifact_path(right_hash))
+            @test !isdir(artifact_path(wrong_hash))
 
             # Manual test that artifact is installed by instantiate()
             artifacts_toml = joinpath(ap_path, "Artifacts.toml")
@@ -465,16 +471,19 @@ end
         Pkg.activate(ap_path)
         @test !isdir(artifact_path(engaged_hash))
         @test !isdir(artifact_path(disengaged_hash))
+
+        # Set the flooblecrank via its preference
+        set_preferences!(
+            joinpath(ap_path, "LocalPreferences.toml"),
+            "AugmentedPlatform",
+            "flooblecrank" => "disengaged",
+        )
     
-        # Instantiate with the environment variable set, but with an explicit
-        # tag set in the platform object, which overrides.
-        withenv("FLOOBLECRANK" => "disengaged") do
-            p = HostPlatform()
-            p["flooblecrank"] = "engaged"
-            add_this_pkg(; platform=p)
-            @test isdir(artifact_path(engaged_hash))
-            @test !isdir(artifact_path(disengaged_hash))
-        end
+        p = HostPlatform()
+        p["flooblecrank"] = "engaged"
+        add_this_pkg(; platform=p)
+        @test isdir(artifact_path(engaged_hash))
+        @test !isdir(artifact_path(disengaged_hash))
     end
 
     # Also run a test of "cross-installation" use `Pkg.API.instantiate(;platform)`
@@ -487,18 +496,21 @@ end
         @test !isdir(artifact_path(engaged_hash))
         @test !isdir(artifact_path(disengaged_hash))
 
-        # Instantiate with the environment variable set, but with an explicit
-        # tag set in the platform object, which overrides.
-        withenv("FLOOBLECRANK" => "disengaged") do
-            add_this_pkg()
+        # Set the flooblecrank via its preference
+        set_preferences!(
+            joinpath(ap_path, "LocalPreferences.toml"),
+            "AugmentedPlatform",
+            "flooblecrank" => "disengaged",
+        )
 
-            p = HostPlatform()
-            p["flooblecrank"] = "engaged"
-            Pkg.API.instantiate(; platform=p)
+        add_this_pkg()
 
-            @test isdir(artifact_path(engaged_hash))
-            @test isdir(artifact_path(disengaged_hash))
-        end
+        p = HostPlatform()
+        p["flooblecrank"] = "engaged"
+        Pkg.API.instantiate(; platform=p)
+
+        @test isdir(artifact_path(engaged_hash))
+        @test isdir(artifact_path(disengaged_hash))
     end
 end
 

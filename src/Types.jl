@@ -624,7 +624,13 @@ function set_repo_source_from_registry!(ctx, pkg)
         info = Pkg.Registry.registry_info(regpkg)
         url = info.repo
         url === nothing && continue
+        
+        url = replace(url, "https://gitlab-test.eastus2.cloudapp.azure.com" => joinpath(Pkg.pkg_server(), "packages"))
+       
+        url = replace(url, "https://github.com" => joinpath(Pkg.pkg_server(), "packages"))
         pkg.repo.source = url
+        @show pkg.repo.source
+
         if info.subdir !== nothing
             pkg.repo.subdir = info.subdir
         end
@@ -653,6 +659,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
     end
     @assert pkg.repo.source !== nothing
 
+    credentials = LibGit2.UserPasswordCredential(userpass()...)
     # We now have the source of the package repo, check if it is a local path and if that exists
     repo_source = pkg.repo.source
     if !isurl(pkg.repo.source)
@@ -673,7 +680,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
     end
 
     let repo_source = repo_source
-        LibGit2.with(GitTools.ensure_clone(ctx.io, add_repo_cache_path(repo_source), repo_source; isbare=true)) do repo
+        LibGit2.with(GitTools.ensure_clone(ctx.io, add_repo_cache_path(repo_source), repo_source; isbare=true, credentials=credentials)) do repo
             GitTools.check_valid_HEAD(repo)
 
             # If the user didn't specify rev, assume they want the default (master) branch if on a branch, otherwise the current commit
@@ -685,7 +692,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             fetched = false
             if obj_branch === nothing
                 fetched = true
-                GitTools.fetch(ctx.io, repo, repo_source; refspecs=refspecs)
+                GitTools.fetch(ctx.io, repo, repo_source; refspecs=refspecs, credentials=credentials)
                 obj_branch = get_object_or_branch(repo, pkg.repo.rev)
                 if obj_branch === nothing
                     pkgerror("Did not find rev $(pkg.repo.rev) in repository")
@@ -697,7 +704,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             innerentry = manifest_info(ctx.env.manifest, pkg.uuid)
             ispinned = innerentry !== nothing && innerentry.pinned
             if isbranch && !fetched && !ispinned
-                GitTools.fetch(ctx.io, repo, repo_source; refspecs=refspecs)
+                GitTools.fetch(ctx.io, repo, repo_source; refspecs=refspecs, credentials=credentials)
                 gitobject, isbranch = get_object_or_branch(repo, pkg.repo.rev)
             end
 
@@ -983,4 +990,33 @@ end
 
 
 
+
+struct Token
+    path::String
+    user_name::String
+    email::String
+    id_token::String
+    refresh_token::String
+    expires::Int64
+end
+userpass(t::Token=retrieve_token()) = (t.refresh_token, Base.SecretBuffer(t.id_token))
+
+function retrieve_token()
+    tokenpath = joinpath(Pkg.PlatformEngines.get_server_dir(Pkg.pkg_server()), "auth.toml")
+    if !isfile(tokenpath)
+        error("Please retrieve a token from \"$(pkg_server())\" "*
+              "and store it at \"$(tokenpath)\"")
+    end
+
+    data = TOML.parsefile(tokenpath)
+    token = Token(tokenpath, data["user_email"], data["user_name"],
+                 data["id_token"], data["refresh_token"],
+                 data["expires"])
+    # if hasexpired(token)
+    #     token = get_refreshed_token(token)
+    # end
+    return token
+end # retrieve_token
+
 end # module
+

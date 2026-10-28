@@ -4359,6 +4359,15 @@ struct ExtInfo
     ext::Tuple{String, Bool} # name, loaded
     weakdeps::Vector{Tuple{String, Bool}} # name, loaded
 end
+# `printstyled(io, label, x, ")"; color = :yellow)` for a value of a registry's deprecation
+# table: built for Wasm a String (what the registry's TOML holds), anything else an error
+# (e2e B19: the argument tuple was Tuple{String, Any, String})
+function print_deprecation_detail(io::IO, label::String, @nospecialize(x))
+    x isa String && return printstyled(io, label, x, ")"; color = :yellow)
+    WASM_TARGET && error("PkgWasm built for Wasm: a deprecation detail that is not a string")
+    return printstyled(io, label, x, ")"; color = :yellow)
+end
+
 struct PackageStatusData
     uuid::UUID
     old::Union{Nothing, PackageSpec}
@@ -4582,10 +4591,10 @@ end
             reason = get(pkg.deprecation_info, "reason", nothing)
             alternative = get(pkg.deprecation_info, "alternative", nothing)
             if reason !== nothing
-                printstyled(io, " (reason: ", reason, ")"; color = :yellow)
+                print_deprecation_detail(io, " (reason: ", reason)
             end
             if alternative !== nothing
-                printstyled(io, " (alternative: ", alternative, ")"; color = :yellow)
+                print_deprecation_detail(io, " (alternative: ", alternative)
             end
         end
 

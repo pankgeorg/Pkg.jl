@@ -2,6 +2,8 @@
 
 module Versions
 
+import ..WASM_TARGET
+
 export VersionBound, VersionRange, VersionSpec, semver_spec, isjoinable
 
 ################
@@ -339,7 +341,7 @@ function semver_spec(s::String; throw = true)
         found_match = false
         for (ver_reg, f) in ver_regs
             if occursin(ver_reg, ver)
-                range = f(match(ver_reg, ver))
+                range = ver_interval(f, match(ver_reg, ver))
                 found_match = true
                 break
             end
@@ -354,6 +356,16 @@ function semver_spec(s::String; throw = true)
         push!(ranges, range)
     end
     return VersionSpec(ranges)
+end
+
+# `f(m)` for a function of `ver_regs` (a `Pair{Regex, Any}` table): its own three statically,
+# others natively by a dynamic call, built for Wasm an error (M4.2 e2e B13)
+function ver_interval(@nospecialize(f), m::RegexMatch)
+    f === semver_interval && return semver_interval(m)
+    f === inequality_interval && return inequality_interval(m)
+    f === hyphen_interval && return hyphen_interval(m)
+    WASM_TARGET && error("PkgWasm built for Wasm: an unsupported version specifier function in `ver_regs`")
+    return Base.inferencebarrier(f)(m)
 end
 
 function semver_interval(m::RegexMatch)

@@ -2,13 +2,15 @@
 # TOML tables by `toml_eq`. Both must give what stock's `==` gives.
 
 module TypedEqualityTests
-using Test, Random
+using Test, Random, Dates
 import Pkg
 T = Pkg.Types
 
 # TOML values of the parser's types, small, with near-misses and shared shapes
 function rand_toml(rng, depth = 0)
-    k = rand(rng, 1:(depth < 3 ? 12 : 7))
+    k = rand(rng, 1:(depth < 3 ? 14 : 7))
+    k == 13 && return rand(rng, Any[Date(2026, 10, 28), DateTime(2026, 10, 28), DateTime(2026, 10, 28, 1), Time(12), Time(0)])
+    k == 14 && return rand(rng, Any[[Date(2026, 1, 1)], [DateTime(2026, 1, 1)], [Time(1), Time(2)], Date[]])
     k == 1 && return rand(rng, ["a", "b", "", "1"])
     k == 2 && return rand(rng, Int64[0, 1, 2, -1])
     k == 3 && return rand(rng, [0.0, 1.0, -0.0, NaN, 2.5])
@@ -28,13 +30,20 @@ end
         a = rand_toml(rng)
         b = rand(rng, Bool) ? deepcopy(a) : rand(rng, Bool) ? rand_toml(rng) : Dict{String, Any}("x" => a)
         for (x, y) in ((a, b), (b, a), (a, deepcopy(a)))
-            r = x == y
-            r isa Bool || continue
-            @test T.toml_eq(x, y) === r
-            n += 1
+            r = try x == y catch e; e end
+            if r isa Bool
+                @test T.toml_eq(x, y) === r
+                n += 1
+            elseif r isa Exception
+                @test_throws typeof(r) T.toml_eq(x, y)
+            end
         end
     end
     @test n > 50000
+    # (review-10 F1/F2: dates and times; values of different kinds are unequal)
+    @test T.toml_eq(Date(2026, 10, 28), Date(2026, 10, 28)) && T.toml_eq(Date(2026, 10, 28), DateTime(2026, 10, 28))
+    @test !T.toml_eq("x", Any[]) && !T.toml_eq(Any[], 1) && !T.toml_eq(Dict{String, Any}(), "x") && !T.toml_eq(1, Dict{String, Any}())
+    @test_throws Exception T.toml_eq(Date(2026, 10, 28), Time(12))
     # (equal and unequal results both seen)
     @test T.toml_eq(Dict{String, Any}("a" => Any[1, "x"]), Dict{String, Any}("a" => Any[1, "x"]))
     @test !T.toml_eq(Dict{String, Any}("a" => Any[1, "x"]), Dict{String, Any}("a" => Any[1.0, "y"]))
@@ -57,6 +66,48 @@ end
         m1 = T.Manifest(; julia_version = v"1.13.2", deps = Dict(Base.UUID(1) => e), other = o1)
         m2 = T.Manifest(; julia_version = v"1.13.2", deps = Dict(Base.UUID(1) => deepcopy(e)), other = o2)
         @test (m1 == m2) === stock_eq(m1, m2)
+    end
+end
+# the same comparison in a process with the Wasm preference (toml_eq's Wasm paths, and
+# Project ==, which uses it only there); not again in that process, which includes this file
+haskey(ENV, "PKGWASM_TYPED_EQ_CHILD") || @testset "typed equality, target = wasm" begin
+    fork = dirname(@__DIR__)
+    mktempdir() do env
+        write(joinpath(env, "Project.toml"), """
+            [deps]
+            Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+            [sources]
+            Pkg = {path = "$(escape_string(fork))"}
+            [preferences.Pkg]
+            target = "wasm"
+            """)
+        script = joinpath(env, "script.jl")
+        write(script, """
+            import Pkg; Pkg.instantiate(; io = devnull)
+            using Pkg, Random, Dates
+            @assert Pkg.TARGET == "wasm"
+            include($(repr(@__FILE__)))  # (rand_toml; the module's native testsets run here as well)
+            function check()
+            T = Pkg.Types; rng = Xoshiro(15); n = 0; bad = 0
+            for _ in 1:20000
+                a = TypedEqualityTests.rand_toml(rng); b = rand(rng, Bool) ? deepcopy(a) : TypedEqualityTests.rand_toml(rng)
+                r = try a == b catch e; e end
+                r isa Bool || continue
+                p1 = T.Project(; other = Dict{String, Any}("x" => a)); p2 = T.Project(; other = Dict{String, Any}("x" => b))
+                (T.toml_eq(a, b) === r && (p1 == p2) === r) || (bad += 1)
+                n += 1
+            end
+            println("WASMEQ ", n, " ", bad)
+            end
+            check()
+            """)
+        out = IOBuffer()
+        cmd = addenv(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --project=$env $script`, "JULIA_PKG_PRECOMPILE_AUTO" => "0", "PKGWASM_TYPED_EQ_CHILD" => "1")
+        err = IOBuffer()
+        p = run(pipeline(ignorestatus(cmd); stdout = out, stderr = err))
+        p.exitcode == 0 || print(stderr, String(take!(err)))
+        m = match(r"WASMEQ (\d+) (\d+)", String(take!(out)))
+        @test m !== nothing && parse(Int, m[1]) > 15000 && m[2] == "0"
     end
 end
 end # module

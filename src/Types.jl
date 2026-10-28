@@ -291,7 +291,7 @@ end
 end
 # `a == b` for values `a`, `b` of a field of type `FT`, each type of a Union told apart
 function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
-    FT === Dict{String, Any} && return :(toml_eq($a, $b))
+    FT === Dict{String, Any} && return :(WASM_TARGET ? toml_eq($a, $b) : $a == $b)
     ts = Base.uniontypes(FT)
     length(ts) <= 2 && return :($a == $b)
     isa_chain(v, body) = foldr(ts[1:(end - 1)]; init = body(:($v::$(ts[end])))) do t, rest
@@ -300,54 +300,75 @@ function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
     return isa_chain(a, av -> isa_chain(b, bv -> :($av == $bv)))
 end
 
-# `a == b` for TOML values (`Dict{String, Any}` tables and what TOML's parser makes), as
-# `==` on them: a table equal to a table with the same keys and equal values; built for Wasm
-# without dynamic dispatch, other values natively by `==`, built for Wasm an error (M4.2 B14)
+# `a == b` for TOML values (what TOML's parser makes: `Dict{String, Any}` tables, arrays,
+# strings, numbers, dates and times) built for Wasm without dynamic dispatch: values of
+# different kinds are unequal (as Base's `==`), tables equal with the same keys and equal
+# values, arrays with equal elements in order, the rest by `==` on both concrete types; a
+# value of another type is an error (M4.2 B14). Natively fields use Base's `==` itself.
 @noinline function toml_eq(@nospecialize(a), @nospecialize(b))
-    if a isa Dict{String, Any}
-        b isa Dict{String, Any} || return toml_eq_other(a, b)
+    ka, kb = toml_kind(a), toml_kind(b)
+    (ka == 0 || kb == 0) && return toml_eq_other(a, b)
+    ka == kb || return false
+    if ka == 1
+        a = a::Dict{String, Any}; b = b::Dict{String, Any}
         length(a) == length(b) || return false
         for (k, v) in a
             haskey(b, k) || return false
-            toml_eq(v, b[k]) || return false
+            toml_eq(b[k], v) || return false  # (Base: `r[key] == l_value`)
         end
         return true
-    elseif a isa Vector{Any}
+    elseif ka == 2
         return toml_vec_eq(a, b)
-    elseif a isa Vector{String}
-        return toml_vec_eq(a, b)
-    elseif a isa Vector{Dict{String, Any}}
-        return toml_vec_eq(a, b)
-    elseif a isa Vector{Int64}
-        return toml_vec_eq(a, b)
-    elseif a isa Vector{Float64}
-        return toml_vec_eq(a, b)
-    elseif a isa Vector{Bool}
-        return toml_vec_eq(a, b)
-    elseif a isa String
-        b isa String && return a == b
-        return b isa Union{Int64, Float64, Bool} ? false : toml_eq_other(a, b)
-    elseif a isa Union{Int64, Float64, Bool}
-        b isa String && return false
+    elseif ka == 3
+        return (a::String) == (b::String)
+    elseif ka == 4
         b isa Int64 && return toml_num_eq(a, b)
         b isa Float64 && return toml_num_eq(a, b)
-        b isa Bool && return toml_num_eq(a, b)
-        return toml_eq_other(a, b)
+        return toml_num_eq(a, b::Bool)
     else
-        return toml_eq_other(a, b)
+        b isa Dates.Date && return toml_date_eq(a, b)
+        b isa Dates.DateTime && return toml_date_eq(a, b)
+        return toml_date_eq(a, b::Dates.Time)
     end
 end
+# 1 a table, 2 an array, 3 a string, 4 a number, 5 a date or time, 0 another type
+function toml_kind(@nospecialize(x))
+    x isa Dict{String, Any} && return 1
+    toml_vec_kind(x) && return 2
+    x isa String && return 3
+    x isa Union{Int64, Float64, Bool} && return 4
+    x isa Union{Dates.Date, Dates.DateTime, Dates.Time} && return 5
+    return 0
+end
+toml_vec_kind(@nospecialize(x)) = x isa Vector{Any} || x isa Vector{String} || x isa Vector{Dict{String, Any}} ||
+    x isa Vector{Int64} || x isa Vector{Float64} || x isa Vector{Bool} ||
+    x isa Vector{Dates.Date} || x isa Vector{Dates.DateTime} || x isa Vector{Dates.Time}
 toml_num_eq(a, b::Union{Int64, Float64, Bool}) =
     a isa Int64 ? a == b : a isa Float64 ? a == b : (a::Bool) == b
-# (`a` a vector of one of the parser's element types; `b` told apart likewise)
-function toml_vec_eq(a::Vector, @nospecialize(b))
+toml_date_eq(a, b::Union{Dates.Date, Dates.DateTime, Dates.Time}) =
+    a isa Dates.Date ? a == b : a isa Dates.DateTime ? a == b : (a::Dates.Time) == b
+# (both arrays of one of the parser's element types)
+function toml_vec_eq(@nospecialize(a), @nospecialize(b))
+    a isa Vector{Any} && return toml_vec_eq_b(a, b)
+    a isa Vector{String} && return toml_vec_eq_b(a, b)
+    a isa Vector{Dict{String, Any}} && return toml_vec_eq_b(a, b)
+    a isa Vector{Int64} && return toml_vec_eq_b(a, b)
+    a isa Vector{Float64} && return toml_vec_eq_b(a, b)
+    a isa Vector{Bool} && return toml_vec_eq_b(a, b)
+    a isa Vector{Dates.Date} && return toml_vec_eq_b(a, b)
+    a isa Vector{Dates.DateTime} && return toml_vec_eq_b(a, b)
+    return toml_vec_eq_b(a::Vector{Dates.Time}, b)
+end
+function toml_vec_eq_b(a::Vector, @nospecialize(b))
     b isa Vector{Any} && return toml_elems_eq(a, b)
     b isa Vector{String} && return toml_elems_eq(a, b)
     b isa Vector{Dict{String, Any}} && return toml_elems_eq(a, b)
     b isa Vector{Int64} && return toml_elems_eq(a, b)
     b isa Vector{Float64} && return toml_elems_eq(a, b)
     b isa Vector{Bool} && return toml_elems_eq(a, b)
-    return toml_eq_other(a, b)
+    b isa Vector{Dates.Date} && return toml_elems_eq(a, b)
+    b isa Vector{Dates.DateTime} && return toml_elems_eq(a, b)
+    return toml_elems_eq(a, b::Vector{Dates.Time})
 end
 # (`==` of arrays: equal axes, then the elements in order)
 function toml_elems_eq(a::Vector, b::Vector)

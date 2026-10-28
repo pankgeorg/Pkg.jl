@@ -69,12 +69,14 @@ function init_globals!()
     return nothing
 end
 
-# ABI v2 §6 step 6: the Base-side init (RNG seed via `random_get`, ENV/ARGS/DEPOT_PATH/
-# LOAD_PATH/cwd/homedir/tempdir from WASI) belongs to L1's runtime and runs before this in the
-# Wasm build; natively Julia's own startup has done it. This function only owns the PkgWasm
-# globals (D8). The start function must not call any import, so nothing here runs at image load.
+# ABI v3 §6 step 6: the Base-side init (RNG seed via `random_get`, ENV/ARGS/DEPOT_PATH/
+# LOAD_PATH/cwd/homedir/tempdir from WASI) is the seam `Host.init_runtime()` (Wasm: L1's
+# runtime via L2's patch; natively a no-op, Julia's startup has done it), called first; then
+# the PkgWasm globals (D8). The start function must not call any import, so nothing here runs
+# at image load.
 function pkgwasm_init()::Int32
     return try
+        Host.init_runtime() # Base globals first (G2 B1); PkgWasm's own globals read them
         init_globals!()
         Int32(0)
     catch e

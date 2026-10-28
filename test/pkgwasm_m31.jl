@@ -101,6 +101,7 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
                     end
                     @test err isa Host.HostError
                     @test !ispath(pdst * ".partial")
+                    @test isdir(joinpath(pdst, "locked", "x"))
                 finally
                     chmod(joinpath(pdst, "locked"), 0o700)
                 end
@@ -190,12 +191,38 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
                     end
                     @test err isa Host.HostError
                     @test !ispath(pdest * ".partial")
+                    @test isdir(joinpath(pdest, "locked", "x")) # the previous dest is kept (single rename)
                 finally
                     chmod(joinpath(pdest, "locked"), 0o700)
                 end
             end
         end
         close(server)
+    end
+
+    @testset "Host.init_runtime seam runs first in pkgwasm_init" begin
+        @test Pkg.Host.init_runtime() === nothing
+        # stand-in for the Wasm patch: init_runtime sets up the environment the PkgWasm globals
+        # are then read from, so init_globals! must see what it did
+        @eval Pkg.Host init_runtime() = (ENV["JULIA_PKG_OFFLINE"] = "true"; nothing)
+        try
+            withenv("JULIA_PKG_OFFLINE" => nothing) do
+                @test Pkg.pkgwasm_init() == 0
+                @test Pkg.OFFLINE_MODE[]
+            end
+        finally
+            @eval Pkg.Host init_runtime() = nothing
+            Pkg.pkgwasm_init()
+        end
+        @test !Pkg.OFFLINE_MODE[]
+        # a failing init_runtime is reported as an init error (exit status 1)
+        @eval Pkg.Host init_runtime() = error("runtime init failed")
+        try
+            @test Pkg.pkgwasm_init() == 1
+        finally
+            @eval Pkg.Host init_runtime() = nothing
+            Pkg.pkgwasm_init()
+        end
     end
 
     @testset "entry point driver" begin

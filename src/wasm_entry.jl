@@ -126,8 +126,36 @@ end
 # Errors are reported like the Pkg REPL mode does: `ERROR: ` plus the message, no backtrace.
 function report_error(e)
     io = stderr_f()
-    printstyled(io, "ERROR: "; color = Base.error_color(), bold = true)
-    showerror(io, e)
+    # (the color, a Symbol or an Int, told apart by type: M4.2)
+    c = Base.error_color()
+    c isa Symbol ? printstyled(io, "ERROR: "; color = c, bold = true) :
+        printstyled(io, "ERROR: "; color = c::Int, bold = true)
+    showerror_known(io, e)
     println(io)
+    return nothing
+end
+
+# `showerror(io, e)` of the errors the supported commands throw, told apart by type (M4.2:
+# static dispatch); others natively as `showerror`, built for Wasm with their type's name
+function showerror_known(io::IO, @nospecialize(e))
+    if e isa Types.PkgError
+        showerror(io, e)
+    elseif e isa ErrorException
+        showerror(io, e)
+    elseif e isa ArgumentError
+        showerror(io, e)
+    elseif e isa SystemError
+        showerror(io, e)
+    elseif e isa Base.IOError
+        showerror(io, e)
+    elseif e isa Host.HostError
+        showerror(io, e)
+    elseif e isa Base.TOML.ParserError
+        showerror(io, e)
+    elseif !WASM_TARGET
+        showerror(io, e)
+    else
+        print(io, "an error that this build of PkgWasm cannot print")
+    end
     return nothing
 end

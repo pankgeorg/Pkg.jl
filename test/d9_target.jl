@@ -44,6 +44,15 @@ Pkg.status()
 Pkg.DEFAULT_IO[] = IOBuffer()
 println("OVERRIDE=", try Pkg.stderr_f() === Pkg.DEFAULT_IO[] catch e; sprint(showerror, e) end)
 Pkg.DEFAULT_IO[] = nothing
+# logging: the stock logger natively, the direct print built for Wasm, the same text
+module LogProbe
+    import Main.Pkg: @pkg_warn, @pkg_info, @pkg_debug
+    f(x) = (@pkg_warn "single line"; @pkg_warn "two\nlines" x; @pkg_info "an info"; @pkg_info "info with" key = x;
+            @pkg_debug "never"; for _ in 1:3; @pkg_warn "once" maxlog = 1; end; nothing)
+end
+redirect_stdout(stderr) do
+    LogProbe.f([1, 2])
+end
 try
     Pkg.rm("NoSuchPackage")
 catch e
@@ -65,5 +74,7 @@ end
     @test norm(nat[2]) == norm(wasm[2])
     @test norm(nat[3]) == norm(wasm[3])
     @test occursin("NoSuchPackage", nat[3])
+    @test occursin("┌ Warning: two", nat[3]) && occursin("│ lines", nat[3]) && occursin("[ Info: an info", nat[3])
+    @test count("once", nat[3]) == 1 && count("once", wasm[3]) == 1
 end
 end # module

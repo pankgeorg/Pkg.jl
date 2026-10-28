@@ -614,18 +614,18 @@ end
 function verify_compressed_registry_toml(path::String)
     d = TOML.tryparsefile(path)
     if d isa TOML.ParserError
-        @warn "Failed to parse registry TOML file at $(repr(path))" exception = d
+        @pkg_warn "Failed to parse registry TOML file at $(repr(path))" exception = d
         return false
     end
     for key in ("git-tree-sha1", "uuid", "path")
         if !haskey(d, key)
-            @warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
+            @pkg_warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
             return false
         end
     end
     compressed_file = joinpath(dirname(path), d["path"]::String)
     if !isfile(compressed_file)
-        @warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
+        @pkg_warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
         return false
     end
     return true

@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module GitTools
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using ..Pkg
 using ..MiniProgressBars
@@ -193,7 +194,7 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
                     return LibGit2.clone(url, source_path; callbacks = copy(callbacks), credentials, isbare, depth, kwargs...)
                 catch err
                     is_shallow_fallback_error(err) || rethrow()
-                    @debug "Shallow clone of `$url` failed, retrying with a full clone" exception = err
+                    @pkg_debug "Shallow clone of `$url` failed, retrying with a full clone" exception = err
                     rm(source_path; force = true, recursive = true)
                     mkpath(source_path)
                 end
@@ -277,7 +278,7 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
                     return LibGit2.fetch(repo; remoteurl, callbacks = copy(callbacks), credentials, refspecs, depth, kwargs...)
                 catch err
                     is_shallow_fallback_error(err) || rethrow()
-                    @debug "Shallow fetch from `$remoteurl` failed, retrying with a full fetch" exception = err
+                    @pkg_debug "Shallow fetch from `$remoteurl` failed, retrying with a full fetch" exception = err
                 end
             end
             return LibGit2.fetch(repo; remoteurl, callbacks, credentials, refspecs, kwargs...)
@@ -357,7 +358,7 @@ function blob_hash(::Type{HashType}, path::AbstractString) where {HashType}
         if isa(e, InterruptException)
             rethrow(e)
         end
-        @warn("Unable to open $(path) for hashing; git-tree-sha1 likely suspect")
+        @pkg_warn("Unable to open $(path) for hashing; git-tree-sha1 likely suspect")
     end
 
     # Finish it off and return the digest!

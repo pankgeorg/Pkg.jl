@@ -37,6 +37,7 @@ Pkg.Registry.rm("General")
 See also: [`RegistrySpec`](@ref)
 """
 module Registry
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 import ..Pkg
 using ..Pkg: depots, depots1, printpkgstyle, stderr_f, isdir_nothrow, pathrepr, pkg_server,
@@ -118,7 +119,7 @@ function pkg_server_registry_info()
         f()
         download_ok = true
     catch err
-        @warn "could not download $server/registries" exception = err
+        @pkg_warn "could not download $server/registries" exception = err
     end
     download_ok || return nothing
     open(tmp_path) do io
@@ -293,7 +294,7 @@ function check_registry_state(reg)
             "following command: ",
             pkg_cmd,
         )
-        @warn(msg)
+        @pkg_warn(msg)
     end
     return nothing
 end
@@ -588,7 +589,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                 if prev_update !== nothing
                     diff = now() - prev_update
                     if diff < update_cooldown
-                        @debug "Skipping updating registry $(reg.name) since it is on cooldown: $(Dates.canonicalize(Millisecond(update_cooldown) - diff)) left"
+                        @pkg_debug "Skipping updating registry $(reg.name) since it is on cooldown: $(Dates.canonicalize(Millisecond(update_cooldown) - diff)) left"
                         continue
                     end
                 end
@@ -596,7 +597,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                     regpath = pathrepr(reg.path)
                     let regpath = regpath
                         if !iswritable(dirname(reg.path))
-                            @warn "Skipping update of registry at $regpath (read-only file system)"
+                            @pkg_warn "Skipping update of registry at $regpath (read-only file system)"
                             continue
                         end
 
@@ -640,7 +641,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                         @label done_tarball_read
                                     else
                                         # PkgWasm (D11): unpacked is the intended format, so stock's
-                                        # "consider reinstalling as a tarball" @info is not printed.
+                                        # "consider reinstalling as a tarball" @pkg_info is not printed.
                                         mktempdir() do tmp
                                             try
                                                 download_registry_dir(url, new_hash, tmp)
@@ -668,7 +669,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                     Base.get_bool_env("JULIA_PKG_GEN_REG_FMT_CHECK", true) &&
                                     get(ENV, "JULIA_PKG_SERVER", nothing) != ""
                                 # warn if JULIA_PKG_SERVER is set to a non-empty string or not set
-                                @info """
+                                @pkg_info """
                                 The General registry is installed via git. Consider reinstalling it via
                                 the newer faster direct from tarball format by running:
                                   pkg> registry rm General; registry add General
@@ -723,7 +724,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                 catch e
                                     attempts += 1
                                     if e isa LibGit2.GitError && e.code == LibGit2.Error.ELOCKED && attempts <= 3
-                                        @warn "Registry update attempt failed because repository is locked. Resetting and retrying." e
+                                        @pkg_warn "Registry update attempt failed because repository is locked. Resetting and retrying." e
                                         LibGit2.reset!(repo, LibGit2.head_oid(repo), LibGit2.Consts.RESET_HARD)
                                         sleep(1)
                                         @goto merge
@@ -757,7 +758,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                 for (reg, err) in errors
                     warn_str *= "\n    — $reg — $err"
                 end
-                @error warn_str
+                @pkg_error warn_str
             end
         end # mkpidlock
     end

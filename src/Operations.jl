@@ -4253,7 +4253,9 @@ function diff_array(old_env::Union{EnvCache, Nothing}, new_env::EnvCache; manife
         new = manifest ? load_all_deps_loadable(new_env) : load_project_deps(new_env.project, new_env.project_file, new_env.manifest, new_env.manifest_file)
     end
 
-    T, S = Union{UUID, Nothing}, Union{PackageSpec, Nothing}
+    # (assigned one by one, so that inference keeps them constant: `Tuple{T, S, S}` static, M4.2 e2e B12)
+    T = Union{UUID, Nothing}
+    S = Union{PackageSpec, Nothing}
     if old_env === nothing
         return Tuple{T, S, S}[(pkg.uuid, nothing, pkg)::Tuple{T, S, S} for pkg in new]
     end
@@ -4434,7 +4436,9 @@ end
         # (`sort!(xs, by = x -> (is_stdlib(x[1]), endswith(name, "_jll"), name, x[1]))`: the elements'
         # tuple type is abstract, so their indices are sorted, stably, by Base's `isless` of those
         # keys, the ids, `Union{Nothing, UUID}`, told apart by type; the same order)
-        perm = sort!(collect(eachindex(xs)); lt = (i, j) -> status_isless(xs, i, j))
+        # (the closure gets a binding of its own: capturing `xs`, which is reassigned, would box it, e2e B12)
+        rows = xs
+        perm = sort!(collect(eachindex(rows)); lt = (i, j) -> status_isless(rows, i, j))
         xs = permute!(xs, perm)
     end
 

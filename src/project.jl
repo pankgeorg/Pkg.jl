@@ -271,7 +271,7 @@ end
 # WRITING #
 ###########
 function destructure(project::Project)::Dict
-    raw = deepcopy(project.other)
+    raw = WASM_TARGET ? snapshot_copy(project.other) : deepcopy(project.other)  # (typed built for Wasm: e2e B16)
 
     # sanity check for consistency between compat value and string representation
     for (name, compat) in project.compat

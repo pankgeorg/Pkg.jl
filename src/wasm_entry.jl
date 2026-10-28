@@ -8,7 +8,13 @@
 #   pkgwasm_main()        -> Int32   exit code: 0 = ok, 1 = reported error
 #
 # Command line (WASI args, argv[0] stripped into ARGS): `pkgwasm <cmd> [pkgs...]` with
-# <cmd> one of add, rm, resolve, instantiate, status.
+# <cmd> one of add, rm, resolve, instantiate, status, or (PLAN.md D15)
+# `pkgwasm registry <sub> [registries...]` with <sub> one of
+#   add [reg...]       (no argument: the default registries, i.e. General)
+#   rm|remove reg...   (at least one)
+#   update|up [reg...] (no argument: all installed registries)
+#   status|st          (no argument)
+# where each reg is a name (`General`), a UUID, or `name=uuid`, as in the REPL `registry` mode.
 
 const ABI_VERSION = Int32(3) # ABI.md v3
 
@@ -86,7 +92,7 @@ end
 
 pkgwasm_main()::Int32 = pkgwasm_main(ARGS)
 
-const SUPPORTED_COMMANDS = ("add", "rm", "resolve", "instantiate", "status")
+const SUPPORTED_COMMANDS = ("add", "rm", "resolve", "instantiate", "status", "registry")
 
 function pkgwasm_main(args::Vector{String})::Int32
     return try
@@ -101,6 +107,7 @@ end
 function run_command(args::Vector{String})
     isempty(args) && Types.pkgerror("usage: pkgwasm <command> [packages...]; commands: ", join(SUPPORTED_COMMANDS, ", "))
     cmd = args[1]
+    cmd == "registry" && return run_registry_command(args[2:end])
     pkgs = PackageSpec[PackageSpec(name) for name in args[2:end]]
     if cmd == "add"
         isempty(pkgs) && Types.pkgerror("pkgwasm add: no packages given")
@@ -118,6 +125,41 @@ function run_command(args::Vector{String})
         API.status(pkgs)
     else
         Types.pkgerror("unknown command `", cmd, "`; supported: ", join(SUPPORTED_COMMANDS, ", "))
+    end
+    return nothing
+end
+
+# `registry` subcommands (PLAN.md D15): the REPL `registry` mode's names, aliases, argument
+# parsing (`REPLMode.parse_registry`), argument counts and API calls, so the printed output is
+# the same as `pkg> registry ...`. Only Pkg-server registries (by name/UUID) are supported: a
+# git URL or local path needs git or a directory copy outside S1 (D14), and is a PkgError.
+const REGISTRY_SUBCOMMANDS = ("add", "rm", "update", "status")
+
+function run_registry_command(args::Vector{String})
+    isempty(args) && Types.pkgerror("usage: pkgwasm registry <add|rm|update|status> [registries...]")
+    sub = args[1]
+    words = args[2:end]
+    sub = sub == "remove" ? "rm" : sub == "up" ? "update" : sub == "st" ? "status" : sub
+    sub in REGISTRY_SUBCOMMANDS ||
+        Types.pkgerror("unknown registry command `", args[1], "`; supported: ", join(REGISTRY_SUBCOMMANDS, ", "))
+    # argument counts of the REPL declarations (command_declarations.jl)
+    lo, hi = sub == "rm" ? (1, typemax(Int)) : sub == "status" ? (0, 0) : (0, typemax(Int))
+    lo <= length(words) <= hi || Types.pkgerror("Wrong number of arguments")
+    regs = Registry.RegistrySpec[REPLMode.parse_registry(w; add = sub == "add") for w in words]
+    for (w, r) in zip(words, regs)
+        (r.url !== nothing || r.path !== nothing) && Types.pkgerror(
+            "registry `", w, "` is a git URL or local path; PkgWasm supports only Pkg-server registries, ",
+            "given by name or UUID (git is not supported in PkgWasm)"
+        )
+    end
+    if sub == "add"
+        Registry.add(regs)
+    elseif sub == "rm"
+        Registry.rm(regs)
+    elseif sub == "update"
+        Registry.update(regs)
+    else
+        Registry.status()
     end
     return nothing
 end

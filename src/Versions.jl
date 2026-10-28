@@ -169,12 +169,21 @@ function Base.print(io::IO, r::VersionRange)
         join(io, r.lower.t, '.')
         print(io, " - *")
     else
-        join(io, r.lower.t[1:m], '.')
+        print_bound(io, r.lower.t, m)
         if r.lower != r.upper
             print(io, " - ")
-            join(io, r.upper.t[1:n], '.')
+            print_bound(io, r.upper.t, n)
         end
     end
+end
+# `join(io, t[1:m], '.')` without slicing the tuple by a run-time length (e2e B21: built for
+# Wasm that print is dynamic); `m <= 3` (VersionBound's constructor)
+function print_bound(io::IO, t::NTuple{3, UInt32}, m::Int)
+    for i in 1:m
+        i > 1 && print(io, '.')
+        print(io, t[i])
+    end
+    return nothing
 end
 Base.show(io::IO, r::VersionRange) = print(io, "VersionRange(\"", r, "\")")
 

@@ -688,7 +688,7 @@ function init_log!(data::GraphData)
             name = data.uuid_to_name[uuid]
             pkgid = Base.PkgId(uuid, name)
             msg = "possible versions are: $vers or uninstalled"
-            if Base.in_sysimage(pkgid)
+            if Types.in_sysimage(pkgid)
                 msg *= " (package in sysimage!)"
             end
         end

@@ -129,6 +129,14 @@ function ensure_manifest_registries!(ctx::Context)
     return
 end
 
+# PkgWasm (PLAN.md D10): the embedded data of `pkg` if `source_path` would resolve it to the
+# current Julia's stdlib directory (no tree hash, no path, a stdlib of this version), else nothing.
+function stdlib_source_data(pkg::Union{PackageSpec, PackageEntry}, julia_version = VERSION)
+    pkg.tree_hash === nothing && pkg.path === nothing || return nothing
+    julia_version == VERSION && pkg.uuid isa UUID || return nothing
+    return Types.stdlib_data(pkg.uuid)
+end
+
 function source_path(manifest_file::String, pkg::Union{PackageSpec, PackageEntry}, julia_version = VERSION)
     return pkg.tree_hash !== nothing ? find_installed(pkg.name, pkg.uuid, pkg.tree_hash) :
         pkg.path !== nothing ? normpath(joinpath(dirname(manifest_file), pkg.path)) :
@@ -407,6 +415,17 @@ function fixups_from_projectfile!(ctx::Context)
             # pkg.entryfile = p.entryfile # TODO: STDLIBS_BY_VERSION doesn't record this
             for (name, uuid) in pkg.weakdeps
                 if !(uuid in p.deps)
+                    delete!(pkg.deps, name)
+                end
+            end
+        elseif (data = stdlib_source_data(pkg)) !== nothing
+            # PkgWasm (PLAN.md D10): a current-version stdlib's project data comes from the
+            # embedded metadata, not from its project file under `stdlib_dir()`.
+            pkg.weakdeps = Dict{String, Base.UUID}(name => Base.UUID(uuid) for (name, uuid) in data.weakdeps)
+            pkg.exts = Dict{String, Union{Vector{String}, String}}(name => ext for (name, ext) in data.exts)
+            pkg.entryfile = data.entryfile
+            for (name, _) in data.weakdeps
+                if !any(d -> first(d) == name, data.deps)
                     delete!(pkg.deps, name)
                 end
             end
@@ -1094,10 +1113,10 @@ function deps_graph(
                         # Skip package version that are not the same as external packages in sysimage
                         if PKGORIGIN_HAVE_VERSION && RESPECT_SYSIMAGE_VERSIONS[] && julia_version == VERSION
                             pkgid = Base.PkgId(uuid, pkg.name)
-                            if Base.in_sysimage(pkgid)
-                                pkgorigin = get(Base.pkgorigins, pkgid, nothing)
-                                if pkgorigin !== nothing && pkgorigin.version !== nothing
-                                    if v != pkgorigin.version
+                            if Types.in_sysimage(pkgid)
+                                sysimage_v = Types.sysimage_version(pkgid)
+                                if sysimage_v !== nothing
+                                    if v != sysimage_v
                                         continue
                                     end
                                 end
@@ -1386,7 +1405,9 @@ function download_artifacts(
     n = has_artifacts_toml(dirname(env.project_file)) ? 1 : 0
     for (uuid, _) in env.manifest
         uuid in pkg_uuids || continue
-        pkg_root = source_path(env.manifest_file, manifest_info(env.manifest, uuid), julia_version)
+        entry = manifest_info(env.manifest, uuid)
+        stdlib_source_data(entry, julia_version) === nothing || continue # D10: no stdlib probes
+        pkg_root = source_path(env.manifest_file, entry, julia_version)
         pkg_root !== nothing && has_artifacts_toml(pkg_root) && (n += 1)
     end
     if n > 0
@@ -1755,11 +1776,11 @@ function build_versions(ctx::Context, uuids::Set{UUID}; verbose = false, allow_r
         ispath(buildfile(path)) && push!(builds, (uuid, name, path, version))
     end
     # PkgWasm (PLAN.md D4): builds need a Julia subprocess, so a package with a
-    # `deps/build.jl` makes add/instantiate fail. Packages without one are unaffected.
-    if !isempty(builds)
-        names = join(sort!([build[2] for build in builds]), ", ")
-        pkgerror("building packages is not supported in PkgWasm; these packages have a `deps/build.jl`: ", names)
-    end
+    # `deps/build.jl` makes add/instantiate fail. Packages without one are unaffected. The stock
+    # build code below is unreachable (pkgerror never returns), so no Cmd enters the closed world.
+    isempty(builds) && return nothing
+    names = join(sort!([build[2] for build in builds]), ", ")
+    pkgerror("building packages is not supported in PkgWasm; these packages have a `deps/build.jl`: ", names)
     # toposort builds by dependencies
     order = dependency_order_uuids(ctx.env, UUID[first(build) for build in builds])
     sort!(builds, by = build -> order[first(build)])
@@ -3225,9 +3246,9 @@ function status_compat_info(pkg::PackageSpec, env::EnvCache, regs::Vector{Regist
     pkg.version >= max_version && return nothing
 
     pkgid = Base.PkgId(pkg.uuid, pkg.name)
-    if PKGORIGIN_HAVE_VERSION && RESPECT_SYSIMAGE_VERSIONS[] && Base.in_sysimage(pkgid)
-        pkgorigin = get(Base.pkgorigins, pkgid, nothing)
-        if pkgorigin !== nothing && pkg.version !== nothing && pkg.version == pkgorigin.version
+    if PKGORIGIN_HAVE_VERSION && RESPECT_SYSIMAGE_VERSIONS[] && Types.in_sysimage(pkgid)
+        sysimage_v = Types.sysimage_version(pkgid)
+        if sysimage_v !== nothing && pkg.version !== nothing && pkg.version == sysimage_v
             return ["sysimage"], max_version, max_version_in_compat
         end
     end
@@ -3312,6 +3333,8 @@ function diff_array(old_env::Union{EnvCache, Nothing}, new_env::EnvCache; manife
 end
 
 function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = HostPlatform())
+    # PkgWasm (PLAN.md D10): a stdlib's source is available by definition (no filesystem probe)
+    stdlib_source_data(pkg) === nothing || return true
     sourcepath = source_path(manifest_file, pkg)
     sourcepath === nothing && return false
     isdir(sourcepath) || return false
@@ -3578,7 +3601,9 @@ function print_status(
         # show if loaded version and version in the manifest doesn't match
         pkg_spec = something(pkg.new, pkg.old)
         pkgid = Base.PkgId(pkg.uuid, pkg_spec.name)
-        m = get(Base.loaded_modules, pkgid, nothing)
+        # PkgWasm (PLAN.md D10): no packages are loaded into a PkgWasm session, so the
+        # "[loaded: …]" annotation (which locates stdlib/package sources) is never shown.
+        m = nothing
         if m isa Module && pkg_spec.version !== nothing
             loaded_path = pathof(m)
             env_path = Base.locate_package(pkgid) # nothing if not installed

@@ -8,7 +8,8 @@
 # compiled, they print what Base's default ConsoleLogger prints to `stderr` (`right_justify
 # = 0`, no color; `@debug` below the default level prints nothing): the box, the level, the
 # message's lines, `key = value` lines (values shown as `text/plain`, exceptions with
-# `showerror`, without backtraces), and for warnings and errors `@ Module file:line`. `maxlog`
+# `showerror`, without backtraces, so `catch_backtrace()` is not called), and for warnings and
+# errors `@ Module file:line`. `maxlog`
 # counts per id (`_id`, else the call site).
 
 const LOG_MAXLOG_COUNTS = Dict{String, Int}()
@@ -19,12 +20,27 @@ log_lines(@nospecialize(msg)) = Tuple{Int, String}[(0, String(l)) for l in split
 # `key = value` lines, as ConsoleLogger's `showvalue`
 function log_kv!(lines::Vector{Tuple{Int, String}}, key::String, @nospecialize(val))
     buf = IOBuffer()
-    if val isa Tuple{Exception, Any}
-        showerror_known(buf, val[1])
-    elseif val isa Exception
+    if val isa Exception
         showerror_known(buf, val)
-    else
+    elseif !WASM_TARGET
+        val isa Tuple{Exception, Any} ? showerror_known(buf, val[1]) : show(buf, MIME"text/plain"(), val)
+    # (built for Wasm: the values the supported paths log, shown typed)
+    elseif val isa String
         show(buf, MIME"text/plain"(), val)
+    elseif val isa Symbol
+        show(buf, MIME"text/plain"(), val)
+    elseif val isa Int64
+        show(buf, MIME"text/plain"(), val)
+    elseif val isa Bool
+        show(buf, MIME"text/plain"(), val)
+    elseif val isa Nothing
+        show(buf, MIME"text/plain"(), val)
+    elseif val isa VersionNumber
+        show(buf, MIME"text/plain"(), val)
+    elseif val isa Base.UUID
+        show(buf, MIME"text/plain"(), val)
+    else
+        print(buf, "(a value this build of PkgWasm cannot show)")
     end
     vallines = split(String(take!(buf)), '\n')
     if length(vallines) == 1
@@ -82,6 +98,8 @@ function log_direct_expr(level::Symbol, mod::Module, src::LineNumberNode, args)
             Symbol(kv), kv
         end
         k === :maxlog && (maxlog = v; continue)
+        # (`exception = (e, backtrace)`: no backtraces built for Wasm, the exception only)
+        k === :exception && v isa Expr && v.head === :tuple && length(v.args) == 2 && (v = v.args[1])
         k === :_id && (id = v; continue)
         k in (:_module, :_file, :_line, :_group) && continue
         push!(body, :($(GlobalRef(@__MODULE__, :log_kv!))(lines, $(string(k)), $v)))

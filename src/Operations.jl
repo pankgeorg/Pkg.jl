@@ -3086,8 +3086,8 @@ function status(
         old_env = env_diff
     end
     # display
-    filter_uuids = [pkg.uuid::UUID for pkg in pkgs if pkg.uuid !== nothing]
-    filter_names = [pkg.name::String for pkg in pkgs if pkg.name !== nothing]
+    filter_uuids = UUID[pkg.uuid::UUID for pkg in pkgs if pkg.uuid !== nothing]  # (typed: M4.2)
+    filter_names = String[pkg.name::String for pkg in pkgs if pkg.name !== nothing]
 
     diff = old_env !== nothing
     header = something(header, diff ? :Diff : :Status)

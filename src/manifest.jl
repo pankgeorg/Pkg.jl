@@ -365,7 +365,8 @@ function destructure(manifest::Manifest)::Dict
         end
 
         if !isempty(entry.apps)
-            new_entry["apps"] = Dict{String, Any}()
+            apps_table = Dict{String, Any}()  # (built typed, then stored: M4.2)
+            new_entry["apps"] = apps_table
             for (appname, appinfo) in entry.apps
                 julia_command = @something appinfo.julia_command joinpath(Sys.BINDIR, "julia" * (Sys.iswindows() ? ".exe" : ""))
                 app_dict = Dict{String, Any}("julia_command" => julia_command)
@@ -375,11 +376,12 @@ function destructure(manifest::Manifest)::Dict
                 if !isempty(appinfo.julia_flags)
                     app_dict["julia_flags"] = appinfo.julia_flags
                 end
-                new_entry["apps"][appname] = app_dict
+                apps_table[appname] = app_dict
             end
         end
         if manifest.manifest_format.major == 1
-            push!(get!(raw, entry.name, Dict{String, Any}[]), new_entry)
+            raw1 = raw::Dict{String, Vector{Dict{String, Any}}}  # (as made above for format 1)
+            push!(get!(raw1, entry.name, Dict{String, Any}[]), new_entry)
         elseif manifest.manifest_format.major == 2
             # (the deps table made above, typed: M4.2)
             deps_table = raw["deps"]

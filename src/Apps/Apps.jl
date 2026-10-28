@@ -31,7 +31,7 @@ function with_apps_lock(f)
     # Operations can be nested (e.g. update calls add) so the lock is reentrant
     _apps_lock_held[] && return f()
     mkpath(app_env_folder())
-    return FileWatching.mkpidlock(joinpath(app_env_folder(), ".pid"), stale_age = 10) do
+    return Pkg.mkpidlock(joinpath(app_env_folder(), ".pid"), stale_age = 10) do
         Base.ScopedValues.@with _apps_lock_held => true f()
     end
 end
@@ -298,6 +298,7 @@ Pkg.Apps.add(path = "path/to/Package")
 ```
 """
 function add(pkg::Vector{PackageSpec})
+    Pkg.API.unsupported("apps")
     require_not_empty(pkg, :add)
     for p in pkg
         add(p)
@@ -366,6 +367,7 @@ Pkg.Apps.develop(path = "path/to/Package")
 ```
 """
 function develop(pkg::Vector{PackageSpec})
+    Pkg.API.unsupported("apps")
     require_not_empty(pkg, :develop)
     for p in pkg
         develop(p)
@@ -422,6 +424,7 @@ For developed packages the dependencies of the project are updated instead.
 """
 update(pkgs_or_apps::String) = update([pkgs_or_apps])
 function update(pkgs_or_apps::Vector)
+    Pkg.API.unsupported("apps")
     if isempty(pkgs_or_apps)
         update(nothing)
     else
@@ -476,6 +479,7 @@ Show the installed apps, the version of their package, and the julia command
 used to run them. If `name` is given, limit the output to that app or package.
 """
 function status(pkgs_or_apps::Vector; io::IO = stdout_f())
+    Pkg.API.unsupported("apps")
     return if isempty(pkgs_or_apps)
         status(; io)
     else
@@ -489,6 +493,7 @@ function status(pkgs_or_apps::Vector; io::IO = stdout_f())
 end
 
 function status(pkg_or_app::Union{PackageSpec, Nothing} = nothing; io::IO = stdout_f())
+    Pkg.API.unsupported("apps")
     # TODO: Sort.
     pkg_or_app = pkg_or_app === nothing ? nothing : pkg_or_app.name
     manifest = Pkg.Types.read_manifest(app_manifest_file())
@@ -523,6 +528,7 @@ function status(pkg_or_app::Union{PackageSpec, Nothing} = nothing; io::IO = stdo
 end
 
 function precompile(pkg::Union{Nothing, String} = nothing)
+    Pkg.API.unsupported("apps")
     manifest = Pkg.Types.read_manifest(app_manifest_file())
     deps = Pkg.Operations.load_manifest_deps(manifest)
     for dep in deps
@@ -558,6 +564,7 @@ its app environment.
 """
 rm(pkgs_or_apps::String) = rm([pkgs_or_apps])
 function rm(pkgs_or_apps::Vector)
+    Pkg.API.unsupported("apps")
     for pkg_or_app in pkgs_or_apps
         if pkg_or_app isa String
             pkg_or_app = PackageSpec(pkg_or_app)

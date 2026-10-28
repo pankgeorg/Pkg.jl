@@ -237,3 +237,9 @@ end
 # Resolve a manifest-relative path to an absolute path
 # Note: Despite the name "manifest_rel_path", this resolves relative to the manifest file
 manifest_rel_path(env, path::String) = normpath(joinpath(dirname(env.manifest_file), path))
+
+# PkgWasm (PLAN.md D3): one process and one Task, so pidfile locks are plain calls. Both forms
+# used by Pkg (`mkpidlock(f, path; stale_age)` and the predicate form `mkpidlock(pred, path)`)
+# just return `f()`. This is the only lock implementation the fork uses; FileWatching is not
+# reached from supported paths.
+mkpidlock(f::Function, ::AbstractString; kwargs...) = f()

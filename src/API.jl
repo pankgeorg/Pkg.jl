@@ -14,6 +14,9 @@ import Base: StaleCacheKey
 
 import ..depots, ..depots1, ..logdir, ..devdir, ..printpkgstyle, .._autoprecompilation_enabled_scoped, ..manifest_rel_path
 import ..Operations, ..GitTools, ..Pkg, ..Registry
+
+# PkgWasm (PLAN.md D4): public operations outside the supported set throw this.
+unsupported(op::String) = pkgerror(op, " is not supported in PkgWasm")
 import ..can_fancyprint, ..pathrepr, ..isurl, ..PREV_ENV_PATH, ..atomic_toml_write, ..safe_realpath
 using ..Types, ..TOML
 using ..Types: VersionTypes
@@ -267,6 +270,7 @@ function develop(
         ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool = true,
         preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = HostPlatform(), kwargs...
     )
+    unsupported("develop")
     require_not_empty(pkgs, :develop)
     Context!(ctx; kwargs...)
     Operations.ensure_manifest_registries!(ctx)
@@ -337,6 +341,8 @@ function add(
             pkgerror("name, UUID, URL, or filesystem path specification required when calling `add`")
         end
         if pkg.repo.source !== nothing || pkg.repo.rev !== nothing
+            # PkgWasm (PLAN.md D4): tracking a repository (url=, path=, #rev) needs git
+            unsupported("adding a package by URL, path or revision")
             if pkg.version != VersionSpec()
                 pkgerror(
                     "version specification invalid when tracking a repository:",
@@ -570,6 +576,7 @@ function test(
         allow_reresolve::Bool = true,
         kwargs...
     )
+    unsupported("test")
     julia_args = Cmd(julia_args)
     test_args = Cmd(test_args)
     Context!(ctx; kwargs...)
@@ -626,6 +633,7 @@ admin privileges depending on the setup).
 Use verbose mode (`verbose=true`) for detailed output.
 """
 function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = nothing, verbose = false, force = false, kwargs...)
+    unsupported("gc")
     Context!(ctx; kwargs...)
     if collect_delay !== nothing
         @warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
@@ -1178,6 +1186,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
 end
 
 function build(ctx::Context, pkgs::Vector{PackageSpec}; verbose = false, allow_reresolve::Bool = true, kwargs...)
+    unsupported("build")
     Context!(ctx; kwargs...)
     Operations.ensure_manifest_registries!(ctx)
 
@@ -1221,6 +1230,7 @@ function precompile(
         _from_loading::Bool = false, configs::Union{Base.Precompilation.Config, Vector{Base.Precompilation.Config}} = (`` => Base.CacheFlags()),
         workspace::Bool = false, kwargs...
     )
+    unsupported("precompile")
     Context!(ctx; kwargs...)
     if !already_instantiated
         instantiate(ctx; allow_autoprecomp = false, workspace, kwargs...)

@@ -40,6 +40,10 @@ proj = mktempdir()
 write(joinpath(proj, "Project.toml"), "name = " * repr("P") * "\nuuid = " * repr("8c9a2bd0-6b1e-4ac1-9d36-1d2f8a3b0c11") * "\n")
 Pkg.activate(proj; io = devnull)
 Pkg.status()
+# a DEFAULT_IO override: honoured natively, an error built for Wasm
+Pkg.DEFAULT_IO[] = IOBuffer()
+println("OVERRIDE=", try Pkg.stderr_f() === Pkg.DEFAULT_IO[] catch e; sprint(showerror, e) end)
+Pkg.DEFAULT_IO[] = nothing
 try
     Pkg.rm("NoSuchPackage")
 catch e
@@ -54,7 +58,9 @@ end
     @test occursin("TARGET=native", nat[2]) && occursin("IO=IOContext{IO}", nat[2])
     @test occursin("TARGET=wasm", wasm[2]) && occursin("IO=IOContext{Pkg.StdStream}", wasm[2])
     # the same status and error output but for those two lines (and the temp project's path)
-    norm(s) = replace(join(filter(l -> !startswith(l, "TARGET=") && !startswith(l, "IO="), split(s, '\n')), '\n'),
+    @test occursin("OVERRIDE=true", nat[2])
+    @test occursin("OVERRIDE=PkgWasm built for Wasm: DEFAULT_IO[] is not supported", wasm[2])
+    norm(s) = replace(join(filter(l -> !startswith(l, "TARGET=") && !startswith(l, "IO=") && !startswith(l, "OVERRIDE="), split(s, '\n')), '\n'),
                       r"/tmp/jl_\w+" => "TMP", r"/tmp/claude[^\s`]*" => "TMP")
     @test norm(nat[2]) == norm(wasm[2])
     @test norm(nat[3]) == norm(wasm[3])

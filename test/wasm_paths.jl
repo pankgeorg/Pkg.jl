@@ -28,6 +28,19 @@ stock_dropbuild(v) = VersionNumber(v.major, v.minor, v.patch, isempty(v.prerelea
     @test n == length(vs)
 end
 
+@testset "B21: VersionRange printing" begin
+    stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
+    tuples = [(), (0,), (1,), (4294967295,), (0, 0), (2, 3), (1, 4294967295), (0, 0, 0), (1, 5, 9), (0, 0, 4294967295)]
+    n = 0
+    for lo in tuples, hi in tuples
+        a = stock.Versions.VersionRange(stock.Versions.VersionBound(lo...), stock.Versions.VersionBound(hi...))
+        b = Pkg.Versions.VersionRange(Pkg.Versions.VersionBound(lo...), Pkg.Versions.VersionBound(hi...))
+        @test string(a) == string(b) && sprint(show, a) == sprint(show, b)
+        n += occursin(" - ", string(b)) && occursin(".", string(b))
+    end
+    @test n > 10
+end
+
 const CHILD = raw"""
 import Pkg; Pkg.instantiate(; io = devnull)
 using Pkg

@@ -15,12 +15,42 @@ const ABI_VERSION = Int32(2) # ABI.md v2
 pkgwasm_abi_version() = ABI_VERSION
 
 """
+    sanitize_globals!()
+
+PkgWasm globals (PLAN.md D8, `lanes/pkg-fork/globals.md`) back to their fresh-session state:
+every session cache emptied, every flag at its default, no stream or native-tool object held.
+The build calls this right before image emission; `pkgwasm_init` calls it again, so a
+command never sees state from the build host.
+"""
+function sanitize_globals!()
+    DEFAULT_IO[] = nothing
+    OFFLINE_MODE[] = false
+    UPDATED_REGISTRY_THIS_SESSION[] = false
+    RESPECT_SYSIMAGE_VERSIONS[] = true
+    PREV_ENV_PATH[] = ""
+    _auto_gc_enabled[] = true
+    Types.STDLIB[] = nothing # rebuilt lazily from the embedded STDLIB_DATA (D10) ...
+    empty!(Types.UPGRADABLE_STDLIBS_UUIDS) # ... which also refills this set
+    empty!(Types.TOML_CACHE.d)
+    empty!(Registry.TOML_CACHE.d)
+    empty!(Registry.REGISTRY_CACHE)
+    empty!(API.undo_entries)
+    API.saved_initial_snapshot[] = false
+    empty!(GitTools.GIT_PROTOCOLS)
+    empty!(GitTools.GIT_USERS)
+    Host.NATIVE_DOWNLOADER[] = nothing
+    return nothing
+end
+
+"""
     init_globals!()
 
-Initialise the PkgWasm globals that depend on the environment (PLAN.md D8). Natively this is
-what `__init__` does; in the Wasm image `__init__` does not run, so `pkgwasm_init` calls it.
+Initialise the PkgWasm globals that depend on the environment (PLAN.md D8): what stock
+`__init__` does. In the Wasm image `__init__` does not run, so `pkgwasm_init` calls this
+after the Base-side globals (ENV, DEPOT_PATH, ...) have been set up.
 """
 function init_globals!()
+    sanitize_globals!()
     OFFLINE_MODE[] = Base.get_bool_env("JULIA_PKG_OFFLINE", false)
     _auto_gc_enabled[] = Base.get_bool_env("JULIA_PKG_GC_AUTO", true)
     return nothing

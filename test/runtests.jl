@@ -7,9 +7,13 @@
 
 using Test
 
+# The test files activate temporary environments; each starts from the project this was run with.
+const TEST_PROJECT = Base.ACTIVE_PROJECT[]
+
 @testset "Pkg" begin
     for file in ("pkgwasm_m31.jl", "pkgwasm_m32.jl")
         @testset "$file" begin
+            Base.ACTIVE_PROJECT[] = TEST_PROJECT
             include(joinpath(@__DIR__, file))
         end
     end

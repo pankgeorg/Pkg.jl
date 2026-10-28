@@ -77,8 +77,8 @@ end
 # compile-time preference `target = "wasm"` of PkgWasm, set by the build project) the
 # output stream is one concrete type, so that the code printing to it is static:
 # `IOContext{StdStream}`, a stream to `Base.stdout` or `Base.stderr` (in the Wasm world the
-# runtime types these as its host streams). `DEFAULT_IO[]` (a test override) is not
-# consulted then: the Wasm image has it sanitised to `nothing` (D8).
+# runtime types these as its host streams). `DEFAULT_IO[]` (a test override, sanitised to
+# `nothing` in the Wasm image, D8) is then an error if set.
 
 const PKGWASM_UUID = Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
 Base.record_compiletime_preference(PKGWASM_UUID, "target")
@@ -111,8 +111,11 @@ const TargetIO = WASM_TARGET ? IOContext{StdStream} : IO
 # (as `unstableio`: with `:color` if the stream has it)
 target_io(fd::Int32) = IOContext(StdStream(fd), :color => get(std_stream(StdStream(fd)), :color, false)::Bool)
 
-stderr_f() = WASM_TARGET ? target_io(Int32(2)) : something(DEFAULT_IO[], unstableio(stderr))
-stdout_f() = WASM_TARGET ? target_io(Int32(1)) : something(DEFAULT_IO[], unstableio(stdout))
+stderr_f() = WASM_TARGET ? (wasm_no_default_io(); target_io(Int32(2))) : something(DEFAULT_IO[], unstableio(stderr))
+stdout_f() = WASM_TARGET ? (wasm_no_default_io(); target_io(Int32(1))) : something(DEFAULT_IO[], unstableio(stdout))
+# (built for Wasm the output is the process's streams: an override is an error, not ignored)
+wasm_no_default_io() = DEFAULT_IO[] === nothing ||
+    error("PkgWasm built for Wasm: DEFAULT_IO[] is not supported (the output is stdout/stderr)")
 const PREV_ENV_PATH = Ref{String}("")
 
 usable_io(io) = (io isa Base.TTY) || (io isa IOContext{IO} && io.io isa Base.TTY)

@@ -87,6 +87,16 @@ end
     end
     @test np > 20
     @test nm > 20
+    # copy_packagespecs (API's deepcopy(pkgs)): equal fields, nothing mutable shared with the
+    # input, and what is shared in the input shared in the copy
+    PS = Pkg.Types.PackageSpec
+    a = PS(name = "A", version = Pkg.Versions.VersionSpec("1.2")); b = PS(name = "B", url = "u", rev = "r")
+    b.repo = a.repo
+    pkgs = [a, b, a]
+    c, d = T.copy_packagespecs(pkgs), deepcopy(pkgs)
+    @test all(structeq(c[i], d[i]) for i in 1:3)
+    @test c[1] === c[3] && c[1].repo === c[2].repo
+    @test shares_nothing(c, pkgs)
     # review-5 #2: programmatic metadata (not TOML-parser types) is deep-copied, as deepcopy
     p = T.Project(Dict{String, Any}("custom" => Dict("value" => "before"), "n" => Any[Dict("k" => 1)]))
     c = T.copy_project(p)

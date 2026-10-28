@@ -183,6 +183,16 @@ end
 
 registry_info(pkg::PkgEntry) = init_package_info!(pkg)
 
+# a Versions.toml entry: `VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)`,
+# `v` told apart as a parsed TOML table (M4.2: static dispatch)
+function version_info_entry(@nospecialize(v))
+    if v isa Dict{String, Any}
+        return VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)
+    end
+    Pkg.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
+    return Base.inferencebarrier(v -> VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool))(v)::VersionInfo
+end
+
 function init_package_info!(pkg::PkgEntry)
     # Already uncompressed the info for this package, return early
     isdefined(pkg, :info) && return pkg.info
@@ -199,7 +209,7 @@ function init_package_info!(pkg::PkgEntry)
         parsefile(pkg.in_memory_registry, pkg.registry_path, joinpath(pkg.path, "Versions.toml")) : Dict{String, Any}()
     version_info = Dict{VersionNumber, VersionInfo}(
         VersionNumber(k) =>
-            VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool) for (k, v) in d_v
+            version_info_entry(v) for (k, v) in d_v
     )
 
     # Compat.toml

@@ -134,28 +134,3 @@ function report_error(e)
     println(io)
     return nothing
 end
-
-# `showerror(io, e)` of the errors the supported commands throw, told apart by type (M4.2:
-# static dispatch); others natively as `showerror`, built for Wasm with their type's name
-function showerror_known(io::IO, @nospecialize(e))
-    if e isa Types.PkgError
-        showerror(io, e)
-    elseif e isa ErrorException
-        showerror(io, e)
-    elseif e isa ArgumentError
-        showerror(io, e)
-    elseif e isa SystemError
-        showerror(io, e)
-    elseif e isa Base.IOError
-        showerror(io, e)
-    elseif e isa Host.HostError
-        showerror(io, e)
-    elseif e isa Base.TOML.ParserError
-        showerror(io, e)
-    elseif !WASM_TARGET
-        showerror(io, e)
-    else
-        print(io, "an error that this build of PkgWasm cannot print")
-    end
-    return nothing
-end

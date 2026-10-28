@@ -290,14 +290,14 @@ function toml_uuid(@nospecialize(x))
     x isa String && return Base.UUID(x)
     x isa Int64 && return Base.UUID(x)
     x isa Bool && return Base.UUID(x)
-    WASM_TARGET && throw(MethodError(Base.UUID, (x,)))
+    WASM_TARGET && error("PkgWasm: a UUID must be a string")  # (natively a MethodError)
     return Base.inferencebarrier(Base.UUID)(x)::Base.UUID
 end
 
 "A TOML value as a `Union{String, Nothing}` field takes it (its `convert`)."
 function toml_string_or_nothing(@nospecialize(x))
     x isa Union{String, Nothing} && return x
-    WASM_TARGET && throw(MethodError(convert, (Union{String, Nothing}, x)))
+    WASM_TARGET && error("PkgWasm: expected a string")  # (natively convert's MethodError)
     return Base.inferencebarrier(convert)(Union{String, Nothing}, x)::Union{String, Nothing}
 end
 

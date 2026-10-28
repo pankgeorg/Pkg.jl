@@ -15,9 +15,11 @@ using Base.BinaryPlatforms, p7zip_jll, Zstd_jll
 export verify, unpack, package, download_verify_unpack, get_extract_cmd, detect_archive_format
 
 const EXE7Z_LOCK = ReentrantLock()
-const EXE7Z = Ref{String}()
 const EXEZSTD_LOCK = ReentrantLock()
-const EXEZSTD = Ref{String}()
+# PkgWasm (D8): "" = not looked up yet (stock uses an unassigned Ref, which cannot be reset by
+# `sanitize_globals!`); a found path is a build-host path and must not reach the image.
+const EXE7Z = Ref{String}("")
+const EXEZSTD = Ref{String}("")
 
 function exe7z()
     # If the JLL is available, use the wrapper function defined in there
@@ -26,7 +28,7 @@ function exe7z()
     end
 
     return lock(EXE7Z_LOCK) do
-        if !isassigned(EXE7Z)
+        if isempty(EXE7Z[])
             EXE7Z[] = find7z()
         end
         return Cmd([EXE7Z[]])
@@ -40,7 +42,7 @@ function exezstd()
     end
 
     return lock(EXEZSTD_LOCK) do
-        if !isassigned(EXEZSTD)
+        if isempty(EXEZSTD[])
             EXEZSTD[] = findzstd()
         end
         return Cmd([EXEZSTD[]])

@@ -276,13 +276,90 @@ struct AppInfo
     other::Dict{String, Any}
 end
 # `all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(T))` with each field's
-# comparison typed: in order, stopping at the first unequal one (M4.2: static dispatch)
+# comparison typed: in order, stopping at the first unequal one (M4.2: static dispatch; e2e
+# B14: a field of a Union of more than two types compared type by type, a TOML table by
+# `toml_eq`)
 @generated function fields_equal(t1::T, t2::T) where {T}
     ex = :(true)
-    for x in reverse(fieldnames(T))
-        ex = :((getfield(t1, $(QuoteNode(x))) == getfield(t2, $(QuoteNode(x))))::Bool && $ex)
+    for (x, FT) in reverse(collect(zip(fieldnames(T), fieldtypes(T))))
+        cmp = field_eq_expr(FT, :a, :b)
+        ex = :(let a = getfield(t1, $(QuoteNode(x))), b = getfield(t2, $(QuoteNode(x)))
+            ($cmp)::Bool
+        end && $ex)
     end
     return ex
+end
+# `a == b` for values `a`, `b` of a field of type `FT`, each type of a Union told apart
+function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
+    FT === Dict{String, Any} && return :(toml_eq($a, $b))
+    ts = Base.uniontypes(FT)
+    length(ts) <= 2 && return :($a == $b)
+    isa_chain(v, body) = foldr(ts[1:(end - 1)]; init = body(:($v::$(ts[end])))) do t, rest
+        :($v isa $t ? $(body(v)) : $rest)
+    end
+    return isa_chain(a, av -> isa_chain(b, bv -> :($av == $bv)))
+end
+
+# `a == b` for TOML values (`Dict{String, Any}` tables and what TOML's parser makes), as
+# `==` on them: a table equal to a table with the same keys and equal values; built for Wasm
+# without dynamic dispatch, other values natively by `==`, built for Wasm an error (M4.2 B14)
+@noinline function toml_eq(@nospecialize(a), @nospecialize(b))
+    if a isa Dict{String, Any}
+        b isa Dict{String, Any} || return toml_eq_other(a, b)
+        length(a) == length(b) || return false
+        for (k, v) in a
+            haskey(b, k) || return false
+            toml_eq(v, b[k]) || return false
+        end
+        return true
+    elseif a isa Vector{Any}
+        return toml_vec_eq(a, b)
+    elseif a isa Vector{String}
+        return toml_vec_eq(a, b)
+    elseif a isa Vector{Dict{String, Any}}
+        return toml_vec_eq(a, b)
+    elseif a isa Vector{Int64}
+        return toml_vec_eq(a, b)
+    elseif a isa Vector{Float64}
+        return toml_vec_eq(a, b)
+    elseif a isa Vector{Bool}
+        return toml_vec_eq(a, b)
+    elseif a isa String
+        b isa String && return a == b
+        return b isa Union{Int64, Float64, Bool} ? false : toml_eq_other(a, b)
+    elseif a isa Union{Int64, Float64, Bool}
+        b isa String && return false
+        b isa Int64 && return toml_num_eq(a, b)
+        b isa Float64 && return toml_num_eq(a, b)
+        b isa Bool && return toml_num_eq(a, b)
+        return toml_eq_other(a, b)
+    else
+        return toml_eq_other(a, b)
+    end
+end
+toml_num_eq(a, b::Union{Int64, Float64, Bool}) =
+    a isa Int64 ? a == b : a isa Float64 ? a == b : (a::Bool) == b
+# (`a` a vector of one of the parser's element types; `b` told apart likewise)
+function toml_vec_eq(a::Vector, @nospecialize(b))
+    b isa Vector{Any} && return toml_elems_eq(a, b)
+    b isa Vector{String} && return toml_elems_eq(a, b)
+    b isa Vector{Dict{String, Any}} && return toml_elems_eq(a, b)
+    b isa Vector{Int64} && return toml_elems_eq(a, b)
+    b isa Vector{Float64} && return toml_elems_eq(a, b)
+    b isa Vector{Bool} && return toml_elems_eq(a, b)
+    return toml_eq_other(a, b)
+end
+# (`==` of arrays: equal axes, then the elements in order)
+function toml_elems_eq(a::Vector, b::Vector)
+    length(a) == length(b) || return false
+    for i in eachindex(a, b)
+        toml_eq(a[i], b[i]) || return false
+    end
+    return true
+end
+function toml_eq_other(@nospecialize(a), @nospecialize(b))
+    WASM_TARGET && error("PkgWasm built for Wasm: comparing TOML values of unsupported types")
+    return Base.inferencebarrier(==)(a, b)::Bool
 end
 
 Base.@kwdef mutable struct Project

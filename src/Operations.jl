@@ -358,7 +358,7 @@ function load_all_deps_loadable(env::EnvCache)
 end
 
 
-function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Pkg.PKGWASM_PLATFORM)::Bool
+function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Pkg.host_platform())::Bool
     # Load everything
     if workspace
         pkgs = Operations.load_all_deps(env)
@@ -1393,7 +1393,7 @@ function deps_graph(
         union!(uuids, fixed_uuids)
     end
     # Only used when `installed_only`; computed once instead of per version checked
-    platform = installed_only ? Pkg.PKGWASM_PLATFORM : nothing
+    platform = installed_only ? Pkg.host_platform() : nothing
 
     # Collect all weak dependency UUIDs from fixed packages
     # (weak deps of registry packages and stdlibs are added during graph traversal below)
@@ -1873,7 +1873,7 @@ end
 
 function collect_artifacts(
         pkg_root::String;
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM, include_lazy::Bool = false,
+        platform::AbstractPlatform = Pkg.host_platform(), include_lazy::Bool = false,
         selector_project::Union{Nothing, String} = nothing,
         env_key::Union{Nothing, UInt} = nothing
     )
@@ -2034,7 +2034,7 @@ end
 
 function download_artifacts(
         ctx::Context, pkgs;
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
+        platform::AbstractPlatform = Pkg.host_platform(),
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -2067,7 +2067,7 @@ end
 
 function download_artifacts(
         ctx::Context;
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
+        platform::AbstractPlatform = Pkg.host_platform(),
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -2100,7 +2100,7 @@ end
 download_source(ctx::Context; readonly::Bool = true, tmpdir::Union{Nothing, String} = nothing) =
     download_source(ctx, collect(values(ctx.env.manifest)); readonly, tmpdir)
 
-function count_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM)
+function count_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.host_platform())
     for f in artifact_names
         artifacts_toml = joinpath(pkg_root, f)
         if isfile(artifacts_toml)
@@ -2467,7 +2467,7 @@ end
 
 # Repos are checked out into the depot even in lazy mode, so those packages and their dependencies
 # are installed fully instead of being left without artifacts or builds.
-function install_lazy_checkouts(ctx::Context, new_git::Set{UUID}; platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM)
+function install_lazy_checkouts(ctx::Context, new_git::Set{UUID}; platform::AbstractPlatform = Pkg.host_platform())
     uuids = filter(uuid -> haskey(ctx.env.manifest, uuid), new_git)
     # repos can also be checked out while resolving, e.g. for the `[sources]` of another repo
     for (uuid, entry) in ctx.env.manifest
@@ -3041,7 +3041,7 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git = Set{UUID}();
-        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
+        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.host_platform(),
         target::Symbol = :deps, prefer_loaded_versions::Bool = false, lazy::Bool = false
     )
     assert_can_add(ctx, pkgs)
@@ -3166,7 +3166,7 @@ end
 # Input: name, uuid, and path
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git::Set{UUID};
-        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM
+        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.host_platform()
     )
     assert_can_add(ctx, pkgs)
     # no need to look at manifest.. dev will just nuke whatever is there before
@@ -4265,7 +4265,7 @@ end
 
 function is_package_downloaded(
         manifest_file::String, pkg::PackageSpec;
-        platform = Pkg.PKGWASM_PLATFORM, run_selectors::Bool = true
+        platform = Pkg.host_platform(), run_selectors::Bool = true
     )
     # PkgWasm (PLAN.md D10): a stdlib's source is available by definition (no filesystem probe)
     stdlib_source_data(pkg) === nothing || return true

@@ -17,32 +17,30 @@ const LOG_MAXLOG_COUNTS = Dict{String, Int}()
 # a message's lines: (indent, text)
 log_lines(@nospecialize(msg)) = Tuple{Int, String}[(0, String(l)) for l in split(chomp(string(msg)), '\n')]
 
-# `key = value` lines, as ConsoleLogger's `showvalue`
-function log_kv!(lines::Vector{Tuple{Int, String}}, key::String, @nospecialize(val))
+# `key = value` lines, as ConsoleLogger's `showvalue`: a value shown as `text/plain` (the
+# call specialized on the value's type at each call site: static where that type is known),
+# an exception with `showerror` (`log_kv_exception!`)
+function log_kv!(lines::Vector{Tuple{Int, String}}, key::String, val)
+    val isa Exception && return log_kv_exception!(lines, key, val)
+    buf = IOBuffer()
+    show(buf, MIME"text/plain"(), val)
+    return log_kv_lines!(lines, key, String(take!(buf)))
+end
+function log_kv_exception!(lines::Vector{Tuple{Int, String}}, key::String, @nospecialize(val))
     buf = IOBuffer()
     if val isa Exception
         showerror_known(buf, val)
-    elseif !WASM_TARGET
-        val isa Tuple{Exception, Any} ? showerror_known(buf, val[1]) : show(buf, MIME"text/plain"(), val)
-    # (built for Wasm: the values the supported paths log, shown typed)
-    elseif val isa String
-        show(buf, MIME"text/plain"(), val)
-    elseif val isa Symbol
-        show(buf, MIME"text/plain"(), val)
-    elseif val isa Int64
-        show(buf, MIME"text/plain"(), val)
-    elseif val isa Bool
-        show(buf, MIME"text/plain"(), val)
-    elseif val isa Nothing
-        show(buf, MIME"text/plain"(), val)
-    elseif val isa VersionNumber
-        show(buf, MIME"text/plain"(), val)
-    elseif val isa Base.UUID
-        show(buf, MIME"text/plain"(), val)
-    else
+    elseif !WASM_TARGET && val isa Tuple{Exception, Any}
+        showerror_known(buf, val[1])
+    elseif WASM_TARGET
         print(buf, "(a value this build of PkgWasm cannot show)")
+    else
+        show(buf, MIME"text/plain"(), val)
     end
-    vallines = split(String(take!(buf)), '\n')
+    return log_kv_lines!(lines, key, String(take!(buf)))
+end
+function log_kv_lines!(lines::Vector{Tuple{Int, String}}, key::String, s::String)
+    vallines = split(s, '\n')
     if length(vallines) == 1
         push!(lines, (2, string(key, " = ", vallines[1])))
     else
@@ -102,7 +100,8 @@ function log_direct_expr(level::Symbol, mod::Module, src::LineNumberNode, args)
         k === :exception && v isa Expr && v.head === :tuple && length(v.args) == 2 && (v = v.args[1])
         k === :_id && (id = v; continue)
         k in (:_module, :_file, :_line, :_group) && continue
-        push!(body, :($(GlobalRef(@__MODULE__, :log_kv!))(lines, $(string(k)), $v)))
+        f = k === :exception ? :log_kv_exception! : :log_kv!
+        push!(body, :($(GlobalRef(@__MODULE__, f))(lines, $(string(k)), $v)))
     end
     push!(body, :($(GlobalRef(@__MODULE__, :log_print))($(GlobalRef(@__MODULE__, :stderr_f))(), $prefix, lines, $suffix)))
     ex = Expr(:let, Expr(:block), Expr(:block, body...))
@@ -121,3 +120,44 @@ for (name, level) in ((:pkg_debug, :Debug), (:pkg_info, :Info), (:pkg_warn, :War
         return esc(:($(GlobalRef(@__MODULE__, :WASM_TARGET)) ? $direct : $stock))
     end
 end
+
+"""
+    showerror_known(io, e)
+
+`showerror(io, e)`. Natively exactly that. Built for Wasm, Base's messages for the errors
+the supported commands throw, printed with typed fields (Base's `showerror`s print
+`AbstractString` and `Any` fields), and a fixed message for others.
+"""
+function showerror_known(io::IO, @nospecialize(e))
+    WASM_TARGET || return showerror(io, e)
+    if e isa Types.PkgError
+        print(io, e.msg)
+    elseif e isa ErrorException
+        print(io, typed_msg(e.msg))
+    elseif e isa ArgumentError
+        print(io, "ArgumentError: ", typed_msg(e.msg))
+    elseif e isa Base.IOError
+        print(io, "IOError: ", e.msg)
+        if e.code == Base.UV_ENOENT && '~' in e.msg
+            print(io, "\nMany shells expand '~' to the home directory in unquoted strings. To replicate this behavior, call",
+                      " `expanduser` to expand the '~' character to the user’s home directory.")
+        end
+    elseif e isa SystemError
+        errstring = Libc.strerror(e.errnum)
+        if e.extrainfo === nothing
+            print(io, "SystemError: ", e.prefix, ": ", errstring)
+        else
+            print(io, "SystemError (with ", typed_msg(string(e.extrainfo)), "): ", e.prefix, ": ", errstring)
+        end
+    elseif e isa Host.HostError
+        showerror(io, e)
+    elseif e isa Base.TOML.ParserError
+        showerror(io, e)
+    else
+        print(io, "an error that this build of PkgWasm cannot print")
+    end
+    return nothing
+end
+# a message field (an AbstractString): a String as it is
+typed_msg(@nospecialize(m)) = m isa String ? m : m isa SubString{String} ? String(m) :
+    "(a message this build of PkgWasm cannot print)"

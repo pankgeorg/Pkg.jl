@@ -601,6 +601,53 @@ end
         end
     end
 
+    @testset "D11 compressed registry in a depot is a clear PkgError (coordinator decision)" begin
+        mktempdir() do depot
+            # stock 1.13 default layout: <name>.toml descriptor + <name>.tar.gz
+            src = mktempdir()
+            mini_uuid = uuid4()
+            write(joinpath(src, "Registry.toml"), "name = \"Mini\"\nuuid = \"$mini_uuid\"\nrepo = \"https://example.invalid/Mini.git\"\n\n[packages]\n")
+            regdir = joinpath(depot, "registries")
+            mkpath(regdir)
+            tar = Pkg.Registry.Tar.create(src)
+            hash = Pkg.Registry.Tar.tree_hash(tar)
+            run(pipeline(`$(Pkg.PlatformEngines.exe7z()) a -tgzip $(joinpath(regdir, "Mini.tar.gz")) $tar`; stdout = devnull))
+            desc = joinpath(regdir, "Mini.toml")
+            write(desc, "git-tree-sha1 = \"$hash\"\npath = \"Mini.tar.gz\"\nuuid = \"$mini_uuid\"\n")
+            # it is a registry stock Pkg reads
+            stock = Pkg.Registry.reachable_registries(; depots = [depot])
+            @test length(stock) == 1 && stock[1].uuid == mini_uuid
+            expected = "compressed registry Mini at $desc is not supported by PkgWasm; remove it and add it again so it is installed unpacked"
+            err = capture_error(() -> Pkg.Registry.reachable_registries(; depots = [depot]))
+            @test err isa Pkg.Types.PkgError
+            @test err.msg == expected
+            # through a supported command: exit 1 with that error
+            old = copy(DEPOT_PATH)
+            copy!(DEPOT_PATH, [depot])
+            try
+                mktempdir() do env
+                    Pkg.activate(env; io = devnull)
+                    write(joinpath(env, "Project.toml"), "[deps]\nExample = \"$EXAMPLE_UUID\"\n")
+                    err = capture_error(() -> Pkg.resolve(; io = devnull))
+                    @test err isa Pkg.Types.PkgError && err.msg == expected
+                    @test Pkg.pkgwasm_main(["resolve"]) == 1
+                end
+            finally
+                copy!(DEPOT_PATH, old)
+                Pkg.activate(; io = devnull)
+            end
+            # without a Pkg server, stock ignores descriptors and so does PkgWasm
+            withenv("JULIA_PKG_SERVER" => "") do
+                @test isempty(Pkg.Registry.reachable_registries(; depots = [depot]))
+            end
+            # the in-memory tarball reader is not referenced by the loader any more
+            code = read(joinpath(pkgdir(Pkg), "src", "Registry", "registry_instance.jl"), String)
+            loader = code[findfirst("function _ensure_registry_loaded_slow!", code).start:end]
+            loader = loader[1:findfirst("\nend\n", loader).stop]
+            @test !occursin("uncompress_registry(", loader)
+        end
+    end
+
     @testset "D11 registry installed unpacked with verified tree hash" begin
         mktempdir() do depot
             old_depot_path = copy(DEPOT_PATH)

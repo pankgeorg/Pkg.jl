@@ -68,6 +68,7 @@ include("utils.jl")
 include("MiniProgressBars.jl")
 include("GitTools.jl")
 include("PlatformEngines.jl")
+include("Host.jl")
 include("Versions.jl")
 include("Registry/Registry.jl")
 include("Resolve/Resolve.jl")
@@ -78,6 +79,7 @@ include("Operations.jl")
 include("API.jl")
 include("Apps/Apps.jl")
 include("REPLMode/REPLMode.jl")
+include("wasm_entry.jl")
 
 import .REPLMode: @pkg_str
 import .Types: UPLEVEL_MAJOR, UPLEVEL_MINOR, UPLEVEL_PATCH, UPLEVEL_FIXED

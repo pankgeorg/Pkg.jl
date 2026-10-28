@@ -147,7 +147,8 @@ PackageSpec(n::AbstractString, u::UUID, v::VersionTypes) = PackageSpec(; name = 
 
 # XXX: These definitions are a bit fishy. It seems to be used in an `==` call in status printing
 function Base.:(==)(a::PackageSpec, b::PackageSpec)
-    return a.name == b.name && a.uuid == b.uuid && a.version == b.version &&
+    # (`version`, a Union of five types, compared type by type: `packagespec_version_eq`, e2e B22)
+    return a.name == b.name && a.uuid == b.uuid && packagespec_version_eq(a.version, b.version) &&
         a.tree_hash == b.tree_hash && a.repo == b.repo && a.path == b.path &&
         a.pinned == b.pinned
 end
@@ -299,6 +300,9 @@ function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
     end
     return isa_chain(a, av -> isa_chain(b, bv -> :($av == $bv)))
 end
+
+# `a.version == b.version` for PackageSpecs, each type of the field's Union told apart
+@eval packagespec_version_eq(@nospecialize(a), @nospecialize(b)) = $(field_eq_expr(fieldtype(PackageSpec, :version), :a, :b))
 
 # `a == b` for TOML values (what TOML's parser makes: `Dict{String, Any}` tables, arrays,
 # strings, numbers, dates and times) built for Wasm without dynamic dispatch: values of

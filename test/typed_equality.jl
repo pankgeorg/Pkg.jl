@@ -60,6 +60,18 @@ end
         m += (p1 == p2)
     end
     @test 0 < m < 64
+    # PackageSpec == (e2e B22): stock's field comparisons, `version` of every type of its Union
+    stock_ps_eq(a, b) = a.name == b.name && a.uuid == b.uuid && a.version == b.version &&
+        a.tree_hash == b.tree_hash && a.repo == b.repo && a.path == b.path && a.pinned == b.pinned
+    pversions = Any[nothing, v"1.2.3", v"1.2.3", Pkg.Versions.VersionSpec("1"), Pkg.Versions.VersionSpec("1"),
+                    Pkg.Versions.VersionSpec("2"), T.UPLEVEL_MINOR, T.UPLEVEL_MAJOR, "1.2.3", "x"]
+    k = 0
+    for v1 in pversions, v2 in pversions, nm in ("A", "B"), pin in (false, true)
+        a = T.PackageSpec(; name = "A", version = v1); b = T.PackageSpec(; name = nm, version = v2, pinned = pin)
+        @test (a == b) === stock_ps_eq(a, b)
+        k += (a == b)
+    end
+    @test 0 < k < 400
     e = T.PackageEntry(; name = "A", version = v"1.0.0")
     for (o1, o2) in ((Dict{String, Any}(), Dict{String, Any}()), (Dict{String, Any}("a" => 1), Dict{String, Any}("a" => 1.0)),
                      (Dict{String, Any}("a" => 1), Dict{String, Any}("a" => "1")))

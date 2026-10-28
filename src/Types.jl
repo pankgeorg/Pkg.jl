@@ -10,7 +10,7 @@ import Base.string
 
 using TOML
 import ..Pkg, ..Registry
-import ..Pkg: GitTools, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, normalize_path_for_toml
+import ..Pkg: GitTools, TOMLWriter, with_toml_type, with_toml_dict, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, normalize_path_for_toml
 import Base.BinaryPlatforms: Platform
 using ..Pkg.Versions
 import FileWatching
@@ -47,9 +47,25 @@ function deepcopy_toml(x::Dict{String, Any})
     d = Dict{String, Any}()
     sizehint!(d, length(x))
     for (k, v) in x
-        d[k] = deepcopy_toml(v)
+        d[k] = deepcopy_toml_value(v)
     end
     return d
+end
+# `deepcopy_toml(v)` for a value of a parsed TOML table: the copy, by the types TOML's
+# parser makes (M4.2: static dispatch); other values natively as `deepcopy_toml`
+function deepcopy_toml_value(@nospecialize(v))
+    v isa Dict{String, Any} && return deepcopy_toml(v)
+    v isa Union{String, Int64, Float64, Bool, Dates.DateTime, Dates.Date, Dates.Time} && return v
+    v isa Vector{Any} && return Any[deepcopy_toml_value(x) for x in v]
+    v isa Vector{String} && return copy(v)
+    v isa Vector{Int64} && return copy(v)
+    v isa Vector{Float64} && return copy(v)
+    v isa Vector{Bool} && return copy(v)
+    v isa Vector{Dates.DateTime} && return copy(v)
+    v isa Vector{Dates.Date} && return copy(v)
+    v isa Vector{Dates.Time} && return copy(v)
+    WASM_TARGET && error("PkgWasm: unsupported TOML value type")
+    return Base.inferencebarrier(deepcopy_toml)(v)
 end
 
 # See loading.jl
@@ -65,7 +81,14 @@ parse_toml(toml_file::AbstractString) =
 struct PkgError <: Exception
     msg::String
 end
-pkgerror(msg::String...) = throw(PkgError(join(msg)))
+# (`join(msg)`, by a loop: `join` of a tuple of strings dispatches on its length)
+function pkgerror(msg::String...)
+    s = IOBuffer()
+    for m in msg
+        print(s, m)
+    end
+    throw(PkgError(String(take!(s))))
+end
 Base.showerror(io::IO, err::PkgError) = print(io, err.msg)
 
 ###############
@@ -389,6 +412,52 @@ mutable struct EnvCache
     original_manifest::Manifest
 end
 
+# Typed copies of a Project and a Manifest (M4.2): equal (`==`) to their `deepcopy`, and
+# sharing no mutable part with the original, without `deepcopy`'s reflection. (Unlike
+# `deepcopy`, parts aliased within the original are copied separately: the copies kept
+# by `EnvCache` are only compared and read.)
+copy_versionspec(v::VersionSpec) = VersionSpec(copy(v.ranges))
+copy_version(@nospecialize(v)) = v isa VersionSpec ? copy_versionspec(v) : v
+copy_appinfo(a::AppInfo) = AppInfo(a.name, a.julia_command, a.submodule, copy(a.julia_flags), deepcopy_toml(a.other))
+copy_exts(e::Dict{String, Union{Vector{String}, String}}) =
+    Dict{String, Union{Vector{String}, String}}(k => (v isa Vector{String} ? copy(v) : v) for (k, v) in e)
+copy_gitrepo(r::GitRepo) = GitRepo(r.source, r.rev, r.subdir)
+
+function copy_project(p::Project)
+    return Project(;
+        other = deepcopy_toml(p.other),
+        name = p.name, uuid = p.uuid, version = copy_version(p.version),
+        manifest = p.manifest, entryfile = p.entryfile,
+        deps = copy(p.deps), _deps_weak = copy(p._deps_weak), weakdeps = copy(p.weakdeps),
+        exts = copy_exts(p.exts), extras = copy(p.extras),
+        targets = Dict{String, Vector{String}}(k => copy(v) for (k, v) in p.targets),
+        apps = Dict{String, AppInfo}(k => copy_appinfo(v) for (k, v) in p.apps),
+        compat = Dict{String, Compat}(k => Compat(copy_versionspec(v.val), v.str) for (k, v) in p.compat),
+        sources = Dict{String, Dict{String, String}}(k => copy(v) for (k, v) in p.sources),
+        workspace = deepcopy_toml(p.workspace),
+    )
+end
+
+function copy_entry(e::PackageEntry)
+    other = e.other
+    return PackageEntry(;
+        name = e.name, version = e.version, path = e.path, entryfile = e.entryfile, pinned = e.pinned,
+        repo = copy_gitrepo(e.repo), tree_hash = e.tree_hash,
+        deps = copy(e.deps), weakdeps = copy(e.weakdeps), exts = copy_exts(e.exts), uuid = e.uuid,
+        apps = Dict{String, AppInfo}(k => copy_appinfo(v) for (k, v) in e.apps),
+        other = other === nothing ? nothing : other isa Dict{String, Any} ? deepcopy_toml(other) :
+            WASM_TARGET ? error("PkgWasm: unsupported manifest entry table") : Base.inferencebarrier(deepcopy)(other),
+    )
+end
+
+function copy_manifest(m::Manifest)
+    return Manifest(;
+        julia_version = m.julia_version, project_hash = m.project_hash, manifest_format = m.manifest_format,
+        deps = Dict{UUID, PackageEntry}(k => copy_entry(v) for (k, v) in m.deps),
+        other = deepcopy_toml(m.other),
+    )
+end
+
 function EnvCache(env::Union{Nothing, String} = nothing)
     # @show env
     project_file = find_project_file(env)
@@ -434,8 +503,8 @@ function EnvCache(env::Union{Nothing, String} = nothing)
         project,
         workspace,
         manifest,
-        deepcopy(project),
-        deepcopy(manifest),
+        copy_project(project),
+        copy_manifest(manifest),
     )
 
     return env′
@@ -693,6 +762,28 @@ end
 write_env_usage(source_file::AbstractString, usage_filepath::AbstractString) =
     write_env_usage([source_file], usage_filepath)
 
+# the times of the entries of a package in a usage file (`map` over them), the entries told
+# apart by the types they have: a table, from the file, or one written this session
+function usage_times(@nospecialize(entries), usage_filepath, k)
+    entry_time(d) =
+        if haskey(d, "time")
+            t = d["time"]
+            t isa Dates.DateTime ? t : t isa String ? Dates.DateTime(t) :
+                WASM_TARGET ? error("PkgWasm: unsupported usage time") : Base.inferencebarrier(Dates.DateTime)(t)
+        else
+            # if there's no time entry because of a write failure be conservative and mark it as being used now
+            @debug "Usage file `$usage_filepath` has a missing `time` entry for `$k`. Marking as used `now()`"
+            Dates.now()
+        end
+    # (a vector of `DateTime`s, as `map` makes them; empty, `maximum` throws the same error)
+    entries isa Vector{Dict{String, Dates.DateTime}} && return Dates.DateTime[entry_time(d) for d in entries]
+    if entries isa Vector{Any} && all(d -> d isa Dict{String, Any}, entries)
+        return Dates.DateTime[entry_time(d::Dict{String, Any}) for d in entries]
+    end
+    WASM_TARGET && error("PkgWasm: unsupported usage entries")
+    return Base.inferencebarrier(map)(entry_time, entries)
+end
+
 function write_env_usage(source_files, usage_filepath::AbstractString)
     # Don't record ghost usage
     source_files = filter(isfile, source_files)
@@ -724,22 +815,14 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
 
         # keep only latest usage info
         for k in keys(usage)
-            times = map(usage[k]) do d
-                if haskey(d, "time")
-                    Dates.DateTime(d["time"])
-                else
-                    # if there's no time entry because of a write failure be conservative and mark it as being used now
-                    @debug "Usage file `$usage_filepath` has a missing `time` entry for `$k`. Marking as used `now()`"
-                    Dates.now()
-                end
-            end
+            times = usage_times(usage[k], usage_filepath, k)
             usage[k] = [Dict("time" => maximum(times))]
         end
 
         tempfile = tempname()
         try
             open(tempfile, "w") do io
-                TOML.print(io, usage, sorted = true)
+                TOMLWriter.print(io, usage, sorted = true)
             end
             TOML.parsefile(tempfile) # compare to `usage` ?
             mv(tempfile, usage_file; force = true) # only mv if parse succeeds

@@ -274,7 +274,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                 mv(tmp, joinpath(regdir, reg.name * ".tar.gz"); force = true)
                 reg_info = Dict("uuid" => string(reg.uuid), "git-tree-sha1" => string(_hash), "path" => reg.name * ".tar.gz")
                 open(joinpath(regdir, reg.name * ".toml"), "w") do io
-                    TOML.print(io, reg_info)
+                    Pkg.TOMLWriter.print(io, reg_info)
                 end
                 printpkgstyle(io, :Added, "`$(reg.name)` registry to $(Base.contractuser(regdir))")
             else
@@ -446,7 +446,7 @@ function save_registry_update_log(d::Dict)
     mkpath(pkg_scratch_space)
     pkg_reg_updated_file = joinpath(pkg_scratch_space, "registry_updates.toml")
     return open(pkg_reg_updated_file, "w") do io
-        TOML.print(io, d)
+        Pkg.TOMLWriter.print(io, d)
     end
 end
 
@@ -529,7 +529,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                         mv(tmp, joinpath(registry_path, reg.name * ".tar.gz"); force = true)
                                         reg_info = Dict("uuid" => string(reg.uuid), "git-tree-sha1" => string(hash), "path" => reg.name * ".tar.gz")
                                         open(joinpath(registry_path, reg.name * ".toml"), "w") do io
-                                            TOML.print(io, reg_info)
+                                            Pkg.TOMLWriter.print(io, reg_info)
                                         end
                                         registry_update_log[string(reg.uuid)] = now()
                                         @label done_tarball_read

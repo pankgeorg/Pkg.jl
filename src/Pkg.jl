@@ -122,6 +122,7 @@ usable_io(io) = (io isa Base.TTY) || (io isa IOContext{IO} && io.io isa Base.TTY
 can_fancyprint(io::IO) = (usable_io(io)) && (get(ENV, "CI", nothing) != "true")
 should_autoprecompile() = Base.JLOptions().use_compiled_modules == 1 && Base.get_bool_env("JULIA_PKG_PRECOMPILE_AUTO", true)
 
+include("toml_writer.jl")
 include("utils.jl")
 include("stdlib_data.jl")
 include("MiniProgressBars.jl")

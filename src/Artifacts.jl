@@ -4,7 +4,7 @@ using Artifacts, Base.BinaryPlatforms, SHA
 using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 
-import ..set_readonly, ..host_platform, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..host_platform, ..GitTools, ..TOML, ..TOMLWriter, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle
 
 import Base: get, SHA1
@@ -269,7 +269,7 @@ function bind_artifact!(
         parent_dir = dirname(artifacts_toml)
         temp_artifacts_toml = isempty(parent_dir) ? tempname(pwd()) : tempname(parent_dir)
         open(temp_artifacts_toml, "w") do io
-            TOML.print(io, artifact_dict, sorted = true)
+            TOMLWriter.print(io, artifact_dict, sorted = true)
         end
         mv(temp_artifacts_toml, artifacts_toml; force = true)
     end
@@ -305,7 +305,7 @@ function unbind_artifact!(
     end
 
     open(artifacts_toml, "w") do io
-        TOML.print(io, artifact_dict, sorted = true)
+        TOMLWriter.print(io, artifact_dict, sorted = true)
     end
     return
 end

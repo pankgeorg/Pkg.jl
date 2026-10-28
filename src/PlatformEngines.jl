@@ -5,7 +5,7 @@
 module PlatformEngines
 
 using SHA, Downloads, Tar
-import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f
+import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, toml_float
 import ..Host
 using ..MiniProgressBars
 using Base.BinaryPlatforms, p7zip_jll
@@ -137,10 +137,10 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     # handle token expiration and refresh
     expires_at = Inf
     if haskey(auth_info, "expires_at")
-        expires_at = min(expires_at, Float64(auth_info["expires_at"])::Float64)
+        expires_at = min(expires_at, toml_float(auth_info["expires_at"]))
     end
     if haskey(auth_info, "expires_in")
-        expires_at = min(expires_at, mtime(auth_file) + Float64(auth_info["expires_in"])::Float64)
+        expires_at = min(expires_at, mtime(auth_file) + toml_float(auth_info["expires_in"]))
     end
     # if token is good until ten minutes from now, use it
     time_now = time()
@@ -188,14 +188,14 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     if haskey(auth_info, "expires_in")
         expires_in = auth_info["expires_in"]
         if expires_in isa Number
-            expires_at = floor(time_now + Float64(expires_in)::Float64)
+            expires_at = floor(time_now + toml_float(expires_in))
             # overwrite expires_at (avoids clock skew issues)
             auth_info["expires_at"] = expires_at
         end
     end
     let auth_info = auth_info
         open(tmp, write = true) do io
-            TOML.print(io, auth_info, sorted = true)
+            Pkg.TOMLWriter.print(io, auth_info, sorted = true)
         end
     end
     mv(tmp, auth_file, force = true)

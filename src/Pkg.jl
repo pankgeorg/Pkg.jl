@@ -25,6 +25,13 @@ export Registry, RegistrySpec, Apps
 public activate, add, build, compat, develop, free, gc, generate, instantiate,
     pin, precompile, readonly, redo, rm, resolve, status, test, undo, update, why
 
+# PkgWasm (PLAN.md D2/D8, embedded): the platform PkgWasm acts for, fixed at build time instead
+# of probing the running host with `HostPlatform()` (which needs `Libdl.dllist` and regexes).
+# It is the frozen platform of the native baselines (fixtures/frozen.toml `platform_triplet`),
+# i.e. `HostPlatform()` of the build host, and is sent as the `Julia-System` header.
+const PKGWASM_PLATFORM_TRIPLET = "aarch64-linux-gnu-libgfortran5-cxx11-libstdcxx30-julia_version+1.13.2"
+const PKGWASM_PLATFORM = parse(Base.BinaryPlatforms.Platform, PKGWASM_PLATFORM_TRIPLET)
+
 depots() = Base.DEPOT_PATH
 function depots1(depot_list::Union{String, Vector{String}} = depots())
     # Get the first depot from a list, with proper error handling

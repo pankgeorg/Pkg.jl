@@ -11,6 +11,7 @@ module BinaryPlatformsCompat
         os, call_abi, select_platform, platforms_match,
         AbstractPlatform, Platform, HostPlatform
 
+    import ..PKGWASM_PLATFORM
     import Base.BinaryPlatforms: libgfortran_version, libstdcxx_version, platform_name,
         wordsize, platform_dlext, tags, arch, libc, call_abi,
         cxxstring_abi
@@ -126,7 +127,7 @@ module BinaryPlatformsCompat
     to get the current host platform, or `parse(Base.BinaryPlatforms.Platform, triplet)`
     to parse the triplet for some other platform instead.
     """
-    platform_key_abi() = HostPlatform()
+    platform_key_abi() = PKGWASM_PLATFORM # PkgWasm (D2/D8): embedded platform
     platform_key_abi(triplet::AbstractString) = parse(Platform, triplet)
 
     """

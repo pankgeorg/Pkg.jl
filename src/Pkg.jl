@@ -69,8 +69,50 @@ function unstableio(@nospecialize(io::IO))
         get(_io, :color, false) ? Base.ImmutableDict{Symbol, Any}(:color, true) : Base.ImmutableDict{Symbol, Any}()
     )
 end
-stderr_f() = something(DEFAULT_IO[], unstableio(stderr))
-stdout_f() = something(DEFAULT_IO[], unstableio(stdout))
+
+## The stream of Pkg's output (PLAN.md D9)
+#
+# Natively the output goes where stock Pkg sends it (`DEFAULT_IO[]`, else an `IOContext{IO}`
+# of `stdout`/`stderr`: `unstableio`), and `Context.io` is any `IO`. Built for Wasm (the
+# compile-time preference `target = "wasm"` of PkgWasm, set by the build project) the
+# output stream is one concrete type, so that the code printing to it is static:
+# `IOContext{StdStream}`, a stream to `Base.stdout` or `Base.stderr` (in the Wasm world the
+# runtime types these as its host streams). `DEFAULT_IO[]` (a test override) is not
+# consulted then: the Wasm image has it sanitised to `nothing` (D8).
+
+const PKGWASM_UUID = Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
+Base.record_compiletime_preference(PKGWASM_UUID, "target")
+const TARGET = let t = get(Base.get_preferences(PKGWASM_UUID), "target", "native")
+    t in ("native", "wasm") || error("PkgWasm: invalid preference target = $(repr(t)) (\"native\" or \"wasm\")")
+    t::String
+end
+"Whether PkgWasm is built for Wasm (see `TargetIO`)."
+const WASM_TARGET = TARGET == "wasm"
+
+"""
+    StdStream(fd)
+
+`Base.stdout` (`fd = 1`) or `Base.stderr` (`fd = 2`), as the global is when written to.
+"""
+struct StdStream <: IO
+    fd::Int32
+end
+std_stream(s::StdStream) = s.fd == Int32(1) ? stdout : stderr
+Base.unsafe_write(s::StdStream, p::Ptr{UInt8}, n::UInt) = unsafe_write(std_stream(s), p, n)
+Base.write(s::StdStream, b::UInt8) = write(std_stream(s), b)
+Base.flush(s::StdStream) = flush(std_stream(s))
+Base.isopen(s::StdStream) = true
+Base.iswritable(s::StdStream) = true
+Base.displaysize(s::StdStream) = displaysize(std_stream(s))
+
+"The type of `Context.io`: any `IO` natively, `IOContext{StdStream}` built for Wasm."
+const TargetIO = WASM_TARGET ? IOContext{StdStream} : IO
+
+# (as `unstableio`: with `:color` if the stream has it)
+target_io(fd::Int32) = IOContext(StdStream(fd), :color => get(std_stream(StdStream(fd)), :color, false)::Bool)
+
+stderr_f() = WASM_TARGET ? target_io(Int32(2)) : something(DEFAULT_IO[], unstableio(stderr))
+stdout_f() = WASM_TARGET ? target_io(Int32(1)) : something(DEFAULT_IO[], unstableio(stdout))
 const PREV_ENV_PATH = Ref{String}("")
 
 usable_io(io) = (io isa Base.TTY) || (io isa IOContext{IO} && io.io isa Base.TTY)

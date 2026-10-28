@@ -544,6 +544,10 @@ function snapshot_copy(@nospecialize(v))
     v isa Vector{Int64} && return copy(v)
     v isa Vector{Float64} && return copy(v)
     v isa Vector{Bool} && return copy(v)
+    v isa Vector{Dict{String, Any}} && return Dict{String, Any}[snapshot_copy(x)::Dict{String, Any} for x in v]
+    v isa Vector{Dates.DateTime} && return copy(v)
+    v isa Vector{Dates.Date} && return copy(v)
+    v isa Vector{Dates.Time} && return copy(v)
     WASM_TARGET && error("PkgWasm: unsupported value in a project or manifest table")
     return Base.inferencebarrier(deepcopy)(v)
 end

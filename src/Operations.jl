@@ -495,7 +495,30 @@ end
 
 # drops build detail in version but keeps the main prerelease context
 # i.e. dropbuild(v"2.0.1-rc1.21321") == v"2.0.1-rc1"
-dropbuild(v::VersionNumber) = VersionNumber(v.major, v.minor, v.patch, isempty(v.prerelease) ? () : (v.prerelease[1],))
+dropbuild(v::VersionNumber) = WASM_TARGET ? dropbuild_typed(v) :
+    VersionNumber(v.major, v.minor, v.patch, isempty(v.prerelease) ? () : (v.prerelease[1],))
+
+# (e2e B15, B17) Operations on a VersionNumber's prerelease/build tuples, Tuple{Vararg{Union{
+# UInt64, String}}}, are not compiled for Wasm; these go through `string(v)`, which is
+# injective on VersionNumbers (Base rejects numeric strings and other text that would print
+# alike as identifiers): the prerelease part starts at the first `-` before any `+`, its
+# identifiers are separated by `.`, a numeric one is a UInt64.
+function dropbuild_typed(v::VersionNumber)
+    s = string(v)
+    plus = findfirst('+', s)
+    head = plus === nothing ? s : s[1:prevind(s, plus)]
+    dash = findfirst('-', head)
+    dash === nothing && return VersionNumber(v.major, v.minor, v.patch)
+    pre = head[nextind(head, dash):end]
+    dot = findfirst('.', pre)
+    ident = dot === nothing ? pre : pre[1:prevind(pre, dot)]
+    if !isempty(ident) && all(isdigit, ident)
+        return VersionNumber(v.major, v.minor, v.patch, (parse(UInt64, ident),))
+    end
+    return VersionNumber(v.major, v.minor, v.patch, (String(ident),))
+end
+# `a === b` for VersionNumbers
+version_egal(a::VersionNumber, b::VersionNumber) = WASM_TARGET ? string(a) == string(b) : a === b
 
 function get_compat_workspace(env, name)
     # Are we allowing packages with the same name and different uuids
@@ -575,7 +598,7 @@ function resolve_versions!(
 
     # Unless using the unbounded or historical resolver, always allow stdlibs to update. Helps if the previous resolve
     # happened on a different julia version / commit and the stdlib version in the manifest is not the current stdlib version
-    unbind_stdlibs = julia_version === VERSION
+    unbind_stdlibs = julia_version isa VersionNumber && version_egal(julia_version, VERSION)  # (`julia_version === VERSION`: e2e B17)
     reqs = Resolve.Requires(pkg.uuid => is_stdlib(pkg.uuid, julia_version) && unbind_stdlibs ? VersionSpec("*") : VersionSpec(pkg.version) for pkg in pkgs)
     graph, compat_map = deps_graph(env, registries, names, reqs, fixed, julia_version, installed_only)
     Resolve.simplify_graph!(graph)

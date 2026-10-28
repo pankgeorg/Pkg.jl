@@ -115,6 +115,14 @@ function printvalue(f::F, io::IO, @nospecialize(value), sorted::Bool) where {F}
         print_inline_table(f, io, value, sorted)
     elseif value isa Dict{String, String}
         print_inline_table(f, io, value, sorted)
+    elseif value isa Dict{String, UUID}
+        print_inline_table(f, io, value, sorted)
+    elseif value isa Dict{String, Vector{Dict{String, Any}}}
+        print_inline_table(f, io, value, sorted)
+    elseif value isa Dict{String, Union{String, Vector{String}}}
+        print_inline_table(f, io, value, sorted)
+    elseif value isa Dict{String, Dict{String, String}}
+        print_inline_table(f, io, value, sorted)
     elseif value isa Dict{String, Dates.DateTime}
         print_inline_table(f, io, value, sorted)
     elseif value isa Vector{Dict{String, Dates.DateTime}}
@@ -187,6 +195,14 @@ function print_subtable(f::F, io::IO, @nospecialize(value), ks::Vector{String};
     elseif value isa Dict{String, String}
         print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     elseif value isa Dict{String, Vector{String}}
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
+    elseif value isa Dict{String, UUID}  # (destructure's typed tables: e2e B18)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
+    elseif value isa Dict{String, Vector{Dict{String, Any}}}  # (destructure's typed tables: e2e B18)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
+    elseif value isa Dict{String, Union{String, Vector{String}}}  # (destructure's typed tables: e2e B18)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
+    elseif value isa Dict{String, Dict{String, String}}
         print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     elseif value isa Dict{String, Dates.DateTime}
         print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
@@ -286,6 +302,10 @@ function is_empty_table(@nospecialize(t))
     t isa Dict{String, Any} && return isempty(t)
     t isa Dict{String, String} && return isempty(t)
     t isa Dict{String, Vector{String}} && return isempty(t)
+    t isa Dict{String, UUID} && return isempty(t)
+    t isa Dict{String, Vector{Dict{String, Any}}} && return isempty(t)
+    t isa Dict{String, Union{String, Vector{String}}} && return isempty(t)
+    t isa Dict{String, Dict{String, String}} && return isempty(t)
     t isa Dict{String, Dates.DateTime} && return isempty(t)
     WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
     return Base.inferencebarrier(isempty)(t)::Bool
@@ -294,6 +314,10 @@ function all_values(p::P, @nospecialize(t)) where {P}
     t isa Dict{String, Any} && return all(p, values(t))
     t isa Dict{String, String} && return all(p, values(t))
     t isa Dict{String, Vector{String}} && return all(p, values(t))
+    t isa Dict{String, UUID} && return all(p, values(t))
+    t isa Dict{String, Vector{Dict{String, Any}}} && return all(p, values(t))
+    t isa Dict{String, Union{String, Vector{String}}} && return all(p, values(t))
+    t isa Dict{String, Dict{String, String}} && return all(p, values(t))
     t isa Dict{String, Dates.DateTime} && return all(p, values(t))
     WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
     return Base.inferencebarrier(all)(p, values(t))::Bool
@@ -302,6 +326,10 @@ function any_value(p::P, @nospecialize(t)) where {P}
     t isa Dict{String, Any} && return any(p, values(t))
     t isa Dict{String, String} && return any(p, values(t))
     t isa Dict{String, Vector{String}} && return any(p, values(t))
+    t isa Dict{String, UUID} && return any(p, values(t))
+    t isa Dict{String, Vector{Dict{String, Any}}} && return any(p, values(t))
+    t isa Dict{String, Union{String, Vector{String}}} && return any(p, values(t))
+    t isa Dict{String, Dict{String, String}} && return any(p, values(t))
     t isa Dict{String, Dates.DateTime} && return any(p, values(t))
     WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
     return Base.inferencebarrier(any)(p, values(t))::Bool

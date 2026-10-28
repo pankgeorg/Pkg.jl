@@ -46,6 +46,31 @@ function capture_error(f)
     return nothing
 end
 
+# A tiny HTTP/1.1 server: `routes(path) -> (status, body)`. Returns (base_url, server).
+import Sockets
+function serve(routes)
+    server = Sockets.listen(Sockets.localhost, 0)
+    port = Int(Sockets.getsockname(server)[2])
+    phrases = Dict(200 => "OK", 404 => "Not Found", 500 => "Internal Server Error")
+    @async while isopen(server)
+        sock = try
+            Sockets.accept(server)
+        catch
+            break
+        end
+        @async try
+            line = readline(sock)
+            while !isempty(readline(sock)) end
+            status, body = routes(String(split(line)[2]))
+            write(sock, "HTTP/1.1 $status $(phrases[status])\r\nContent-Length: $(sizeof(body))\r\nConnection: close\r\n\r\n", body)
+        catch
+        finally
+            close(sock)
+        end
+    end
+    return "http://127.0.0.1:$port", server
+end
+
 resolvedata = mktempdir()
 Pkg.PlatformEngines.unpack(joinpath(@__DIR__, "resolvedata.tar.gz"), resolvedata)
 for i in 1:4
@@ -125,11 +150,20 @@ end
                     (() -> Pkg.add(url = "https://github.com/JuliaLang/Example.jl"; io = devnull), "adding a package by URL, path or revision"),
                     (() -> Pkg.add(Pkg.PackageSpec(name = "Example", rev = "master"); io = devnull), "adding a package by URL, path or revision"),
                     (() -> Pkg.Apps.add(Pkg.PackageSpec[]), "apps"),
+                    (() -> Pkg.Apps.add(Pkg.PackageSpec(name = "Example")), "apps"),
+                    (() -> Pkg.Apps.develop(Pkg.PackageSpec(path = joinpath(dir, "missing"))), "apps"),
+                    (() -> Pkg.Apps.update(), "apps"),
+                    (() -> Pkg.Apps.update("Example"), "apps"),
+                    (() -> Pkg.Apps.rm(Pkg.PackageSpec(name = "Absent")), "apps"),
+                    (() -> Pkg.Apps.rm("Absent"), "apps"),
+                    (() -> Pkg.Apps.status(), "apps"),
+                    (() -> Pkg.Apps.precompile(), "apps"),
                 )
                 err = capture_error(f)
                 @test err isa Pkg.Types.PkgError
                 @test sprint(showerror, err) == "$op is not supported in PkgWasm"
             end
+            @test !ispath(Pkg.Apps.app_env_folder()) || isempty(readdir(Pkg.Apps.app_env_folder()))
             Pkg.activate(; io = devnull)
         end
     end
@@ -161,6 +195,138 @@ end
         end
     end
 
+    @testset "D4 build scripts: retry and prepopulated depot still fail (review-2 #1)" begin
+        mktempdir() do dir
+            Pkg.activate(dir; io = devnull)
+            Pkg.add("Example"; io = devnull)
+            src = Pkg.Operations.source_path(joinpath(dir, "Manifest.toml"), Pkg.Types.EnvCache().manifest[EXAMPLE_UUID])
+            # simulate an installed package with a build script (as left by another process)
+            chmod(src, 0o755)
+            mkpath(joinpath(src, "deps"))
+            build = joinpath(src, "deps", "build.jl")
+            write(build, "error(\"must not run\")\n")
+            try
+                is_build_error(e) = e isa Pkg.Types.PkgError && occursin("building packages is not supported in PkgWasm", e.msg) && occursin("Example", e.msg)
+                @test Pkg.Operations.is_instantiated(Pkg.Types.EnvCache()) # sources present
+                @test is_build_error(capture_error(() -> Pkg.instantiate(; io = devnull)))
+                @test is_build_error(capture_error(() -> Pkg.instantiate(; io = devnull))) # retry
+                @test is_build_error(capture_error(() -> Pkg.add("Dates"; io = devnull)))
+                @test is_build_error(capture_error(() -> Pkg.add("Dates"; io = devnull))) # retry
+                @test Pkg.pkgwasm_main(["instantiate"]) == 1
+            finally
+                rm(joinpath(src, "deps"); recursive = true)
+                Pkg.set_readonly(src)
+            end
+            @test Pkg.instantiate(; io = devnull) === nothing
+            Pkg.activate(; io = devnull)
+        end
+    end
+
+    @testset "D4 git unreachable from supported commands (review-2 #2)" begin
+        is_git_error(e) = e isa Pkg.Types.PkgError && occursin("is not supported in PkgWasm", e.msg) && startswith(e.msg, "git (")
+        # repo-tracked manifest entry whose source is missing: instantiate
+        mktempdir() do dir
+            write(joinpath(dir, "Project.toml"), "[deps]\nExample = \"$EXAMPLE_UUID\"\n")
+            write(joinpath(dir, "Manifest.toml"), """
+            julia_version = "1.13.2"
+            manifest_format = "2.0"
+
+            [[deps.Example]]
+            git-tree-sha1 = "0000000000000000000000000000000000000001"
+            repo-rev = "master"
+            repo-url = "https://github.com/JuliaLang/Example.jl.git"
+            uuid = "$EXAMPLE_UUID"
+            version = "0.5.5"
+            """)
+            Pkg.activate(dir; io = devnull)
+            @test is_git_error(capture_error(() -> Pkg.instantiate(; io = devnull)))
+            Pkg.activate(; io = devnull)
+        end
+        # server lists no registries: the default-registry install would clone General
+        base, server = serve(path -> path == "/registries" ? (200, "") : (404, ""))
+        mktempdir() do depot
+            old = copy(DEPOT_PATH)
+            copy!(DEPOT_PATH, [depot])
+            try
+                withenv("JULIA_PKG_SERVER" => base) do
+                    Pkg.activate(joinpath(depot, "env"); io = devnull)
+                    @test is_git_error(capture_error(() -> Pkg.add("Dates"; io = devnull)))
+                    @test !isdir(joinpath(depot, "registries", "General"))
+                end
+            finally
+                copy!(DEPOT_PATH, old)
+                Pkg.activate(; io = devnull)
+            end
+        end
+        close(server)
+        # an existing git registry is reported as not updatable, without touching git
+        mktempdir() do depot
+            reg = joinpath(depot, "registries", "Foo")
+            mkpath(joinpath(reg, ".git"))
+            write(joinpath(reg, "Registry.toml"), "name = \"Foo\"\nuuid = \"$(uuid4())\"\nrepo = \"https://example.invalid/Foo.git\"\n\n[packages]\n")
+            @test_logs (:error, r"updating a git registry is not supported in PkgWasm") match_mode = :any Pkg.Registry.update(; depots = [depot], io = devnull)
+        end
+        # explicit repo tracking through the Types entry points
+        ctx = Pkg.Types.Context(; io = devnull)
+        @test is_git_error(capture_error(() -> Pkg.Types.handle_repo_add!(ctx, Pkg.PackageSpec(url = "https://example.invalid/X.jl"))))
+        @test is_git_error(capture_error(() -> Pkg.GitTools.clone(devnull, "https://example.invalid/X.jl", mktempdir())))
+    end
+
+    @testset "D11 stale compressed descriptor does not hide the directory registry (review-2 #3)" begin
+        mktempdir() do depot
+            old = copy(DEPOT_PATH)
+            copy!(DEPOT_PATH, [depot])
+            try
+                regdir = joinpath(depot, "registries")
+                mkpath(regdir)
+                write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
+                @test isempty(Pkg.Registry.reachable_registries())
+                Pkg.Registry.add("General"; io = devnull)
+                regs = Pkg.Registry.reachable_registries()
+                @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
+                @test isdir(joinpath(regdir, "General")) && !ispath(joinpath(regdir, "General.toml"))
+                # a descriptor for a different registry with the same name is a conflict
+                rm(joinpath(regdir, "General"); recursive = true)
+                write(joinpath(regdir, "General.toml"), "uuid = \"$(uuid4())\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
+                err = capture_error(() -> Pkg.Registry.add("General"; io = devnull))
+                @test err isa Pkg.Types.PkgError && occursin("conflicts with the existing compressed registry descriptor", err.msg)
+            finally
+                copy!(DEPOT_PATH, old)
+            end
+        end
+    end
+
+    @testset "HTTP failure text equals stock (review-2 #4)" begin
+        base, server = serve(path -> (404, ""))
+        mktempdir() do dir
+            ef = capture_error(() -> Pkg.PlatformEngines.download("$base/missing", joinpath(dir, "f")))
+            es = capture_error(() -> Pkg.PlatformEngines.download("$base/missing", joinpath(dir, "s")))
+            @test sprint(showerror, ef) == sprint(showerror, es)
+            @test sprint(showerror, ef) == "RequestError: HTTP/1.1 404 Not Found while requesting $base/missing"
+            @test !ispath(joinpath(dir, "f"))
+        end
+        close(server)
+        # through a supported operation: the registry tarball is listed but missing
+        base, server = serve(path -> path == "/registries" ? (200, "/registry/$GENERAL_UUID/0000000000000000000000000000000000000002\n") : (404, ""))
+        msgs = map((Pkg, Pkg)) do M
+            mktempdir() do depot
+                old = copy(DEPOT_PATH)
+                copy!(DEPOT_PATH, [depot])
+                try
+                    withenv("JULIA_PKG_SERVER" => base) do
+                        e = capture_error(() -> M.Registry.add("General"; io = devnull))
+                        e isa Exception ? e.msg : repr(e)
+                    end
+                finally
+                    copy!(DEPOT_PATH, old)
+                end
+            end
+        end
+        @test msgs[1] == msgs[2]
+        @test occursin("RequestError: HTTP/1.1 404 Not Found", msgs[1])
+        close(server)
+    end
+
     @testset "D4 artifacts: single warning, source-only instantiated" begin
         mktempdir() do dir
             write(joinpath(dir, "Project.toml"), "[deps]\n")
@@ -172,6 +338,11 @@ end
             s = String(take!(out))
             @test count("artifacts of 1 package(s) were not downloaded", s) == 1
             @test Pkg.Operations.is_instantiated(ctx.env)
+            # public instantiate on an already-instantiated env still says so (review-2 #7)
+            write(joinpath(dir, "Manifest.toml"), "julia_version = \"1.13.2\"\nmanifest_format = \"2.0\"\n\n[deps]\n")
+            out = IOBuffer()
+            Pkg.instantiate(; io = out)
+            @test count("artifacts of 1 package(s) were not downloaded", String(take!(out))) == 1
             Pkg.activate(; io = devnull)
         end
     end
@@ -188,7 +359,10 @@ end
             @test err isa Pkg.Types.PkgError
             @test occursin("building packages is not supported in PkgWasm", sprint(showerror, err))
             @test occursin("HasBuild", sprint(showerror, err))
-            @test Pkg.Operations.build_versions(ctx, Set{UUID}()) === nothing
+            # the whole environment is checked, not only the newly installed set (review-2 #1)
+            @test capture_error(() -> Pkg.Operations.build_versions(ctx, Set{UUID}())) isa Pkg.Types.PkgError
+            rm(joinpath(dir, "deps"); recursive = true)
+            @test Pkg.Operations.build_versions(ctx, Set([uuid])) === nothing
             Pkg.activate(; io = devnull)
         end
     end
@@ -232,6 +406,11 @@ end
                 Pkg.instantiate(; io = devnull)
                 Pkg.resolve(; io = devnull)
                 Pkg.rm("Dates"; io = devnull)
+                # historical julia_version (review-2 #8): artifact scan must not probe stdlibs
+                push!(Pkg.Types.STDLIBS_BY_VERSION, v"1.13.1" => Pkg.Types.stdlib_infos())
+                ctx = Pkg.Types.Context(; io = devnull)
+                ctx.julia_version = v"1.13.1"
+                Pkg.Operations.download_artifacts(ctx; julia_version = ctx.julia_version)
                 isfile("/pkgwasm-marker-end")
                 """)
                 log = joinpath(dir, "strace.txt")
@@ -256,7 +435,17 @@ end
             @test !isempty(Pkg.Registry.REGISTRY_CACHE) || !isempty(Pkg.Registry.TOML_CACHE.d) || Pkg.Types.STDLIB[] !== nothing
             Pkg.DEFAULT_IO[] = devnull
             Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
+            sentinel = joinpath(dir, "sentinel.toml")
+            write(sentinel, "secret = \"build-host\"\n")
+            Pkg.Types.parse_toml(sentinel)
+            Pkg.Registry._parsefile(sentinel)
+            handler = (url, svr, err) -> error("must not run")
+            Pkg.PlatformEngines.register_auth_error_handler("https://", handler)
             Pkg.sanitize_globals!()
+            for cache in (Pkg.Types.TOML_CACHE, Pkg.Registry.TOML_CACHE)
+                @test cache.p.str == "" && cache.p.filepath === nothing && isempty(cache.p.root)
+            end
+            @test isempty(Pkg.PlatformEngines.AUTH_ERROR_HANDLERS)
             @test Pkg.DEFAULT_IO[] === nothing
             @test !Pkg.UPDATED_REGISTRY_THIS_SESSION[]
             @test isempty(Pkg.Registry.REGISTRY_CACHE) && isempty(Pkg.Registry.TOML_CACHE.d) && isempty(Pkg.Types.TOML_CACHE.d)

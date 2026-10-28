@@ -339,9 +339,20 @@ write_project(project::Project, project_file::AbstractString) =
 function write_project(io::IO, project::Dict)
     inline_tables = Any[] # (compared by identity, as an IdSet)
     if haskey(project, "sources")
-        for source in values(project["sources"])
+        # (the sources table, as destructure makes it or as parsed, told apart by type: M4.2)
+        collect_sources!(sources) = for source in values(sources)
             source isa Dict || error("Expected `sources` to be a table")
             push!(inline_tables, source)
+        end
+        sources = project["sources"]
+        if sources isa Dict{String, Dict{String, String}}
+            collect_sources!(sources)
+        elseif sources isa Dict{String, Any}
+            collect_sources!(sources)
+        elseif WASM_TARGET
+            error("PkgWasm: unsupported sources table")
+        else
+            Base.inferencebarrier(collect_sources!)(sources)
         end
     end
     TOMLWriter.print(io, project; inline_tables, sorted = true, by = key -> (project_key_order(key), key)) do x

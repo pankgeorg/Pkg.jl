@@ -274,6 +274,16 @@ struct AppInfo
     julia_flags::Vector{String}
     other::Dict{String, Any}
 end
+# `all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(T))` with each field's
+# comparison typed: in order, stopping at the first unequal one (M4.2: static dispatch)
+@generated function fields_equal(t1::T, t2::T) where {T}
+    ex = :(true)
+    for x in reverse(fieldnames(T))
+        ex = :((getfield(t1, $(QuoteNode(x))) == getfield(t2, $(QuoteNode(x))))::Bool && $ex)
+    end
+    return ex
+end
+
 Base.@kwdef mutable struct Project
     other::Dict{String, Any} = Dict{String, Any}()
     # Fields
@@ -298,7 +308,8 @@ Base.@kwdef mutable struct Project
     workspace::Dict{String, Any} = Dict{String, Any}()
     readonly::Bool = false
 end
-Base.:(==)(t1::Project, t2::Project) = all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(Project))
+# (`all(x -> getfield(t1, x) == getfield(t2, x), fieldnames(Project))`, the fields in order: M4.2)
+Base.:(==)(t1::Project, t2::Project) = fields_equal(t1, t2)
 Base.hash(t::Project, h::UInt) = foldr(hash, [getfield(t, x) for x in fieldnames(Project)], init = h)
 
 
@@ -362,7 +373,7 @@ Base.@kwdef mutable struct Manifest
     registries::Dict{String, ManifestRegistryEntry} = Dict{String, ManifestRegistryEntry}()
     other::Dict{String, Any} = Dict{String, Any}()
 end
-Base.:(==)(t1::Manifest, t2::Manifest) = all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(Manifest))
+Base.:(==)(t1::Manifest, t2::Manifest) = fields_equal(t1, t2)
 Base.hash(m::Manifest, h::UInt) = foldr(hash, [getfield(m, x) for x in fieldnames(Manifest)], init = h)
 Base.getindex(m::Manifest, i_or_key) = getindex(m.deps, i_or_key)
 Base.get(m::Manifest, key, default) = get(m.deps, key, default)
@@ -447,7 +458,13 @@ copy_version(@nospecialize(v)) = v isa VersionSpec ? copy_versionspec(v) : v
 # `deepcopy(v)` of a value of a table kept in a snapshot: by the types TOML's parser makes,
 # others (programmatic metadata) natively by `deepcopy` (built for Wasm an error)
 function snapshot_copy(@nospecialize(v))
-    v isa Dict{String, Any} && return Dict{String, Any}(k => snapshot_copy(x) for (k, x) in v)
+    if v isa Dict{String, Any}
+        d = Dict{String, Any}()
+        for (k, x) in v
+            d[k] = snapshot_copy(x)
+        end
+        return d
+    end
     v isa Union{String, Int64, Float64, Bool, Nothing, Dates.DateTime, Dates.Date, Dates.Time} && return v
     v isa Vector{Any} && return Any[snapshot_copy(x) for x in v]
     v isa Vector{String} && return copy(v)

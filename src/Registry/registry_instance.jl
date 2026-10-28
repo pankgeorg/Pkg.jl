@@ -285,10 +285,13 @@ function uncompress_registry(tar_gz::AbstractString)
     data = Dict{String, String}()
     buf = Vector{UInt8}(undef, Tar.DEFAULT_BUFFER_SIZE)
     io = IOBuffer()
-    open(`$(exe7z()) x $tar_gz -so`) do tar
-        read_tarball_simple(x -> true, tar; buf = buf) do hdr
-            Tar.read_data(tar, io; size = hdr.size, buf = buf)
-            data[hdr.path] = String(take!(io))
+    # PkgWasm (PLAN.md D2): decompressed through the Host seam, not a `zstd`/`7z` pipeline
+    with_decompressed(tar_gz) do tar_path
+        open(tar_path) do tar
+            read_tarball_simple(x -> true, tar; buf = buf) do hdr
+                Tar.read_data(tar, io; size = hdr.size, buf = buf)
+                data[hdr.path] = String(take!(io))
+            end
         end
     end
     return data

@@ -9,7 +9,7 @@
 module Host
 
 import Downloads
-import ..Pkg.PlatformEngines: exe7z
+import ..Pkg # PlatformEngines is included after Host; its helpers are looked up at call time
 
 """
     Host.Response(status, url, headers)
@@ -122,7 +122,7 @@ function decompress(src::String, dst::String)::Nothing
         rm(tmp; force = true)
         magic = open(io -> read(io, 4), src)
         cmd = if length(magic) >= 2 && magic[1] == 0x1f && magic[2] == 0x8b
-            `$(exe7z()) x -tgzip -so $src`
+            `$(Pkg.PlatformEngines.exe7z()) x -tgzip -so $src`
         else
             # Pkg 1.12 has no zstd decompressor among its dependencies (no Zstd_jll), so
             # natively only gzip is accepted, as Pkg 1.12 itself does.

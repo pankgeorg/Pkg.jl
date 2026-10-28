@@ -681,7 +681,7 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
     timestamp = now()
 
     ## Atomically write usage file using process id locking
-    FileWatching.mkpidlock(usage_file * ".pid", stale_age = 3) do
+    Pkg.mkpidlock(usage_file * ".pid", stale_age = 3) do
         usage = if isfile(usage_file)
             try
                 TOML.parsefile(usage_file)

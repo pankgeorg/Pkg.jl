@@ -324,11 +324,27 @@ function clean_forbidden!(graph::Graph, msgs::Messages)
     return affected
 end
 
+# PkgWasm (PLAN.md D3): a monotonic deadline replaces `Timer(max_time)` + `yield()`, so the
+# solver never switches tasks. The argument checks and rounding are those of `Timer(timeout)`
+# (same errors for negative/NaN/huge values); the deadline passes `timeout` (rounded up to
+# whole ms, +1 ms for a nonzero timeout, as libuv does) after construction.
+struct Deadline
+    t::UInt64 # `time_ns()` at which the deadline passes (saturating)
+end
+function Deadline(timeout::Real)
+    timeout ≥ 0 || throw(ArgumentError("timer cannot have negative timeout of $timeout seconds"))
+    timeoutms = ceil(UInt64, timeout * 1000) + !iszero(timeout)
+    ns = timeoutms > typemax(UInt64) ÷ 1_000_000 ? typemax(UInt64) : timeoutms * 1_000_000
+    now = time_ns()
+    return Deadline(ns > typemax(UInt64) - now ? typemax(UInt64) : now + ns)
+end
+expired(d::Deadline) = time_ns() >= d.t
+
 # Iterative solver: run iterate!() until convergence
 # (occasionally calling decimate())
 function maxsum(graph::Graph)
     params = MaxSumParams()
-    timer = Timer(params.max_time) # start the timeout timer
+    timer = Deadline(params.max_time) # start the timeout timer
 
     perm = NodePerm(graph.np)
     strace = SolutionTrace(graph)
@@ -366,10 +382,9 @@ struct Unsat
     p0::Int
 end
 
-function converge!(graph::Graph, msgs::Messages, strace::SolutionTrace, perm::NodePerm, params::MaxSumParams, timer::Timer)
-    # check for time out (we need to yield first to give the timer a chance to update)
-    yield()
-    isopen(timer) || return :timedout
+function converge!(graph::Graph, msgs::Messages, strace::SolutionTrace, perm::NodePerm, params::MaxSumParams, timer::Deadline)
+    # check for time out
+    expired(timer) && return :timedout
 
     is_best_sofar = update_solution!(strace, graph)
 

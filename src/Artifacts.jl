@@ -5,7 +5,7 @@ using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 using FileWatching: FileWatching
 
-import ..set_readonly, ..mkpidlock, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..mkpidlock, ..PKGWASM_PLATFORM, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle, ..mv_temp_dir_retries, ..atomic_toml_write, ..create_cachedir_tag
 
 import Base: get, SHA1
@@ -431,7 +431,7 @@ end
 
 """
     ensure_artifact_installed(name::String, artifacts_toml::String;
-                                platform::AbstractPlatform = HostPlatform(),
+                                platform::AbstractPlatform = PKGWASM_PLATFORM,
                                 pkg_uuid::Union{Base.UUID,Nothing}=nothing,
                                 verbose::Bool = false,
                                 quiet_download::Bool = false,
@@ -442,7 +442,7 @@ Ensures an artifact is installed, downloading it via the download information st
 """
 function ensure_artifact_installed(
         name::String, artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = PKGWASM_PLATFORM,
         pkg_uuid::Union{Base.UUID, Nothing} = nothing,
         pkg_server_eligible::Bool = true,
         verbose::Bool = false,
@@ -464,7 +464,7 @@ end
 function ensure_artifact_installed(
         name::String, meta::Dict, artifacts_toml::String;
         pkg_server_eligible::Bool = true,
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = PKGWASM_PLATFORM,
         verbose::Bool = false,
         quiet_download::Bool = false,
         progress::Union{Function, Nothing} = nothing,
@@ -486,7 +486,7 @@ end
 function try_artifact_download_sources(
         name::String, hash::SHA1, meta::Dict, artifacts_toml::String;
         pkg_server_eligible::Bool = true,
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = PKGWASM_PLATFORM,
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
@@ -574,7 +574,7 @@ end
 
 """
     ensure_all_artifacts_installed(artifacts_toml::String;
-                                    platform = HostPlatform(),
+                                    platform = PKGWASM_PLATFORM,
                                     pkg_uuid = nothing,
                                     include_lazy = false,
                                     verbose = false,
@@ -599,7 +599,7 @@ This function is deprecated and should be replaced with the following snippet:
 """
 function ensure_all_artifacts_installed(
         artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = PKGWASM_PLATFORM,
         pkg_uuid::Union{Nothing, Base.UUID} = nothing,
         include_lazy::Bool = false,
         verbose::Bool = false,
@@ -622,7 +622,7 @@ end
 
 """
     extract_all_hashes(artifacts_toml::String;
-                        platform = HostPlatform(),
+                        platform = PKGWASM_PLATFORM,
                         pkg_uuid = nothing,
                         include_lazy = false)
 
@@ -633,7 +633,7 @@ If `include_lazy` is set to `true`, then lazy packages will be installed as well
 """
 function extract_all_hashes(
         artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = PKGWASM_PLATFORM,
         pkg_uuid::Union{Nothing, Base.UUID} = nothing,
         include_lazy::Bool = false
     )

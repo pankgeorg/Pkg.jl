@@ -128,6 +128,29 @@ end
         @test Pkg.Resolve.expired(d)
     end
 
+    @testset "D2/D8 embedded platform (pkg-trim relay)" begin
+        frozen_file = joinpath(@__DIR__, "..", "..", "..", "fixtures", "frozen.toml") # wt/<lane>/test -> wasm-pkg/fixtures
+        if isfile(frozen_file)
+            @test Pkg.PKGWASM_PLATFORM_TRIPLET == Pkg.TOML.parsefile(frozen_file)["platform_triplet"]
+        else
+            @test_skip "fixtures/frozen.toml not found next to this checkout"
+        end
+        @test Base.BinaryPlatforms.triplet(Pkg.PKGWASM_PLATFORM) == Pkg.PKGWASM_PLATFORM_TRIPLET
+        # natively on the frozen build host the embedded platform is the host platform
+        # (`==` also compares HostPlatform's compare strategies, so compare triplets)
+        @test Base.BinaryPlatforms.triplet(Pkg.PKGWASM_PLATFORM) == Base.BinaryPlatforms.triplet(Base.BinaryPlatforms.HostPlatform())
+        @test Base.BinaryPlatforms.platforms_match(Pkg.PKGWASM_PLATFORM, Base.BinaryPlatforms.HostPlatform())
+        @test Pkg.BinaryPlatformsCompat.platform_key_abi() === Pkg.PKGWASM_PLATFORM
+        hdrs = Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
+        @test hdrs["Julia-System"] == Pkg.PKGWASM_PLATFORM_TRIPLET
+        @test hdrs == Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
+        code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")
+        for file in ("API.jl", "Operations.jl", "PlatformEngines.jl", "Artifacts.jl")
+            @test !occursin("HostPlatform()", code(file))
+        end
+        @test !occursin("get_archive_url_for_version(repo_url", code("Operations.jl"))
+    end
+
     @testset "D3 no tasks on supported paths" begin
         @test Pkg.mkpidlock(() -> 42, "/nonexistent/x.pid"; stale_age = 3) == 42
         code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")

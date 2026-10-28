@@ -234,18 +234,21 @@ end
     if project.entryfile === nothing
         project.entryfile = get(raw, "entryfile", nothing)::Union{String, Nothing}
     end
-    project.uuid = read_project_uuid(get(raw, "uuid", nothing))
-    project.version = read_project_version(get(raw, "version", nothing))
-    project.deps = read_project_deps(get(raw, "deps", nothing), "deps")
-    project.weakdeps = read_project_deps(get(raw, "weakdeps", nothing), "weakdeps")
-    project.exts = get(Dict{String, String}, raw, "extensions")
-    project.sources = read_project_sources(get(raw, "sources", nothing), project)
-    project.extras = read_project_deps(get(raw, "extras", nothing), "extras")
-    project.compat = read_project_compat(get(raw, "compat", nothing), project; file)
-    project.compat_overrides = read_project_compat(get(raw, "compat-overrides", nothing), project; file)
-    project.targets = read_project_targets(get(raw, "targets", nothing), project)
-    project.workspace = read_project_workspace(get(raw, "workspace", nothing), project)
-    project.apps = read_project_apps(get(raw, "apps", nothing), project)
+    project.uuid = with_toml_type(read_project_uuid, get(raw, "uuid", nothing))
+    project.version = with_toml_type(read_project_version, get(raw, "version", nothing))
+    project.deps = with_toml_type(x -> read_project_deps(x, "deps"), get(raw, "deps", nothing))
+    project.weakdeps = with_toml_type(x -> read_project_deps(x, "weakdeps"), get(raw, "weakdeps", nothing))
+    # (as `get(Dict{String, String}, raw, "extensions")`, converted to the field's type)
+    exts = get(raw, "extensions", nothing)
+    project.exts = exts === nothing ? Dict{String, String}() :
+        with_toml_type(x -> convert(Dict{String, Union{Vector{String}, String}}, x), exts)
+    project.sources = with_toml_type(x -> read_project_sources(x, project), get(raw, "sources", nothing))
+    project.extras = with_toml_type(x -> read_project_deps(x, "extras"), get(raw, "extras", nothing))
+    project.compat = with_toml_type(x -> read_project_compat(x, project; file), get(raw, "compat", nothing))
+    project.compat_overrides = with_toml_type(x -> read_project_compat(x, project; file), get(raw, "compat-overrides", nothing))
+    project.targets = with_toml_type(x -> read_project_targets(x, project), get(raw, "targets", nothing))
+    project.workspace = with_toml_type(x -> read_project_workspace(x, project), get(raw, "workspace", nothing))
+    project.apps = with_toml_type(x -> read_project_apps(x, project), get(raw, "apps", nothing))
     project.readonly = get(raw, "readonly", false)::Bool
     syntax = get(raw, "syntax", nothing)::Union{Dict, Nothing}
     project.julia_syntax_version = syntax === nothing ? nothing : read_project_version(get(syntax, "julia_version", nothing))
@@ -358,14 +361,28 @@ end
 write_project(project::Project, project_file::AbstractString) =
     write_project(destructure(project), project_file; comments = project.comments)
 function write_project(io::IO, project::Dict; comments::Union{TOML.Comments, Nothing} = nothing)
-    inline_tables = Base.IdSet{Dict}()
+    inline_tables = Any[] # (compared by identity, as an IdSet)
     if haskey(project, "sources")
         for source in values(project["sources"])
             source isa Dict || error("Expected `sources` to be a table")
             push!(inline_tables, source)
         end
     end
-    TOML.print(io, project; inline_tables, sorted = true, by = key -> (project_key_order(key), key), comments) do x
+    # PkgWasm (port to master): TOMLWriter does not print comments. A project file with
+    # comments is printed by TOML.print natively, as stock; built for Wasm it is an error.
+    if comments !== nothing && !isempty(comments)
+        WASM_TARGET && error("PkgWasm built for Wasm: a Project.toml with comments cannot be rewritten yet (the Wasm TOML writer does not print comments); remove the comments or use stock Pkg")
+        return write_project_with_comments(io, project, inline_tables, comments)
+    end
+    TOMLWriter.print(io, project; inline_tables, sorted = true, by = key -> (project_key_order(key), key)) do x
+        x isa UUID || x isa VersionNumber || pkgerror("unhandled type `$(typeof(x))`")
+        return string(x)
+    end
+    return nothing
+end
+# (stock's printing of a project file with comments)
+function write_project_with_comments(io::IO, project::Dict, inline_tables::Vector{Any}, comments::TOML.Comments)
+    TOML.print(io, project; inline_tables = Base.IdSet{Dict}(inline_tables), sorted = true, by = key -> (project_key_order(key), key), comments) do x
         x isa UUID || x isa VersionNumber || pkgerror("unhandled type `$(typeof(x))`")
         return string(x)
     end

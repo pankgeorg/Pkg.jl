@@ -184,7 +184,7 @@ The `kws` are passed to `TOML.print`.
 """
 function atomic_toml_write(path::String, data; private::Bool = false, kws...)
     io = IOBuffer()
-    TOML.print(io, data; kws...)
+    TOMLWriter.print(io, data; kws...)
     mode = if private
         UInt(0o600)
     elseif isfile(path)
@@ -245,3 +245,44 @@ manifest_rel_path(env, path::String) = normpath(joinpath(dirname(env.manifest_fi
 # just return `f()`. This is the only lock implementation the fork uses; FileWatching is not
 # reached from supported paths.
 mkpidlock(f::Function, ::AbstractString; kwargs...) = f()
+
+"""
+    with_toml_type(f, x)
+
+`f(x)`, with `x` (a value from a parsed TOML table, or `nothing`) narrowed to the
+concrete types TOML's parser makes (PLAN.md M4.2): the method of `f` is chosen statically.
+Other types are an error built for Wasm, and a dynamic call natively.
+"""
+function with_toml_type(f::F, @nospecialize(x)) where {F}
+    x === nothing && return f(nothing)
+    x isa String && return f(x)
+    x isa Dict{String, Any} && return f(x)
+    x isa Bool && return f(x)
+    x isa Int64 && return f(x)
+    x isa Float64 && return f(x)
+    x isa Vector{Any} && return f(x)
+    x isa Vector{String} && return f(x)
+    x isa Vector{Int64} && return f(x)
+    x isa Vector{Float64} && return f(x)
+    x isa Vector{Bool} && return f(x)
+    x isa Dates.DateTime && return f(x)
+    x isa Dates.Date && return f(x)
+    x isa Dates.Time && return f(x)
+    WASM_TARGET && error("PkgWasm: unsupported TOML value type")
+    return Base.inferencebarrier(f)(x)
+end
+
+"`f(x)` for a TOML table `x` (a `Dict{String, Any}`); other values as `with_toml_type`."
+function with_toml_dict(f::F, @nospecialize(x)) where {F}
+    x isa Dict{String, Any} && return f(x)
+    WASM_TARGET && error("PkgWasm: expected a TOML table")
+    return Base.inferencebarrier(f)(x)
+end
+
+"`Float64(x)` for a number `x` from a TOML table."
+function toml_float(@nospecialize(x))
+    x isa Float64 && return x
+    x isa Int64 && return Float64(x)
+    WASM_TARGET && error("PkgWasm: expected a TOML number")
+    return Base.inferencebarrier(Float64)(x)::Float64
+end

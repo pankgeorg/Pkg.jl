@@ -21,8 +21,9 @@ mutable struct ResolveLogEntry
     journal::ResolveJournal # shared with all other entries
     pkg::UUID
     header::String
-    events::Vector{Tuple{Any, String}} # here Any should ideally be Union{ResolveLogEntry,Nothing}
-    ResolveLogEntry(journal::ResolveJournal, pkg::UUID, header::String = "") = new(journal, pkg, header, [])
+    events::Vector{Tuple{Union{ResolveLogEntry, Nothing}, String}}
+    ResolveLogEntry(journal::ResolveJournal, pkg::UUID, header::String = "") =
+        new(journal, pkg, header, Tuple{Union{ResolveLogEntry, Nothing}, String}[])
 end
 
 function Base.push!(entry::ResolveLogEntry, reason::Tuple{Union{ResolveLogEntry, Nothing}, String}, to_journal::Bool = true)

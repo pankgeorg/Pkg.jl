@@ -507,7 +507,7 @@ function load_registry_cache(path::AbstractString, tree_hash::SHA1)
         end
     catch err
         err isa InterruptException && rethrow()
-        @debug "Failed to read registry cache" path exception = (err, catch_backtrace())
+        @pkg_debug "Failed to read registry cache" path exception = (err, catch_backtrace())
         return nothing
     end
     length(data) >= CACHE_HEADER_SIZE || return nothing
@@ -600,7 +600,7 @@ function build_registry_cache(compressed_tar::AbstractString, tree_hash::SHA1, c
             Base.rm(f; force = true)
         catch err
             err isa InterruptException && rethrow()
-            @debug "Failed to remove stale registry cache" f exception = (err, catch_backtrace())
+            @pkg_debug "Failed to remove stale registry cache" f exception = (err, catch_backtrace())
         end
     end
     return
@@ -618,7 +618,7 @@ function remove_registry_cache(compressed_tar::AbstractString)
         isempty(readdir(cache_dir)) && Base.rm(cache_dir)
     catch err
         err isa InterruptException && rethrow()
-        @debug "Failed to remove registry cache" cache_dir exception = (err, catch_backtrace())
+        @pkg_debug "Failed to remove registry cache" cache_dir exception = (err, catch_backtrace())
     end
     return
 end
@@ -648,7 +648,7 @@ function load_or_build_registry_cache(compressed_tar::AbstractString, tree_hash:
         err isa InterruptException && rethrow()
         # Another process may have built the cache in the meantime; that one is as good as ours
         cache = load_registry_cache(cache_path, tree_hash)
-        cache === nothing && @debug "Failed to build registry cache" cache_path exception = (err, catch_backtrace())
+        cache === nothing && @pkg_debug "Failed to build registry cache" cache_path exception = (err, catch_backtrace())
         return cache
     end
     return cache
@@ -939,18 +939,18 @@ end
 function verify_compressed_registry_toml(path::String)
     d = TOML.tryparsefile(path)
     if d isa TOML.ParserError
-        @warn "Failed to parse registry TOML file at $(repr(path))" exception = d
+        @pkg_warn "Failed to parse registry TOML file at $(repr(path))" exception = d
         return false
     end
     for key in ("git-tree-sha1", "uuid", "path")
         if !haskey(d, key)
-            @warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
+            @pkg_warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
             return false
         end
     end
     compressed_file = joinpath(dirname(path), d["path"]::String)
     if !isfile(compressed_file)
-        @warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
+        @pkg_warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
         return false
     end
     return true

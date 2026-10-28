@@ -429,7 +429,7 @@ function parse_package_identifier(pkg_id::PackageIdentifier; add_or_develop = fa
         # `add Test` does not hint about a `test` folder on case-insensitive filesystems (#4527)
         if occursin(name_re, word) && isdir(expanduser(word)) && word in readdir() &&
                 Types.projectfile_path(word; strict = true) !== nothing
-            @info "Use `./$word` to add or develop the local directory at `$(Base.contractuser(abspath(word)))`."
+            @pkg_info "Use `./$word` to add or develop the local directory at `$(Base.contractuser(abspath(word)))`."
         end
         if isurl(word)
             return PackageSpec(; url = word)

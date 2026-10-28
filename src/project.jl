@@ -55,7 +55,7 @@ function read_project_deps(raw::Dict{String, Any}, section_name::String)
     deps = Dict{String, UUID}()
     for (name, uuid) in raw
         try
-            uuid = UUID(uuid)
+            uuid = toml_uuid(uuid)
         catch err
             err isa ArgumentError || rethrow()
             pkgerror("Malformed value for `$name` in `$(section_name)` section.")
@@ -94,12 +94,12 @@ function read_project_apps(raw::Dict{String, Any}, project::Project)
                 Expected value for app `$name` to be a dictionary.
             """
         )
-        submodule = get(info, "submodule", nothing)
+        submodule = toml_string_or_nothing(get(info, "submodule", nothing))
         julia_flags_raw = get(info, "julia_flags", nothing)
         julia_flags = if julia_flags_raw === nothing
             String[]
         elseif julia_flags_raw isa Vector
-            String[flag::String for flag in julia_flags_raw]
+            toml_strings(julia_flags_raw)
         else
             pkgerror("Expected `julia_flags` for app `$name` to be an array of strings")
         end
@@ -133,13 +133,16 @@ function read_project_sources(raw::Dict{String, Any}, project::Project)
         if !(source isa AbstractDict)
             pkgerror("Expected `source` section to be a table")
         end
-        for key in keys(source)
-            key in valid_keys || pkgerror("Invalid key `$key` in `source` section")
-        end
-        if haskey(source, "path") && (haskey(source, "url") || haskey(source, "rev"))
-            pkgerror("Both `path` and `url` or `rev` are specified in `source` section")
-        end
-        sources[name] = source
+        # (the table, told apart as a parsed TOML table: M4.2)
+        sources[name] = with_toml_dict(source) do source
+            for key in keys(source)
+                key in valid_keys || pkgerror("Invalid key `$key` in `source` section")
+            end
+            if haskey(source, "path") && (haskey(source, "url") || haskey(source, "rev"))
+                pkgerror("Both `path` and `url` or `rev` are specified in `source` section")
+            end
+            convert(Dict{String, String}, source)
+        end::Dict{String, String}
     end
     return sources
 end
@@ -149,7 +152,8 @@ function read_project_workspace(raw::Dict, project::Project)
     workspace_table = Dict{String, Any}()
     for (key, val) in raw
         if key == "projects"
-            for path in val
+            # (`for path in val`, over the parsed value's type: M4.2)
+            toml_foreach(val) do path
                 path isa String || pkgerror("Expected entry in `projects` to be strings")
             end
         else

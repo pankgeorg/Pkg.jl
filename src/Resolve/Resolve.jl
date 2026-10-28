@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Resolve
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using ..Versions
 using ..Registry
@@ -293,11 +294,11 @@ function verify_solution(sol::Vector{Int}, graph::Graph)
     # verify constraints and dependencies
     for p0 in 1:np
         s0 = sol[p0]
-        gconstr[p0][s0] || (@warn("gconstr[$p0][$s0] fail"); return false)
+        gconstr[p0][s0] || (@pkg_warn("gconstr[$p0][$s0] fail"); return false)
         for (j1, p1) in enumerate(gadj[p0])
             msk = gmsk[p0][j1]
             s1 = sol[p1]
-            msk[s1, s0] || (@warn("gmsk[$p0][$p1][$s1,$s0] fail"); return false)
+            msk[s1, s0] || (@pkg_warn("gmsk[$p0][$p1][$s1,$s0] fail"); return false)
         end
     end
     return true

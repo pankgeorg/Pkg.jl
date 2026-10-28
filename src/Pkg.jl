@@ -160,8 +160,10 @@ end
 Check if we're currently executing in REPL mode. This is used to determine
 whether to show tips in REPL format (`pkg> add Foo`) or API format (`Pkg.add("Foo")`).
 """
-in_repl_mode() = @something(Base.ScopedValues.get(IN_REPL_MODE), false)
+# (built for Wasm there is no REPL mode: M4.2, no scoped value read)
+in_repl_mode() = WASM_TARGET ? false : @something(Base.ScopedValues.get(IN_REPL_MODE), false)
 
+include("logging.jl")
 include("toml_writer.jl")
 include("utils.jl")
 include("stdlib_data.jl")
@@ -1128,7 +1130,7 @@ end
 ################
 
 function installed()
-    @warn "`Pkg.installed()` is deprecated. Use `Pkg.dependencies()` instead." maxlog = 1
+    @pkg_warn "`Pkg.installed()` is deprecated. Use `Pkg.dependencies()` instead." maxlog = 1
     deps = dependencies()
     installs = Dict{String, VersionNumber}()
     for (uuid, dep) in deps
@@ -1140,7 +1142,7 @@ function installed()
 end
 
 function dir(pkg::String, paths::AbstractString...)
-    @warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
+    @pkg_warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
     pkgid = Base.identify_package(pkg)
     pkgid === nothing && return nothing
     path = Base.locate_package(pkgid)

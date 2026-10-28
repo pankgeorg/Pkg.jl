@@ -236,6 +236,39 @@ registry_read_from_tarball() =
 # checked against the hash in the server URL with `Tar.tree_hash`, and then it is extracted
 # with `Tar.extract` into the empty directory `dir`. Registry identity is recorded by the
 # caller in `.tree_info.toml`, as stock Pkg does for unpacked registries.
+# PkgWasm (D11): when a registry is installed as the directory `regdir/<name>`, a same-name
+# compressed-registry descriptor `regdir/<name>.toml` would hide it in `reachable_registries`
+# (which prefers descriptors). Installation is only reached when no registry with this UUID
+# is reachable, so such a descriptor is stale (e.g. its archive is missing): remove it and the
+# archive it names. A descriptor naming a different UUID is a conflict, reported like the
+# stock directory conflict.
+function remove_stale_registry_descriptor(regdir::String, registry)
+    desc = joinpath(regdir, registry.name * ".toml")
+    isfile(desc) || return nothing
+    d = try
+        TOML.parsefile(desc)
+    catch
+        nothing
+    end
+    if d isa Dict{String, Any}
+        uuid = get(d, "uuid", nothing)
+        other = uuid isa String ? tryparse(UUID, uuid) : nothing
+        if other !== nothing && other != registry.uuid
+            Pkg.Types.pkgerror(
+                "registry `$(registry.name)=\"$(registry.uuid)\"` conflicts with the existing compressed registry ",
+                "descriptor `$(Base.contractuser(desc))` for uuid $other."
+            )
+        end
+        archive = get(d, "path", nothing)
+        # only a plain file name next to the descriptor, as stock writes it
+        if archive isa String && !isempty(archive) && basename(archive) == archive
+            Base.rm(joinpath(regdir, archive); force = true)
+        end
+    end
+    Base.rm(desc; force = true)
+    return nothing
+end
+
 function download_registry_dir(url::String, hash::Base.SHA1, dir::String)
     tarball = tempname()
     try
@@ -412,6 +445,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         end
                     elseif (url !== nothing && registry_use_pkg_server()) || reg.linked !== true
                         # if the dir doesn't exist, or exists but doesn't contain a Registry.toml
+                        remove_stale_registry_descriptor(regdir, registry) # PkgWasm (D11)
                         mv(tmp, regpath, force = true)
                         registry_update_log[string(reg.uuid)] = now()
                         printpkgstyle(io, :Added, "registry `$(registry.name)` to `$(Base.contractuser(regpath))`")
@@ -652,6 +686,11 @@ end
                     end
                 end
             elseif isdir(joinpath(reg.path, ".git"))
+                # PkgWasm (PLAN.md D4): no git. Reported through the same `errors`
+                # list stock uses for registries it cannot update; the stock git
+                # update below is unreachable.
+                push!(errors, (regpath, "updating a git registry is not supported in PkgWasm"))
+                return
                 printpkgstyle(io, :Updating, "registry at " * regpath)
                 if reg.name == "General" &&
                         Base.get_bool_env("JULIA_PKG_GEN_REG_FMT_CHECK", true) &&

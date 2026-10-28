@@ -956,6 +956,7 @@ function error_if_in_sysimage(pkg::PackageSpec)
 end
 
 function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
+    GitTools.git_unsupported("develop of $(something(pkg.repo.source, pkg.name, "a repository"))") # PkgWasm (D4)
     # First, check if we can compute the path easily (which requires a given local path or name)
     is_local_path = pkg.repo.source !== nothing && !isurl(pkg.repo.source)
     # Preserve whether the original source was an absolute path - needed later to decide how to store the path
@@ -1115,6 +1116,7 @@ end
 
 
 function handle_repo_add!(ctx::Context, pkg::PackageSpec)
+    GitTools.git_unsupported("tracking repository $(something(pkg.repo.source, pkg.name, "?"))") # PkgWasm (D4)
     # The first goal is to populate pkg.repo.source if that wasn't given explicitly
     if pkg.repo.source === nothing
         @assert pkg.repo.rev !== nothing

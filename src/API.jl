@@ -1557,6 +1557,10 @@ function instantiate(
     end
     # check if all source code and artifacts are downloaded to exit early
     if Operations.is_instantiated(ctx.env, workspace; platform)
+        # PkgWasm (PLAN.md D4): with nothing to install, still report the source-only artifact
+        # omission and reject build scripts, as the full path below does
+        Operations.download_artifacts(ctx; platform, julia_version = ctx.julia_version)
+        allow_build && Operations.build_versions(ctx, Set{UUID}(); verbose)
         allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
         return
     end

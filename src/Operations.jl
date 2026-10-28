@@ -2050,7 +2050,9 @@ function download_artifacts(
     for (uuid, _) in env.manifest
         uuid in pkg_uuids || continue
         entry = manifest_info(env.manifest, uuid)
-        stdlib_source_data(entry, julia_version) === nothing || continue # D10: no stdlib probes
+        # D10: a stdlib (of the requested julia_version, current or historical) is never
+        # looked up in the Julia install
+        entry.tree_hash === nothing && entry.path === nothing && is_or_was_stdlib(uuid, julia_version) && continue
         pkg_root = source_path(env.manifest_file, entry, julia_version)
         pkg_root !== nothing && has_artifacts_toml(pkg_root) && (n += 1)
     end
@@ -2486,7 +2488,37 @@ function print_lazy_note(io::IO)
     return printpkgstyle(io, :Info, "Run `$cmd` to finish installing.", color = Base.info_color())
 end
 
+# PkgWasm (PLAN.md D4): builds need a Julia subprocess, so an environment containing a
+# package (or a project) with a `deps/build.jl` makes add/instantiate fail, whether or not
+# its sources were downloaded by this operation, so a retry fails the same way. `uuids` (the
+# stock "newly installed" set) is therefore not used. Packages without one are unaffected.
 function build_versions(ctx::Context, uuids::Set{UUID}; verbose = false, allow_reresolve::Bool = true)
+    names = packages_with_build_scripts(ctx)
+    isempty(names) && return nothing
+    pkgerror("building packages is not supported in PkgWasm; these packages have a `deps/build.jl`: ", join(names, ", "))
+end
+
+# Names of the project (if it is a package) and the manifest packages whose installed sources
+# have a `deps/build.jl`, sorted. Stdlibs are skipped without touching the filesystem (D10);
+# packages whose sources are not installed are skipped.
+function packages_with_build_scripts(ctx::Context)
+    env = ctx.env
+    names = String[]
+    if env.pkg !== nothing && ispath(buildfile(dirname(env.project_file)))
+        push!(names, env.pkg.name)
+    end
+    for (uuid, entry) in env.manifest
+        Types.is_project_uuid(env, uuid) && continue
+        entry.tree_hash === nothing && entry.path === nothing && is_or_was_stdlib(uuid, ctx.julia_version) && continue
+        path = source_path(env.manifest_file, entry, ctx.julia_version)
+        path === nothing && continue
+        ispath(buildfile(path)) && push!(names, entry.name)
+    end
+    return sort!(unique!(names))
+end
+
+# The stock implementation, kept for reference; not called by PkgWasm.
+function _stock_build_versions(ctx::Context, uuids::Set{UUID}; verbose = false, allow_reresolve::Bool = true)
     # collect builds for UUIDs with `deps/build.jl` files
     builds = Tuple{UUID, String, String, VersionNumber}[]
     for uuid in uuids
@@ -2510,12 +2542,6 @@ function build_versions(ctx::Context, uuids::Set{UUID}; verbose = false, allow_r
         ispath(path) || error("Build path for $name does not exist: $path")
         ispath(buildfile(path)) && push!(builds, (uuid, name, path, version))
     end
-    # PkgWasm (PLAN.md D4): builds need a Julia subprocess, so a package with a
-    # `deps/build.jl` makes add/instantiate fail. Packages without one are unaffected. The stock
-    # build code below is unreachable (pkgerror never returns), so no Cmd enters the closed world.
-    isempty(builds) && return nothing
-    names = join(sort!([build[2] for build in builds]), ", ")
-    pkgerror("building packages is not supported in PkgWasm; these packages have a `deps/build.jl`: ", names)
     # toposort builds by dependencies
     build_uuids = UUID[first(build) for build in builds]
     cycles = Vector{UUID}[]
@@ -3072,7 +3098,10 @@ function add(
         record_project_hash(ctx.env, ctx.julia_version)
         write_env(ctx.env)
         show_update(ctx.env, ctx.registries; io = ctx.io)
-        build_versions(ctx, new_apply)
+        # PkgWasm (PLAN.md D4): same source-only artifact report and build-script rejection
+        # as the resolving path, so retrying an add cannot turn its failure into success
+        download_artifacts(ctx, platform = platform, julia_version = ctx.julia_version)
+        build_versions(ctx, Set{UUID}())
 
         return
     end

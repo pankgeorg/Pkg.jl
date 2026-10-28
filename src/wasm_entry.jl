@@ -31,8 +31,12 @@ function sanitize_globals!()
     _auto_gc_enabled[] = true
     Types.STDLIB[] = nothing # rebuilt lazily from the embedded STDLIB_DATA (D10) ...
     empty!(Types.UPGRADABLE_STDLIBS_UUIDS) # ... which also refills this set
-    empty!(Types.TOML_CACHE.d)
-    empty!(Registry.TOML_CACHE.d)
+    for cache in (Types.TOML_CACHE, Registry.TOML_CACHE)
+        empty!(cache.d)
+        # the reusable parser keeps the last input text, its parse tree and file path
+        Base.TOML.reinit!(cache.p, ""; filepath = nothing)
+    end
+    empty!(PlatformEngines.AUTH_ERROR_HANDLERS)
     empty!(Registry.REGISTRY_CACHE)
     empty!(API.undo_entries)
     API.saved_initial_snapshot[] = false

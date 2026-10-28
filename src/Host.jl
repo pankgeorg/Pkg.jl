@@ -77,6 +77,17 @@ function native_downloader()
 end
 
 """
+    Host.init_runtime() -> nothing
+
+Initialise Base's runtime globals for this session (ARGS, DEPOT_PATH, LOAD_PATH, the active
+project, cwd, homedir, tempdir, ENV, the RNG seed), as Julia's own startup does natively.
+`pkgwasm_init` calls it first, before any PkgWasm global is initialised. Natively Julia has
+already done this, so it does nothing; in the Wasm build the patch calls the WasmCodegen
+runtime's `init_base_globals!()` (ABI v3 §6 step 6).
+"""
+init_runtime()::Nothing = nothing
+
+"""
     Host.platform() -> Base.BinaryPlatforms.Platform
 
 The platform of the machine PkgWasm runs on (PLAN.md D13): natively `HostPlatform()`; in the
@@ -107,7 +118,9 @@ function download(url::String, dest::String, headers::Vector{Pair{String, String
             rm(tmp; force = true)
             rm(dest; force = true)
         else
-            mv(tmp, dest; force = true)
+            # one rename: an atomic replace or an error with the previous `dest` kept (`mv` with
+            # `force` deletes `dest` first and may fall back to copying)
+            Base.rename(tmp, dest)
         end
         return Response(resp.status, resp.url, Pair{String, String}[String(k) => String(v) for (k, v) in resp.headers])
     catch err
@@ -140,7 +153,7 @@ function decompress(src::String, dst::String)::Nothing
         if !success(pipeline(cmd; stdout = tmp, stderr = err))
             throw(HostError(WASI_EIO, "$what: " * strip(String(take!(err)))))
         end
-        mv(tmp, dst; force = true)
+        Base.rename(tmp, dst) # one rename, as in `download`
     catch err
         cleanup!(tmp, err, what)
     end

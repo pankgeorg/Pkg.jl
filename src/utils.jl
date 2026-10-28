@@ -187,13 +187,14 @@ function atomic_toml_write(path::String, data; private::Bool = false, kws...)
     dir = dirname(path)
     isempty(dir) && (dir = pwd())
 
-    mode = if private
+    # (one concrete type for the closure below, -1 for none: M4.2, e2e B10)
+    mode::Int = if private
         0o600
     elseif isfile(path)
         # Keep the permissions of an existing file, like `open(path, "w")` would
-        filemode(path) & 0o777
+        Int(filemode(path) & 0o777)
     else
-        nothing
+        -1
     end
 
     # The temp dir is next to the destination so that the move is an atomic rename. `mktemp`
@@ -203,7 +204,7 @@ function atomic_toml_write(path::String, data; private::Bool = false, kws...)
         open(temp_path, "w") do temp_io
             TOMLWriter.print(temp_io, data; kws...)
         end
-        if mode !== nothing
+        if mode != -1
             chmod(temp_path, mode)
         end
         mv(temp_path, path; force = true)

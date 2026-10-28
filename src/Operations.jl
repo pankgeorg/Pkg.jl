@@ -1552,7 +1552,8 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                 end
                 return (pkg, success, (urls, path))
             catch err
-                return (pkg, err, catch_backtrace())
+                # (built for Wasm no backtraces: the error is reported without one, M4.2 G3)
+                return (pkg, err, WASM_TARGET ? nothing : catch_backtrace())
             end
         end
     end
@@ -1568,6 +1569,7 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
             pkg::eltype(pkgs), exc_or_success_or_nothing, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
             if exc_or_success_or_nothing isa Exception
                 exc = exc_or_success_or_nothing
+                WASM_TARGET && pkgerror("Error when installing package $(pkg.name):\n", sprint(Pkg.showerror_known, exc))
                 pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
             end
             if exc_or_success_or_nothing === nothing

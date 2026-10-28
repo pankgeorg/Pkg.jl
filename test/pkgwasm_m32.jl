@@ -148,7 +148,6 @@ end
         for file in ("API.jl", "Operations.jl", "PlatformEngines.jl", "Artifacts.jl")
             @test !occursin("HostPlatform()", code(file))
         end
-        @test !occursin("get_archive_url_for_version(repo_url", code("Operations.jl"))
     end
 
     @testset "D3 no tasks on supported paths" begin

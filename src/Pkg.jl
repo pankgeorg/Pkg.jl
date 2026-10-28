@@ -20,12 +20,18 @@ export Registry, RegistrySpec, Apps
 public activate, add, build, compat, develop, free, gc, generate, instantiate,
     pin, precompile, redo, rm, resolve, status, test, undo, update, why
 
-# PkgWasm (PLAN.md D2/D8, embedded): the platform PkgWasm acts for, fixed at build time instead
-# of probing the running host with `HostPlatform()` (which needs `Libdl.dllist` and regexes).
-# It is the frozen platform of the native baselines (fixtures/frozen.toml `platform_triplet`),
-# i.e. `HostPlatform()` of the build host, and is sent as the `Julia-System` header.
-const PKGWASM_PLATFORM_TRIPLET = "aarch64-linux-gnu-libgfortran5-cxx11-libstdcxx30-julia_version+1.12.7"
-const PKGWASM_PLATFORM = parse(Base.BinaryPlatforms.Platform, PKGWASM_PLATFORM_TRIPLET)
+# PkgWasm (PLAN.md D13, D8 class "runtime"): the host platform, used wherever stock Pkg calls
+# `HostPlatform()` (platform defaults, the `Julia-System` header, `platform_key_abi`). It is
+# answered by the host runtime through the seam `Host.platform()` once per session: in
+# `pkgwasm_init` (Wasm and native driver) and in `__init__` (native loading). Until then, and
+# in the emitted image, it holds a placeholder, and `host_platform()` throws.
+const HOST_PLATFORM_PLACEHOLDER = Base.BinaryPlatforms.Platform("x86_64", "linux"; pkgwasm_placeholder = "true")
+const HOST_PLATFORM = Ref{Base.BinaryPlatforms.Platform}(HOST_PLATFORM_PLACEHOLDER)
+function host_platform()
+    p = HOST_PLATFORM[]
+    p === HOST_PLATFORM_PLACEHOLDER && error("PkgWasm.HOST_PLATFORM is not initialised (pkgwasm_init has not run)")
+    return p
+end
 
 depots() = Base.DEPOT_PATH
 function depots1(depot_list::Union{String, Vector{String}} = depots())
@@ -829,11 +835,7 @@ using Pkg, Test
 const is_manifest_current = API.is_manifest_current
 
 function __init__()
-    if !isassigned(Base.PKG_PRECOMPILE_HOOK)
-        # allows Base to use Pkg.precompile during loading
-        # disable via `Base.PKG_PRECOMPILE_HOOK[] = Returns(nothing)`
-        Base.PKG_PRECOMPILE_HOOK[] = precompile
-    end
+    HOST_PLATFORM[] = Host.platform() # D13; in the Wasm image pkgwasm_init does this
     OFFLINE_MODE[] = Base.get_bool_env("JULIA_PKG_OFFLINE", false)
     _auto_gc_enabled[] = Base.get_bool_env("JULIA_PKG_GC_AUTO", true)
     return nothing

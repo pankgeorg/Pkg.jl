@@ -128,26 +128,33 @@ end
         @test Pkg.Resolve.expired(d)
     end
 
-    @testset "D2/D8 embedded platform (pkg-trim relay)" begin
-        frozen_file = joinpath(@__DIR__, "..", "..", "..", "fixtures", "frozen.toml") # wt/<lane>/test -> wasm-pkg/fixtures
-        if isfile(frozen_file)
-            @test Pkg.PKGWASM_PLATFORM_TRIPLET == Pkg.TOML.parsefile(frozen_file)["platform_triplet"]
-        else
-            @test_skip "fixtures/frozen.toml not found next to this checkout"
-        end
-        @test Base.BinaryPlatforms.triplet(Pkg.PKGWASM_PLATFORM) == Pkg.PKGWASM_PLATFORM_TRIPLET
-        # natively on the frozen build host the embedded platform is the host platform
-        # (`==` also compares HostPlatform's compare strategies, so compare triplets)
-        @test Base.BinaryPlatforms.triplet(Pkg.PKGWASM_PLATFORM) == Base.BinaryPlatforms.triplet(Base.BinaryPlatforms.HostPlatform())
-        @test Base.BinaryPlatforms.platforms_match(Pkg.PKGWASM_PLATFORM, Base.BinaryPlatforms.HostPlatform())
-        @test Pkg.BinaryPlatformsCompat.platform_key_abi() === Pkg.PKGWASM_PLATFORM
+    @testset "D13 host platform from the runtime seam" begin
+        BP = Base.BinaryPlatforms
+        @test Pkg.Host.platform() isa BP.Platform
+        @test BP.triplet(Pkg.Host.platform()) == BP.triplet(BP.HostPlatform())
+        # natively, loading the module initialised it (__init__)
+        @test BP.triplet(Pkg.host_platform()) == BP.triplet(BP.HostPlatform())
         hdrs = Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
-        @test hdrs["Julia-System"] == Pkg.PKGWASM_PLATFORM_TRIPLET
+        @test hdrs["Julia-System"] == BP.triplet(BP.HostPlatform())
         @test hdrs == Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
+        @test Pkg.BinaryPlatforms.platform_key_abi() === Pkg.HOST_PLATFORM[] # (Pkg 1.12: module BinaryPlatforms)
+        frozen_file = joinpath(@__DIR__, "..", "..", "..", "fixtures", "frozen.toml") # wt/<lane>/test -> wasm-pkg/fixtures
+        # (the native baselines are Julia 1.13.2's: compared when the frozen triplet is this Julia's)
+        if isfile(frozen_file) && endswith(Pkg.TOML.parsefile(frozen_file)["platform_triplet"], "julia_version+$(VERSION)")
+            @test BP.triplet(Pkg.host_platform()) == Pkg.TOML.parsefile(frozen_file)["platform_triplet"]
+        end
+        # sanitised (image state): placeholder, and use fails loudly; init answers it again
+        Pkg.sanitize_globals!()
+        @test Pkg.HOST_PLATFORM[] === Pkg.HOST_PLATFORM_PLACEHOLDER
+        @test_throws ErrorException Pkg.host_platform()
+        @test_throws ErrorException Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries")
+        @test Pkg.pkgwasm_init() == 0
+        @test BP.triplet(Pkg.host_platform()) == BP.triplet(BP.HostPlatform())
         code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")
         for file in ("API.jl", "Operations.jl", "PlatformEngines.jl", "Artifacts.jl")
             @test !occursin("HostPlatform()", code(file))
         end
+        @test !isdefined(Pkg, :PKGWASM_PLATFORM)
     end
 
     @testset "D3 no tasks on supported paths" begin

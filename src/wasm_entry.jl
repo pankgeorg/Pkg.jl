@@ -3,14 +3,14 @@
 # The Wasm module exports these three functions. Natively they are plain Julia functions, so
 # the same command driver can be exercised (and compared against stock Pkg) without a compile.
 #
-#   pkgwasm_abi_version() -> Int32   must return ABI_VERSION (ABI.md v2 §6 step 5)
+#   pkgwasm_abi_version() -> Int32   must return ABI_VERSION (ABI.md v3 §6 step 5)
 #   pkgwasm_init()        -> Int32   0 = ok, 1 = error (printed to stderr)
 #   pkgwasm_main()        -> Int32   exit code: 0 = ok, 1 = reported error
 #
 # Command line (WASI args, argv[0] stripped into ARGS): `pkgwasm <cmd> [pkgs...]` with
 # <cmd> one of add, rm, resolve, instantiate, status.
 
-const ABI_VERSION = Int32(2) # ABI.md v2
+const ABI_VERSION = Int32(3) # ABI.md v3
 
 pkgwasm_abi_version() = ABI_VERSION
 
@@ -43,6 +43,7 @@ function sanitize_globals!()
     empty!(GitTools.GIT_PROTOCOLS)
     empty!(GitTools.GIT_USERS)
     Host.NATIVE_DOWNLOADER[] = nothing
+    HOST_PLATFORM[] = HOST_PLATFORM_PLACEHOLDER # D13: set by init_globals! from Host.platform()
     return nothing
 end
 
@@ -55,6 +56,7 @@ after the Base-side globals (ENV, DEPOT_PATH, ...) have been set up.
 """
 function init_globals!()
     sanitize_globals!()
+    HOST_PLATFORM[] = Host.platform() # D13: answered once per session by the host runtime
     OFFLINE_MODE[] = Base.get_bool_env("JULIA_PKG_OFFLINE", false)
     _auto_gc_enabled[] = Base.get_bool_env("JULIA_PKG_GC_AUTO", true)
     return nothing

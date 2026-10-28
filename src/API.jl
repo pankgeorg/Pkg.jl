@@ -247,7 +247,7 @@ end
 
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool = true,
-        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM, kwargs...
+        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = Pkg.host_platform(), kwargs...
     )
     unsupported("develop")
     require_not_empty(pkgs, :develop)
@@ -301,7 +301,7 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}; preserve::PreserveLevel = Operations.default_preserve(),
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM, target::Symbol = :deps, allow_autoprecomp::Bool = true, kwargs...
+        platform::AbstractPlatform = Pkg.host_platform(), target::Symbol = :deps, allow_autoprecomp::Bool = true, kwargs...
     )
     require_not_empty(pkgs, :add)
     Context!(ctx; kwargs...)
@@ -1295,7 +1295,7 @@ instantiate(; kwargs...) = instantiate(Context(); kwargs...)
 function instantiate(
         ctx::Context; manifest::Union{Bool, Nothing} = nothing,
         update_registry::Bool = true, verbose::Bool = false,
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM, allow_build::Bool = true, allow_autoprecomp::Bool = true,
+        platform::AbstractPlatform = Pkg.host_platform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
         workspace::Bool = false, julia_version_strict::Bool = false, kwargs...
     )
     Context!(ctx; kwargs...)

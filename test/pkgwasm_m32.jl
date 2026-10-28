@@ -301,35 +301,41 @@ end
     end
 
     @testset "D11 stale compressed descriptor does not hide the directory registry (review-2 #3)" begin
-        mktempdir() do depot
-            old = copy(DEPOT_PATH)
-            copy!(DEPOT_PATH, [depot])
-            try
-                regdir = joinpath(depot, "registries")
-                mkpath(regdir)
-                write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
-                @test isempty(Pkg.Registry.reachable_registries())
-                Pkg.Registry.add("General"; io = devnull)
-                regs = Pkg.Registry.reachable_registries()
-                @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
-                @test isdir(joinpath(regdir, "General")) && !ispath(joinpath(regdir, "General.toml"))
-                # review-3: stale descriptor next to an already installed directory, and a damaged
-                # descriptor naming another file: the descriptor goes, no archive is deleted
-                write(joinpath(regdir, "Other.tar.gz"), "not ours")
-                write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\npath = \"Other.tar.gz\"\n")
-                @test isempty(Pkg.Registry.reachable_registries())
-                Pkg.Registry.add("General"; io = devnull)
-                regs = Pkg.Registry.reachable_registries()
-                @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
-                @test !ispath(joinpath(regdir, "General.toml"))
-                @test read(joinpath(regdir, "Other.tar.gz"), String) == "not ours"
-                # a descriptor for a different registry with the same name is a conflict
-                rm(joinpath(regdir, "General"); recursive = true)
-                write(joinpath(regdir, "General.toml"), "uuid = \"$(uuid4())\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
-                err = capture_error(() -> Pkg.Registry.add("General"; io = devnull))
-                @test err isa Pkg.Types.PkgError && occursin("conflicts with the existing compressed registry descriptor", err.msg)
-            finally
-                copy!(DEPOT_PATH, old)
+        # PkgWasm installs registries as stock does (D11 update 2); this tests the unpacked
+        # install path, i.e. JULIA_PKG_UNPACK_REGISTRY=true
+        withenv("JULIA_PKG_UNPACK_REGISTRY" => "true") do
+            mktempdir() do depot
+                old = copy(DEPOT_PATH)
+                copy!(DEPOT_PATH, [depot])
+                try
+                    regdir = joinpath(depot, "registries")
+                    mkpath(regdir)
+                    write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
+                    @test isempty(Pkg.Registry.reachable_registries())
+                    Pkg.Registry.add("General"; io = devnull)
+                    regs = Pkg.Registry.reachable_registries()
+                    @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
+                    @test isdir(joinpath(regdir, "General")) && !ispath(joinpath(regdir, "General.toml"))
+                    # review-3: a damaged descriptor naming another file next to the installed
+                    # directory. With JULIA_PKG_UNPACK_REGISTRY=true descriptors are not read (as in
+                    # stock), so the directory stays reachable; adding again changes nothing and
+                    # no archive is deleted
+                    write(joinpath(regdir, "Other.tar.gz"), "not ours")
+                    write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\npath = \"Other.tar.gz\"\n")
+                    regs = Pkg.Registry.reachable_registries()
+                    @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID && isdir(only(regs).path)
+                    Pkg.Registry.add("General"; io = devnull)
+                    regs = Pkg.Registry.reachable_registries()
+                    @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
+                    @test read(joinpath(regdir, "Other.tar.gz"), String) == "not ours"
+                    # a descriptor for a different registry with the same name is a conflict
+                    rm(joinpath(regdir, "General"); recursive = true)
+                    write(joinpath(regdir, "General.toml"), "uuid = \"$(uuid4())\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
+                    err = capture_error(() -> Pkg.Registry.add("General"; io = devnull))
+                    @test err isa Pkg.Types.PkgError && occursin("conflicts with the existing compressed registry descriptor", err.msg)
+                finally
+                    copy!(DEPOT_PATH, old)
+                end
             end
         end
     end
@@ -691,37 +697,64 @@ end
         end
     end
 
-    @testset "D11 registry installed unpacked with verified tree hash" begin
+    @testset "D11 update 2: default registry install is compressed, as stock" begin
         mktempdir() do depot
-            old_depot_path = copy(DEPOT_PATH)
-            withenv("JULIA_DEPOT_PATH" => depot * ":") do
-                copy!(DEPOT_PATH, [depot])
-                try
+            old = copy(DEPOT_PATH)
+            copy!(DEPOT_PATH, [depot])
+            try
+                withenv("JULIA_PKG_UNPACK_REGISTRY" => nothing) do
                     Pkg.Registry.add("General"; io = devnull)
-                    regdir = joinpath(depot, "registries", "General")
-                    @test isfile(joinpath(regdir, "Registry.toml"))
-                    @test !ispath(joinpath(depot, "registries", "General.toml"))
-                    info = Pkg.TOML.parsefile(joinpath(regdir, ".tree_info.toml"))
+                    regdir = joinpath(depot, "registries")
+                    desc = Pkg.TOML.parsefile(joinpath(regdir, "General.toml"))
+                    @test desc["uuid"] == string(GENERAL_UUID)
+                    @test isfile(joinpath(regdir, desc["path"]))
+                    @test !isdir(joinpath(regdir, "General"))
                     regs = Pkg.Registry.reachable_registries()
-                    @test length(regs) == 1
-                    reg = only(regs)
-                    @test reg.uuid == GENERAL_UUID
-                    @test reg.in_memory_registry === nothing
-                    @test string(reg.tree_info) == info["git-tree-sha1"]
-                    # the extracted tree hashes to the recorded identity
-                    rm(joinpath(regdir, ".tree_info.toml"))
-                    @test Pkg.GitTools.tree_hash(regdir) == hex2bytes(info["git-tree-sha1"])
-                    # a tree-hash mismatch is rejected and nothing is extracted
-                    server = Pkg.pkg_server()
-                    url = "$server/registry/$GENERAL_UUID/$(info["git-tree-sha1"])"
-                    bad = Base.SHA1("0000000000000000000000000000000000000000")
-                    target = mktempdir()
-                    err = capture_error(() -> Pkg.Registry.download_registry_dir(url, bad, target))
-                    @test err isa Pkg.Types.PkgError
-                    @test occursin("expected $bad", sprint(showerror, err))
-                    @test isempty(readdir(target))
-                finally
-                    copy!(DEPOT_PATH, old_depot_path)
+                    @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
+                    @test string(only(regs).tree_info) == desc["git-tree-sha1"]
+                    @test haskey(only(regs).pkgs, EXAMPLE_UUID) # read in memory
+                end
+            finally
+                copy!(DEPOT_PATH, old)
+            end
+        end
+    end
+
+    @testset "D11 registry installed unpacked with verified tree hash" begin
+        # PkgWasm installs registries as stock does (D11 update 2); this tests the unpacked
+        # install path, i.e. JULIA_PKG_UNPACK_REGISTRY=true
+        withenv("JULIA_PKG_UNPACK_REGISTRY" => "true") do
+            mktempdir() do depot
+                old_depot_path = copy(DEPOT_PATH)
+                withenv("JULIA_DEPOT_PATH" => depot * ":") do
+                    copy!(DEPOT_PATH, [depot])
+                    try
+                        Pkg.Registry.add("General"; io = devnull)
+                        regdir = joinpath(depot, "registries", "General")
+                        @test isfile(joinpath(regdir, "Registry.toml"))
+                        @test !ispath(joinpath(depot, "registries", "General.toml"))
+                        info = Pkg.TOML.parsefile(joinpath(regdir, ".tree_info.toml"))
+                        regs = Pkg.Registry.reachable_registries()
+                        @test length(regs) == 1
+                        reg = only(regs)
+                        @test reg.uuid == GENERAL_UUID
+                        @test reg.in_memory_registry === nothing
+                        @test string(reg.tree_info) == info["git-tree-sha1"]
+                        # the extracted tree hashes to the recorded identity
+                        rm(joinpath(regdir, ".tree_info.toml"))
+                        @test Pkg.GitTools.tree_hash(regdir) == hex2bytes(info["git-tree-sha1"])
+                        # a tree-hash mismatch is rejected and nothing is extracted
+                        server = Pkg.pkg_server()
+                        url = "$server/registry/$GENERAL_UUID/$(info["git-tree-sha1"])"
+                        bad = Base.SHA1("0000000000000000000000000000000000000000")
+                        target = mktempdir()
+                        err = capture_error(() -> Pkg.Registry.download_registry_dir(url, bad, target))
+                        @test err isa Pkg.Types.PkgError
+                        @test occursin("expected $bad", sprint(showerror, err))
+                        @test isempty(readdir(target))
+                    finally
+                        copy!(DEPOT_PATH, old_depot_path)
+                    end
                 end
             end
         end

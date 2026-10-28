@@ -113,14 +113,12 @@ else
                     ["rm"],
                     ["status", "General"],
                 ]
-                # PkgWasm installs registries unpacked (D11) while stock 1.13 installs them
-                # compressed by default, so the empty-depot run compares against stock with
-                # JULIA_PKG_UNPACK_REGISTRY=true (stock's unpacked install). The compressed run
-                # starts from stock's default layout and stops before reinstalling (the
-                # reinstalled layout is the D11 policy, REQUEST coordinator in STATUS).
+                # Both install registries as stock does (D11 update 2): compressed by default.
                 for (layout, steps_here, stock_env) in (
-                        (:empty, steps, "true"),
-                        (:compressed, [steps[3:9]; steps[13:end]], nothing),
+                        (:empty, steps, nothing),
+                        (:compressed, steps[3:end], nothing),
+                        # stock's unpacked install (JULIA_PKG_UNPACK_REGISTRY=true) on both sides
+                        (:unpacked, steps, "true"),
                     )
                     @testset "$layout depot" begin
                         sdepot, fdepot = mktempdir(), mktempdir()
@@ -134,7 +132,7 @@ else
                             # get past the 1 s update cooldown so both sides do the same thing
                             words[1] in ("update", "up") && sleep(1.2)
                             sout, serr = withenv(() -> stock_step(sdepot, words), "JULIA_PKG_UNPACK_REGISTRY" => stock_env)
-                            fout, rc = fork_step(fdepot, words)
+                            fout, rc = withenv(() -> fork_step(fdepot, words), "JULIA_PKG_UNPACK_REGISTRY" => stock_env)
                             # what the stock REPL shows: the output, then `ERROR: <message>`
                             serr === nothing || (sout *= "ERROR: " * sprint(showerror, serr) * "\n")
                             @testset "registry $(join(words, ' '))" begin

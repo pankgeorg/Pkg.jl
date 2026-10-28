@@ -249,6 +249,31 @@ end
         end
     end
 
+    @testset "D8 globals: sanitize and init" begin
+        mktempdir() do dir
+            Pkg.activate(dir; io = devnull)
+            Pkg.status(; io = devnull) # fills registry/TOML/stdlib caches
+            @test !isempty(Pkg.Registry.REGISTRY_CACHE) || !isempty(Pkg.Registry.TOML_CACHE.d) || Pkg.Types.STDLIB[] !== nothing
+            Pkg.DEFAULT_IO[] = devnull
+            Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
+            Pkg.sanitize_globals!()
+            @test Pkg.DEFAULT_IO[] === nothing
+            @test !Pkg.UPDATED_REGISTRY_THIS_SESSION[]
+            @test isempty(Pkg.Registry.REGISTRY_CACHE) && isempty(Pkg.Registry.TOML_CACHE.d) && isempty(Pkg.Types.TOML_CACHE.d)
+            @test Pkg.Types.STDLIB[] === nothing && isempty(Pkg.Types.UPGRADABLE_STDLIBS_UUIDS)
+            withenv("JULIA_PKG_OFFLINE" => "true") do
+                @test Pkg.pkgwasm_init() == 0
+                @test Pkg.OFFLINE_MODE[]
+            end
+            @test Pkg.pkgwasm_init() == 0
+            @test !Pkg.OFFLINE_MODE[]
+            # caches rebuild transparently
+            @test Pkg.pkgwasm_main(["status"]) == 0
+            @test Pkg.Types.is_stdlib(UUID("ade2ca70-3891-5945-98fb-dc099432e06a"))
+            Pkg.activate(; io = devnull)
+        end
+    end
+
     @testset "D11 registry installed unpacked with verified tree hash" begin
         mktempdir() do depot
             old_depot_path = copy(DEPOT_PATH)

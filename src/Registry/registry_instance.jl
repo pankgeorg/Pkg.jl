@@ -329,10 +329,20 @@ function get_cached_registry(path, tree_info::Base.SHA1, compressed::Bool)
     return nothing
 end
 
+# PkgWasm (D11, coordinator decision for S1): a compressed registry (stock 1.13's default
+# layout: a `<name>.toml` descriptor next to a tarball) is rejected wherever it is found,
+# rather than decompressed into memory. Reading them via Host.decompress + Tar into a
+# directory is post-S1 item P1.
+compressed_registry_error(path::AbstractString) = throw(Pkg.Types.PkgError(
+    "compressed registry $(splitext(basename(path))[1]) at $(path) is not supported by PkgWasm; " *
+        "remove it and add it again so it is installed unpacked"
+))
+
 function RegistryInstance(path::AbstractString)
     compressed_file = nothing
     if isfile(path)
         @assert splitext(path)[2] == ".toml"
+        compressed_registry_error(path) # PkgWasm (D11)
         d_reg_info = parsefile(nothing, dirname(path), basename(path))
         compressed_file = d_reg_info["path"]::String
         tree_info = Base.SHA1(d_reg_info["git-tree-sha1"]::String)
@@ -352,11 +362,9 @@ function RegistryInstance(path::AbstractString)
         end
     end
 
-    in_memory_registry = if compressed_file !== nothing
-        uncompress_registry(joinpath(dirname(path), compressed_file))
-    else
-        nothing
-    end
+    # PkgWasm (D11, coordinator decision): compressed registries are not read, so the
+    # in-memory tarball reader (`uncompress_registry`/`read_tarball_simple`) is unreachable.
+    in_memory_registry = nothing
 
     d = parsefile(in_memory_registry, path, "Registry.toml")
     pkgs = Dict{UUID, PkgEntry}()

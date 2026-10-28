@@ -167,8 +167,8 @@ registry_read_from_tarball() =
 # PkgWasm (PLAN.md D11): registries from the Pkg server are always *installed* unpacked into
 # `registries/<name>` (the `in_memory_registry === nothing` path), whatever
 # JULIA_PKG_UNPACK_REGISTRY says; an existing unpacked registry is updated in place as a
-# directory. Compressed registries already in a depot (e.g. installed by stock Pkg) are still
-# read, and updated in their own format, under `registry_read_from_tarball()`.
+# directory. A compressed registry already in a depot (e.g. installed by stock Pkg) is a
+# PkgError when discovered (`compressed_registry_error`, registry_instance.jl).
 #
 # The tarball is downloaded, decompressed once through `Host.decompress`, its git tree hash is
 # checked against the hash in the server URL with `Tar.tree_hash`, and then it is extracted

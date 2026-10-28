@@ -165,12 +165,10 @@ end
 registry_read_from_tarball() =
     registry_use_pkg_server() && !Base.get_bool_env("JULIA_PKG_UNPACK_REGISTRY", false)
 
-# PkgWasm (PLAN.md D11): registries from the Pkg server are always *installed* unpacked into
-# `registries/<name>` (the `in_memory_registry === nothing` path), whatever
-# JULIA_PKG_UNPACK_REGISTRY says; an existing unpacked registry is updated in place as a
-# directory. A compressed registry already in a depot (e.g. installed by stock Pkg) is read in
-# memory as stock reads it (decompressed through `Host.decompress`), and updated in its own
-# format, under `registry_read_from_tarball()`.
+# PkgWasm (PLAN.md D11, update 2): registries from the Pkg server are installed and updated
+# as stock does: compressed (descriptor + tarball, read in memory through `Host.decompress`)
+# by default, unpacked into `registries/<name>` with JULIA_PKG_UNPACK_REGISTRY=true (or
+# without a Pkg server); an existing directory registry still loads. For the unpacked install:
 #
 # The tarball is downloaded, decompressed once through `Host.decompress`, its git tree hash is
 # checked against the hash in the server URL with `Tar.tree_hash`, and then it is extracted
@@ -256,7 +254,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                 )
             end
             url = get(registry_urls, reg.uuid, nothing)
-            if false # PkgWasm (D11): never install compressed; stock: `url !== nothing && registry_read_from_tarball()`
+            if url !== nothing && registry_read_from_tarball()
                 tmp = tempname()
                 try
                     download_verify(url, nothing, tmp)
@@ -508,8 +506,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                 # TODO: update faster by using a diff, if available
                                 # TODO: DRY with the code in `download_default_registries`
                                 let new_hash = new_hash, url = url
-                                    # PkgWasm (D11): an unpacked registry stays unpacked
-                                    if registry_read_from_tarball() && !isdir(reg.path)
+                                    if registry_read_from_tarball()
                                         tmp = tempname()
                                         try
                                             download_verify(url, nothing, tmp)
@@ -535,8 +532,18 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                         registry_update_log[string(reg.uuid)] = now()
                                         @label done_tarball_read
                                     else
-                                        # PkgWasm (D11): unpacked is the intended format, so stock's
-                                        # "consider reinstalling as a tarball" @pkg_info is not printed.
+                                        if reg.name == "General" &&
+                                                Base.get_bool_env("JULIA_PKG_GEN_REG_FMT_CHECK", true) &&
+                                                get(ENV, "JULIA_PKG_SERVER", nothing) != ""
+                                            # warn if JULIA_PKG_SERVER is set to a non-empty string or not set
+                                            @pkg_info """
+                                            The General registry is installed via unpacked tarball.
+                                            Consider reinstalling it via the newer faster direct from
+                                            tarball format by running:
+                                              pkg> registry rm General; registry add General
+
+                                            """ maxlog = 1
+                                        end
                                         mktempdir() do tmp
                                             try
                                                 download_registry_dir(url, new_hash, tmp)

@@ -16,7 +16,7 @@ using Base.BinaryPlatforms
 import ...Pkg
 import ...Pkg: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
 import ...Pkg: UPDATED_REGISTRY_THIS_SESSION, RESPECT_SYSIMAGE_VERSIONS, should_autoprecompile
-import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock
+import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock, WASM_TARGET
 
 #########
 # Utils #
@@ -3218,6 +3218,23 @@ end
 
 # Display
 
+status_key(xs::Vector, i::Int) =
+    (is_stdlib(xs[i][1]), endswith(something(xs[i][3], xs[i][2]).name, "_jll"), something(xs[i][3], xs[i][2]).name, xs[i][1])
+function status_isless(xs::Vector, i::Int, j::Int)
+    ka, kb = status_key(xs, i), status_key(xs, j)
+    isless(ka[1], kb[1]) && return true
+    isequal(ka[1], kb[1]) || return false
+    isless(ka[2], kb[2]) && return true
+    isequal(ka[2], kb[2]) || return false
+    isless(ka[3], kb[3]) && return true
+    isequal(ka[3], kb[3]) || return false
+    return id_isless(ka[4], kb[4])  # (`isless(a, b) || (isequal(a, b) && isless((), ()))`)
+end
+id_isless(a::UUID, b::UUID) = isless(a, b)
+id_isless(@nospecialize(a), @nospecialize(b)) =
+    WASM_TARGET ? error("PkgWasm: comparing package ids that are not UUIDs") :
+    Base.inferencebarrier(isless)(a, b)
+
 function stat_rep(x::PackageSpec; name = true)
     name = name ? "$(x.name)" : ""
     version = x.version == VersionSpec() ? "" : "v$(x.version)"
@@ -3490,7 +3507,11 @@ function print_status(
             end
         end
         # Sort stdlibs and _jlls towards the end in status output
-        xs = sort!(xs, by = (x -> (is_stdlib(x[1]), endswith(something(x[3], x[2]).name, "_jll"), something(x[3], x[2]).name, x[1])))
+        # (`sort!(xs, by = x -> (is_stdlib(x[1]), endswith(name, "_jll"), name, x[1]))`: the elements'
+        # tuple type is abstract, so their indices are sorted, stably, by Base's `isless` of those
+        # keys, the ids, `Union{Nothing, UUID}`, told apart by type; the same order)
+        perm = sort!(collect(eachindex(xs)); lt = (i, j) -> status_isless(xs, i, j))
+        xs = permute!(xs, perm)
     end
 
     all_packages_downloaded = true

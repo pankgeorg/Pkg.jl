@@ -169,7 +169,7 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
                 add_snapshot_to_undo(ctx.env)
                 saved_initial_snapshot[] = true
             end
-            kwargs = merge((; kwargs...), (:io => io,))
+            kwargs = merge((; kwargs...), (; io)) # (a NamedTuple: its names known statically)
             pkgs = deepcopy(pkgs) # don't mutate input
             foreach(handle_package_input!, pkgs)
             ret = $f(ctx, pkgs; kwargs...)

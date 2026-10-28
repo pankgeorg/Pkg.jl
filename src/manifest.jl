@@ -111,20 +111,25 @@ read_apps(::Any) = pkgerror("Expected `apps` field to be a Dict")
 function read_apps(apps::Dict)
     appinfos = Dict{String, AppInfo}()
     for (appname, app) in apps
-        submodule = get(app, "submodule", nothing)
-        julia_flags_raw = get(app, "julia_flags", nothing)
-        julia_flags = if julia_flags_raw === nothing
-            String[]
-        else
-            String[flag::String for flag in julia_flags_raw]
+        # (each app's table, told apart by type: M4.2)
+        appinfo = with_toml_dict(app) do app
+            submodule = get(app, "submodule", nothing)
+            julia_flags_raw = get(app, "julia_flags", nothing)
+            julia_flags = if julia_flags_raw === nothing
+                String[]
+            else
+                with_toml_type(julia_flags_raw) do julia_flags_raw
+                    String[flag::String for flag in julia_flags_raw]
+                end
+            end
+            AppInfo(
+                appname::String,
+                app["julia_command"]::String,
+                submodule,
+                julia_flags,
+                app
+            )
         end
-        appinfo = AppInfo(
-            appname::String,
-            app["julia_command"]::String,
-            submodule,
-            julia_flags,
-            app
-        )
         appinfos[appinfo.name] = appinfo
     end
     return appinfos
@@ -371,7 +376,8 @@ function destructure(manifest::Manifest)::Dict
         # https://github.com/JuliaLang/Pkg.jl/issues/4086
         @assert !(entry.tree_hash !== nothing && entry.path !== nothing)
 
-        new_entry = something(entry.other, Dict{String, Any}())
+        # (the entry's table: `other`, a `Dict`, told apart as a TOML table: M4.2)
+        new_entry = entry.other === nothing ? Dict{String, Any}() : with_toml_dict(identity, entry.other)
         new_entry["uuid"] = string(uuid)
         entry!(new_entry, "version", entry.version)
         entry!(new_entry, "git-tree-sha1", entry.tree_hash)
@@ -463,7 +469,7 @@ function write_manifest(io::IO, manifest::Manifest)
 end
 function write_manifest(io::IO, raw_manifest::Dict)
     print(io, "# This file is machine-generated - editing it directly is not advised\n\n")
-    TOML.print(io, raw_manifest, sorted = true) do x
+    TOMLWriter.print(io, raw_manifest, sorted = true) do x
         (typeof(x) in [String, Nothing, UUID, SHA1, VersionNumber]) && return string(x)
         error("unhandled type `$(typeof(x))`")
     end

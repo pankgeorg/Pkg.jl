@@ -8,7 +8,7 @@
 using Test
 
 @testset "Pkg" begin
-    for file in ("pkgwasm_m31.jl",)
+    for file in ("pkgwasm_m31.jl", "pkgwasm_m32.jl")
         @testset "$file" begin
             include(joinpath(@__DIR__, file))
         end

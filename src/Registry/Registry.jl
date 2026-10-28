@@ -236,12 +236,13 @@ registry_read_from_tarball() =
 # checked against the hash in the server URL with `Tar.tree_hash`, and then it is extracted
 # with `Tar.extract` into the empty directory `dir`. Registry identity is recorded by the
 # caller in `.tree_info.toml`, as stock Pkg does for unpacked registries.
-# PkgWasm (D11): when a registry is installed as the directory `regdir/<name>`, a same-name
-# compressed-registry descriptor `regdir/<name>.toml` would hide it in `reachable_registries`
-# (which prefers descriptors). Installation is only reached when no registry with this UUID
-# is reachable, so such a descriptor is stale (e.g. its archive is missing): remove it and the
-# archive it names. A descriptor naming a different UUID is a conflict, reported like the
-# stock directory conflict.
+# PkgWasm (D11): a registry installed as the directory `regdir/<name>` is hidden in
+# `reachable_registries` by a same-name compressed-registry descriptor `regdir/<name>.toml`
+# (descriptors take precedence by name). Installation is only reached when no registry with
+# this UUID is reachable, so such a descriptor is stale (e.g. its archive is missing) and is
+# removed. Only the descriptor is removed: the archive it names is never deleted, since its
+# ownership cannot be established (another registry may use it). A descriptor naming a
+# different UUID is a conflict, reported like the stock directory conflict.
 function remove_stale_registry_descriptor(regdir::String, registry)
     desc = joinpath(regdir, registry.name * ".toml")
     isfile(desc) || return nothing
@@ -258,11 +259,6 @@ function remove_stale_registry_descriptor(regdir::String, registry)
                 "registry `$(registry.name)=\"$(registry.uuid)\"` conflicts with the existing compressed registry ",
                 "descriptor `$(Base.contractuser(desc))` for uuid $other."
             )
-        end
-        archive = get(d, "path", nothing)
-        # only a plain file name next to the descriptor, as stock writes it
-        if archive isa String && !isempty(archive) && basename(archive) == archive
-            Base.rm(joinpath(regdir, archive); force = true)
         end
     end
     Base.rm(desc; force = true)
@@ -426,6 +422,8 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                     regpath = joinpath(regdir, registry.name)
                     # copy to `depot`
                     ispath(dirname(regpath)) || mkpath(dirname(regpath))
+                    # PkgWasm (D11): also when the directory already exists (review-3)
+                    remove_stale_registry_descriptor(regdir, registry)
                     if isfile(joinpath(regpath, "Registry.toml"))
                         existing_registry = Registry.RegistryInstance(regpath)
                         if registry.uuid == existing_registry.uuid
@@ -445,7 +443,6 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         end
                     elseif (url !== nothing && registry_use_pkg_server()) || reg.linked !== true
                         # if the dir doesn't exist, or exists but doesn't contain a Registry.toml
-                        remove_stale_registry_descriptor(regdir, registry) # PkgWasm (D11)
                         mv(tmp, regpath, force = true)
                         registry_update_log[string(reg.uuid)] = now()
                         printpkgstyle(io, :Added, "registry `$(registry.name)` to `$(Base.contractuser(regpath))`")

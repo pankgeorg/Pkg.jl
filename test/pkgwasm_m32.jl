@@ -285,6 +285,16 @@ end
                 regs = Pkg.Registry.reachable_registries()
                 @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
                 @test isdir(joinpath(regdir, "General")) && !ispath(joinpath(regdir, "General.toml"))
+                # review-3: stale descriptor next to an already installed directory, and a damaged
+                # descriptor naming another file: the descriptor goes, no archive is deleted
+                write(joinpath(regdir, "Other.tar.gz"), "not ours")
+                write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\npath = \"Other.tar.gz\"\n")
+                @test isempty(Pkg.Registry.reachable_registries())
+                Pkg.Registry.add("General"; io = devnull)
+                regs = Pkg.Registry.reachable_registries()
+                @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
+                @test !ispath(joinpath(regdir, "General.toml"))
+                @test read(joinpath(regdir, "Other.tar.gz"), String) == "not ours"
                 # a descriptor for a different registry with the same name is a conflict
                 rm(joinpath(regdir, "General"); recursive = true)
                 write(joinpath(regdir, "General.toml"), "uuid = \"$(uuid4())\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")

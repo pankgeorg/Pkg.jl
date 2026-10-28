@@ -9,6 +9,7 @@ using Test
 import Pkg
 import Pkg
 using UUIDs
+import Sockets
 
 const FORK_UUID = UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
 const STOCK_UUID = UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
@@ -38,6 +39,12 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
             @test haskey(m["deps"], "Example")
             @test m["deps"]["Example"][1]["uuid"] == string(EXAMPLE_UUID)
             @test Pkg.TOML.parsefile(joinpath(proj, "Project.toml"))["deps"] == Dict("Example" => string(EXAMPLE_UUID))
+            # a dependency on the stdlib Pkg is the real Pkg, not the fork
+            Pkg.add("Pkg"; io = out)
+            m = Pkg.TOML.parsefile(joinpath(proj, "Manifest.toml"))
+            @test m["deps"]["Pkg"][1]["uuid"] == string(STOCK_UUID)
+            @test !haskey(m["deps"], "Pkg")
+            Pkg.rm("Pkg"; io = out)
             # and stock Pkg reads the result identically
             Pkg.activate(proj; io = devnull)
             @test haskey(Pkg.dependencies(), EXAMPLE_UUID)
@@ -79,6 +86,35 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
             @test err isa Host.HostError && err.status == 25
             @test !ispath(joinpath(dir, "bad")) && !ispath(joinpath(dir, "bad.partial"))
 
+            # failure paths: everything is a HostError and no partial output survives
+            err = try
+                Host.decompress(joinpath(dir, "nonexistent.gz"), joinpath(dir, "ne"))
+            catch e
+                e
+            end
+            @test err isa Host.HostError && err.status == 29
+            @test !ispath(joinpath(dir, "ne.partial"))
+            write(joinpath(dir, "bad2.partial"), "stale")
+            @test_throws Host.HostError Host.decompress(raw, joinpath(dir, "bad2"))
+            @test !ispath(joinpath(dir, "bad2.partial"))
+            if !Sys.iswindows() && Libc.getuid() != 0
+                # publishing fails: `dst` is a directory whose contents cannot be removed
+                pdst = joinpath(dir, "pdst")
+                mkpath(joinpath(pdst, "locked", "x"))
+                chmod(joinpath(pdst, "locked"), 0o500)
+                try
+                    err = try
+                        Host.decompress("$raw.gz", pdst)
+                    catch e
+                        e
+                    end
+                    @test err isa Host.HostError
+                    @test !ispath(pdst * ".partial")
+                finally
+                    chmod(joinpath(pdst, "locked"), 0o700)
+                end
+            end
+
             server = Pkg.pkg_server()
             dest = joinpath(dir, "registries")
             r = Host.download(server * "/registries", dest, Pair{String, String}[])
@@ -97,6 +133,78 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
             @test err isa Host.HostError && err.status == 29
             @test !ispath(joinpath(dir, "x.partial"))
         end
+    end
+
+    @testset "Host.download redirect limit and cleanup (local server)" begin
+        Host = Pkg.Host
+        # minimal HTTP/1.1 server: /r/<n> redirects to /r/<n-1>, /r/0 is 200, /404 is 404
+        server = Sockets.listen(Sockets.localhost, 0)
+        port = Int(Sockets.getsockname(server)[2])
+        task = @async while isopen(server)
+            sock = try
+                Sockets.accept(server)
+            catch
+                break
+            end
+            @async try
+                line = readline(sock)
+                while !isempty(readline(sock)) end
+                path = split(line)[2]
+                if startswith(path, "/r/")
+                    n = parse(Int, path[4:end])
+                    if n == 0
+                        body = "done"
+                        write(sock, "HTTP/1.1 200 OK\r\nContent-Length: $(sizeof(body))\r\nConnection: close\r\n\r\n$body")
+                    else
+                        write(sock, "HTTP/1.1 302 Found\r\nLocation: /r/$(n - 1)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    end
+                else
+                    write(sock, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                end
+            finally
+                close(sock)
+            end
+        end
+        base = "http://127.0.0.1:$port"
+        mktempdir() do dir
+            dest = joinpath(dir, "ok")
+            r = Host.download("$base/r/10", dest, Pair{String, String}[])
+            @test r.status == 200 && read(dest, String) == "done" && endswith(r.url, "/r/0")
+            dest = joinpath(dir, "toomany")
+            err = try
+                Host.download("$base/r/11", dest, Pair{String, String}[])
+            catch e
+                e
+            end
+            @test err isa Host.HostError && err.status == 29
+            @test !ispath(dest) && !ispath(dest * ".partial")
+            # a previous complete destination survives a failed transfer
+            write(dest, "previous")
+            @test_throws Host.HostError Host.download("$base/r/11", dest, Pair{String, String}[])
+            @test read(dest, String) == "previous"
+            # >= 400 removes dest and returns the status
+            r = Host.download("$base/404", dest, Pair{String, String}[])
+            @test r.status == 404 && !ispath(dest) && !ispath(dest * ".partial")
+            # publishing fails (`dest` is a directory whose contents cannot be removed):
+            # HostError, no partial left
+            if !Sys.iswindows() && Libc.getuid() != 0
+                pdest = joinpath(dir, "pdest")
+                mkpath(joinpath(pdest, "locked", "x"))
+                chmod(joinpath(pdest, "locked"), 0o500)
+                try
+                    err = try
+                        Host.download("$base/r/0", pdest, Pair{String, String}[])
+                    catch e
+                        e
+                    end
+                    @test err isa Host.HostError
+                    @test !ispath(pdest * ".partial")
+                finally
+                    chmod(joinpath(pdest, "locked"), 0o700)
+                end
+            end
+        end
+        close(server)
     end
 
     @testset "entry point driver" begin

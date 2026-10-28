@@ -601,12 +601,37 @@ end
         end
     end
 
-    @testset "D11 compressed registry in a depot is a clear PkgError (coordinator decision)" begin
+    @testset "compressed registry in a depot is read in memory as stock reads it (registry-tar (a))" begin
         mktempdir() do depot
-            # stock 1.13 default layout: <name>.toml descriptor + <name>.tar.gz
+            # stock 1.13 default layout: <name>.toml descriptor + <name>.tar.gz, with one package
             src = mktempdir()
             mini_uuid = uuid4()
-            write(joinpath(src, "Registry.toml"), "name = \"Mini\"\nuuid = \"$mini_uuid\"\nrepo = \"https://example.invalid/Mini.git\"\n\n[packages]\n")
+            foo_uuid = uuid4()
+            bar_uuid = uuid4()
+            write(joinpath(src, "Registry.toml"), """
+                name = "Mini"
+                uuid = "$mini_uuid"
+                repo = "https://example.invalid/Mini.git"
+
+                [packages]
+                $foo_uuid = { name = "Foo", path = "F/Foo" }
+                $bar_uuid = { name = "Bar", path = "B/Bar" }
+                """)
+            bar = mkpath(joinpath(src, "B", "Bar"))
+            write(joinpath(bar, "Package.toml"), "name = \"Bar\"\nuuid = \"$bar_uuid\"\nrepo = \"https://example.invalid/Bar.jl.git\"\n")
+            write(joinpath(bar, "Versions.toml"), "[\"1.0.0\"]\ngit-tree-sha1 = \"$(repeat("3", 40))\"\n")
+            foo = mkpath(joinpath(src, "F", "Foo"))
+            write(joinpath(foo, "Package.toml"), "name = \"Foo\"\nuuid = \"$foo_uuid\"\nrepo = \"https://example.invalid/Foo.jl.git\"\n")
+            write(joinpath(foo, "Versions.toml"), """
+                ["0.1.0"]
+                git-tree-sha1 = "$(repeat("1", 40))"
+
+                ["0.2.0"]
+                git-tree-sha1 = "$(repeat("2", 40))"
+                yanked = true
+                """)
+            write(joinpath(foo, "Deps.toml"), "[\"0.2-0\"]\nBar = \"$bar_uuid\"\n")
+            write(joinpath(foo, "Compat.toml"), "[\"0.2-0\"]\nBar = \"1\"\njulia = \"1.6.0-1\"\n")
             regdir = joinpath(depot, "registries")
             mkpath(regdir)
             tar = Pkg.Registry.Tar.create(src)
@@ -614,37 +639,55 @@ end
             run(pipeline(`$(Pkg.PlatformEngines.exe7z()) a -tgzip $(joinpath(regdir, "Mini.tar.gz")) $tar`; stdout = devnull))
             desc = joinpath(regdir, "Mini.toml")
             write(desc, "git-tree-sha1 = \"$hash\"\npath = \"Mini.tar.gz\"\nuuid = \"$mini_uuid\"\n")
-            # it is a registry stock Pkg reads
-            stock = Pkg.Registry.reachable_registries(; depots = [depot])
-            @test length(stock) == 1 && stock[1].uuid == mini_uuid
-            expected = "compressed registry Mini at $desc is not supported by PkgWasm; remove it and add it again so it is installed unpacked"
-            err = capture_error(() -> Pkg.Registry.reachable_registries(; depots = [depot]))
-            @test err isa Pkg.Types.PkgError
-            @test err.msg == expected
-            # through a supported command: exit 1 with that error
+            before = Dict(f => read(joinpath(regdir, f)) for f in readdir(regdir))
+            stock = only(Pkg.Registry.reachable_registries(; depots = [depot]))
+            ours = only(Pkg.Registry.reachable_registries(; depots = [depot]))
+            @test ours.path == stock.path == desc
+            @test ours.tree_info == stock.tree_info == Base.SHA1(hash)
+            @test ours.compressed_file == stock.compressed_file == "Mini.tar.gz"
+            @test (ours.name, ours.uuid, ours.repo) == (stock.name, stock.uuid, stock.repo)
+            @test ours.in_memory_registry == stock.in_memory_registry  # (before package info frees entries)
+            @test sort!(collect(keys(ours))) == sort!(collect(keys(stock))) == sort!([foo_uuid, bar_uuid])
+            si = Pkg.Registry.registry_info(stock, stock[foo_uuid])
+            oi = Pkg.Registry.registry_info(ours, ours[foo_uuid])
+            @test oi.repo == si.repo
+            @test Dict(k => (v.git_tree_sha1, v.yanked) for (k, v) in oi.version_info) ==
+                Dict(k => (v.git_tree_sha1, v.yanked) for (k, v) in si.version_info)
+            # (VersionRange/VersionSpec are different types in Pkg and PkgWasm: compared as strings)
+            norm_deps(d) = Dict(string(k) => sort!(collect(v)) for (k, v) in d)
+            norm_compat(d) = Dict(string(k) => Dict(u => string(s) for (u, s) in v) for (k, v) in d)
+            @test norm_deps(oi.deps) == norm_deps(si.deps)
+            @test norm_compat(oi.compat) == norm_compat(si.compat)
+            @test any(v -> haskey(v, bar_uuid), values(oi.compat))
+            # the registry is reported as packed, as stock does
+            @test Pkg.Registry.get_registry_type(ours) == Pkg.Registry.get_registry_type(stock) == :packed
+            # resolution against it equals stock's (resolve_versions!, without installing Foo), and
+            # status through the entry point works
             old = copy(DEPOT_PATH)
             copy!(DEPOT_PATH, [depot])
             try
                 mktempdir() do env
+                    write(joinpath(env, "Project.toml"), "[deps]\nFoo = \"$foo_uuid\"\n\n[compat]\nFoo = \"0.1\"\n")
+                    function resolved(P)
+                        e = P.Types.EnvCache(joinpath(env, "Project.toml"))
+                        pkgs = [P.Types.PackageSpec(; name = "Foo", uuid = foo_uuid)]
+                        P.Operations.resolve_versions!(e, P.Registry.reachable_registries(; depots = [depot]), pkgs, VERSION, false)
+                        return Dict(p.uuid => (p.version, p.tree_hash) for p in pkgs)
+                    end
+                    @test resolved(Pkg) == resolved(Pkg) == Dict(foo_uuid => (v"0.1.0", Base.SHA1(repeat("1", 40))))
                     Pkg.activate(env; io = devnull)
-                    write(joinpath(env, "Project.toml"), "[deps]\nExample = \"$EXAMPLE_UUID\"\n")
-                    err = capture_error(() -> Pkg.resolve(; io = devnull))
-                    @test err isa Pkg.Types.PkgError && err.msg == expected
-                    @test Pkg.pkgwasm_main(["resolve"]) == 1
+                    @test Pkg.pkgwasm_main(["status"]) == 0
                 end
             finally
                 copy!(DEPOT_PATH, old)
                 Pkg.activate(; io = devnull)
             end
+            # the depot is left as stock wrote it: descriptor and tarball unchanged, nothing added
+            @test Dict(f => read(joinpath(regdir, f)) for f in readdir(regdir)) == before
             # without a Pkg server, stock ignores descriptors and so does PkgWasm
             withenv("JULIA_PKG_SERVER" => "") do
                 @test isempty(Pkg.Registry.reachable_registries(; depots = [depot]))
             end
-            # the in-memory tarball reader is not referenced by the loader any more
-            code = read(joinpath(pkgdir(Pkg), "src", "Registry", "registry_instance.jl"), String)
-            loader = code[findfirst("function _ensure_registry_loaded_slow!", code).start:end]
-            loader = loader[1:findfirst("\nend\n", loader).stop]
-            @test !occursin("uncompress_registry(", loader)
         end
     end
 

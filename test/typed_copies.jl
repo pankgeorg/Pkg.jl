@@ -87,6 +87,19 @@ end
     end
     @test np > 20
     @test nm > 20
+    # review-5 #2: programmatic metadata (not TOML-parser types) is deep-copied, as deepcopy
+    p = T.Project(Dict{String, Any}("custom" => Dict("value" => "before"), "n" => Any[Dict("k" => 1)]))
+    c = T.copy_project(p)
+    p.other["custom"]["value"] = "after"; p.other["n"][1]["k"] = 2
+    @test c.other["custom"]["value"] == "before" && c.other["n"][1]["k"] == 1
+    @test (c == p) == (deepcopy(T.Project(Dict{String, Any}("custom" => Dict("value" => "before"), "n" => Any[Dict("k" => 1)]))) == p)
+    # review-5 #3: a present `extensions = nothing` throws as stock; a missing one is empty
+    stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
+    err(f) = try f(); nothing catch e; (typeof(e), sprint(showerror, e)) end
+    @test err(() -> T.Project(Dict{String, Any}("extensions" => nothing))) ==
+          err(() -> stock.Types.Project(Dict{String, Any}("extensions" => nothing)))
+    @test err(() -> T.Project(Dict{String, Any}("extensions" => nothing))) !== nothing
+    @test isempty(T.Project(Dict{String, Any}()).exts)
     # deepcopy_toml on parsed tables of every kind of TOML value
     n = 0
     for file in TOML_FILES

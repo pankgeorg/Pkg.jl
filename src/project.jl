@@ -229,9 +229,8 @@ function Project(raw::Dict; file = nothing)
     project.deps = with_toml_type(x -> read_project_deps(x, "deps"), get(raw, "deps", nothing))
     project.weakdeps = with_toml_type(x -> read_project_deps(x, "weakdeps"), get(raw, "weakdeps", nothing))
     # (as `get(Dict{String, String}, raw, "extensions")`, converted to the field's type)
-    exts = get(raw, "extensions", nothing)
-    project.exts = exts === nothing ? Dict{String, String}() :
-        with_toml_type(x -> convert(Dict{String, Union{Vector{String}, String}}, x), exts)
+    project.exts = !haskey(raw, "extensions") ? Dict{String, String}() :
+        with_toml_type(x -> convert(Dict{String, Union{Vector{String}, String}}, x), raw["extensions"])
     project.sources = with_toml_type(x -> read_project_sources(x, project), get(raw, "sources", nothing))
     project.extras = with_toml_type(x -> read_project_deps(x, "extras"), get(raw, "extras", nothing))
     project.compat = with_toml_type(x -> read_project_compat(x, project; file), get(raw, "compat", nothing))

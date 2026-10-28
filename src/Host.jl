@@ -47,17 +47,18 @@ partial_path(dest::String) = dest * ".partial"
 # Everything that leaves the seam is a `HostError`: a HostError passes through, anything else
 # (Downloads.RequestError, filesystem errors while writing, publishing or cleaning up) becomes
 # EIO with the original message.
-as_host_error(err, what::String) =
-    err isa HostError ? err : HostError(WASI_EIO, string(what, ": ", sprint(showerror, err)))
+# (`err` not specialized on, its message by showerror_known: static built for Wasm, M4.2 G3)
+as_host_error(@nospecialize(err), what::String) =
+    err isa HostError ? err : HostError(WASI_EIO, string(what, ": ", sprint(Pkg.showerror_known, err)))
 
 # Remove a temporary file on an error path. A failure here is reported (as a HostError)
 # rather than silently leaving the file behind.
-function cleanup!(path::String, err, what::String)
+function cleanup!(path::String, @nospecialize(err), what::String)
     try
         rm(path; force = true)
     catch rm_err
         throw(HostError(WASI_EIO, string(what, ": ", sprint(showerror, as_host_error(err, what)),
-            "; additionally failed to remove ", path, ": ", sprint(showerror, rm_err))))
+            "; additionally failed to remove ", path, ": ", sprint(Pkg.showerror_known, rm_err))))
     end
     throw(as_host_error(err, what))
 end

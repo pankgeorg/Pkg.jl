@@ -1127,7 +1127,8 @@ function download_source(ctx::Context, pkgs; readonly = true)
             end
             return (pkg, success, (urls, path))
         catch err
-            return (pkg, err, catch_backtrace())
+            # (built for Wasm no backtraces: the error is reported without one, M4.2 G3)
+            return (pkg, err, WASM_TARGET ? nothing : catch_backtrace())
         end
     end
 
@@ -1140,11 +1141,13 @@ function download_source(ctx::Context, pkgs; readonly = true)
     try
         for (i, (pkg_i, urls_i, path_i)) in enumerate(pkgs_to_install)
             pkg::eltype(pkgs), exc_or_success, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
-            exc_or_success isa Exception && pkgerror(
-                "Error when installing package $(pkg.name):\n",
-                sprint(Base.showerror, exc_or_success, bt_or_pathurls)
-            )
-            success, (urls, path) = exc_or_success, bt_or_pathurls
+            if exc_or_success isa Exception
+                WASM_TARGET && pkgerror("Error when installing package $(pkg.name):\n", sprint(Pkg.showerror_known, exc_or_success))
+                pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc_or_success, bt_or_pathurls))
+            end
+            # (the result's parts asserted to their types, as 1.13's consumer does)
+            success = exc_or_success::Bool
+            (urls, path) = bt_or_pathurls::Tuple{Set{String}, String}
             success || push!(missed_packages, (; pkg, urls, path))
             bar.current = i
             str = sprint(; context = ctx.io) do io

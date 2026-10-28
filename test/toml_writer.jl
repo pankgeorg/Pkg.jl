@@ -119,6 +119,17 @@ end
             @test a == b
         end
     end
+    @testset "atomic_toml_write with an IdSet of inline tables, as stock (review-5 #1)" begin
+        stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
+        mktempdir() do dir
+            inner = Dict{String, Any}("a" => 1)
+            data = Dict{String, Any}("x" => inner, "y" => Dict{String, Any}("b" => 2))
+            stock.atomic_toml_write(joinpath(dir, "stock.toml"), data; inline_tables = Base.IdSet{Dict}([inner]))
+            Pkg.atomic_toml_write(joinpath(dir, "fork.toml"), data; inline_tables = Base.IdSet{Dict}([inner]))
+            @test read(joinpath(dir, "fork.toml"), String) == read(joinpath(dir, "stock.toml"), String)
+            @test occursin("x = {a = 1}", read(joinpath(dir, "fork.toml"), String))
+        end
+    end
     @testset "errors as stock" begin
         @test same(Dict{String, Any}("u" => uuid4()))          # no conversion function
         @test same(Dict{String, Any}("u" => uuid4()); f = x -> x)  # it returns a non-TOML value

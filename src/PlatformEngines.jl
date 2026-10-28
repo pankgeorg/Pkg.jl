@@ -226,7 +226,7 @@ function get_metadata_headers(url::AbstractString)
     push!(headers, "Julia-Pkg-Protocol" => "1.0")
     push!(headers, "Julia-Pkg-Server" => server)
     push!(headers, "Julia-Version" => string(VERSION))
-    system = triplet(HostPlatform())
+    system = triplet(Pkg.PKGWASM_PLATFORM)
     push!(headers, "Julia-System" => system)
     ci_info = String[]
     for var in CI_VARIABLES

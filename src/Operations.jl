@@ -206,7 +206,7 @@ function load_all_deps_loadable(env::EnvCache)
 end
 
 
-function is_instantiated(env::EnvCache, workspace::Bool = false; platform = HostPlatform())::Bool
+function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Pkg.PKGWASM_PLATFORM)::Bool
     # Load everything
     if workspace
         pkgs = Operations.load_all_deps(env)
@@ -932,7 +932,7 @@ function install_git(
     end
 end
 
-function collect_artifacts(pkg_root::String; platform::AbstractPlatform = HostPlatform(), include_lazy::Bool = false)
+function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM, include_lazy::Bool = false)
     # Check to see if this package has an (Julia)Artifacts.toml
     artifacts_tomls = Tuple{String, Base.TOML.TOMLDict}[]
     for f in artifact_names
@@ -975,7 +975,7 @@ end
 
 function download_artifacts(
         ctx::Context, pkgs;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -1007,7 +1007,7 @@ end
 
 function download_artifacts(
         ctx::Context;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -1090,10 +1090,9 @@ function download_source(ctx::Context, pkgs; readonly = true)
                     end
                 end
             end
-            for repo_url in urls
-                url = get_archive_url_for_version(repo_url, pkg.tree_hash)
-                url !== nothing && push!(archive_urls, url => false)
-            end
+            # PkgWasm (PLAN.md D4): no GitHub-tarball fallback (`get_archive_url_for_version`,
+            # a regex over the repo URL and a request to api.github.com); packages come from the
+            # Pkg server only, and a miss ends in the git exclusion error of `install_git`.
             success = install_archive(archive_urls, pkg.tree_hash, path, io = ctx.io)
             if success && readonly
                 set_readonly(path) # In add mode, files should be read-only
@@ -1759,7 +1758,7 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git = Set{UUID}();
-        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = HostPlatform(),
+        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
         target::Symbol = :deps
     )
     assert_can_add(ctx, pkgs)
@@ -1841,7 +1840,7 @@ end
 # Input: name, uuid, and path
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git::Set{UUID};
-        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = HostPlatform()
+        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM
     )
     assert_can_add(ctx, pkgs)
     # no need to look at manifest.. dev will just nuke whatever is there before
@@ -2727,7 +2726,7 @@ function diff_array(old_env::Union{EnvCache, Nothing}, new_env::EnvCache; manife
     return Tuple{T, S, S}[(uuid, index_pkgs(old, uuid), index_pkgs(new, uuid))::Tuple{T, S, S} for uuid in all_uuids]
 end
 
-function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = HostPlatform())
+function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = Pkg.PKGWASM_PLATFORM)
     # PkgWasm (PLAN.md D10): a stdlib's source is available by definition (no filesystem probe)
     stdlib_source_data(pkg) === nothing || return true
     sourcepath = source_path(manifest_file, pkg)

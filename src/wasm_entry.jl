@@ -19,8 +19,13 @@ pkgwasm_abi_version() = ABI_VERSION
 
 PkgWasm globals (PLAN.md D8, `lanes/pkg-fork/globals.md`) back to their fresh-session state:
 every session cache emptied, every flag at its default, no stream or native-tool object held.
-The build calls this right before image emission; `pkgwasm_init` calls it again, so a
-command never sees state from the build host.
+The build calls this right before image emission (WasmCodegen `Config(pre_image_hooks)`);
+`pkgwasm_init` calls it again, so a command never sees state from the build host.
+
+Safe to call at any time and any number of times: it only resets PkgWasm-owned globals to
+values that are valid fresh-session state, touches no file, no host import and no Base
+global, and takes no lock. Afterwards `host_platform()` throws until `init_globals!()`
+(or `pkgwasm_init()`) runs again, so native use in the same process must re-init first.
 """
 function sanitize_globals!()
     DEFAULT_IO[] = nothing
@@ -43,6 +48,7 @@ function sanitize_globals!()
     empty!(GitTools.GIT_PROTOCOLS)
     empty!(GitTools.GIT_USERS)
     Host.NATIVE_DOWNLOADER[] = nothing
+    PlatformEngines.EXE7Z[] = ""
     HOST_PLATFORM[] = HOST_PLATFORM_PLACEHOLDER # D13: set by init_globals! from Host.platform()
     return nothing
 end

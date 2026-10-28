@@ -502,6 +502,106 @@ end
         end
     end
 
+    @testset "D8 sanitize_globals! as pre-image hook: no build-host state reachable" begin
+        # Poison PkgWasm the way runner/build.jl does (decoy registry in REGISTRY_CACHE with its
+        # package info parsed, session flags set), plus every other PkgWasm cache, then check
+        # that nothing reachable from any PkgWasm global holds a marker string afterwards.
+        mktempdir() do root
+            depot = joinpath(root, "depot")
+            r = joinpath(depot, "registries", "General")
+            mkpath(joinpath(r, "E", "Example"))
+            write(joinpath(r, "Registry.toml"), """
+                name = "General"
+                uuid = "$GENERAL_UUID"
+                repo = "https://pkgwasm-sentinel.invalid/decoy-General.git"
+                description = "DECOY registry from the build host"
+                [packages]
+                $EXAMPLE_UUID = { name = "Example", path = "E/Example" }
+                """)
+            write(joinpath(r, "E", "Example", "Package.toml"), "name = \"Example\"\nuuid = \"$EXAMPLE_UUID\"\nrepo = \"https://pkgwasm-sentinel.invalid/Example.jl.git\"\n")
+            write(joinpath(r, "E", "Example", "Versions.toml"), "[\"9.9.9\"]\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\n")
+            write(joinpath(r, ".tree_info.toml"), "git-tree-sha1 = \"bf156f1d33580ac1fadbb60976e2a8577a66ed42\"\n")
+            regs = Pkg.Registry.reachable_registries(; depots = [depot])
+            for reg in regs, (uuid, pkg) in reg
+                Pkg.Registry.registry_info(pkg) # (Pkg 1.12: registry_info(pkg))
+            end
+            @test !isempty(Pkg.Registry.REGISTRY_CACHE)
+            Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
+            Pkg.OFFLINE_MODE[] = true
+            Pkg.DEFAULT_IO[] = IOBuffer("pkgwasm-sentinel-io")
+            Pkg.PREV_ENV_PATH[] = joinpath(root, "pkgwasm-sentinel-prev")
+            Pkg.PlatformEngines.EXE7Z[] = joinpath(root, "pkgwasm-sentinel-7z")
+            Pkg.PlatformEngines.register_auth_error_handler("https://pkgwasm-sentinel", (u, s, e) -> nothing)
+            Pkg.Types.parse_toml(joinpath(r, "Registry.toml"))
+            Pkg.GitTools.GIT_USERS["pkgwasm-sentinel"] = "x"
+            markers = ["DECOY registry from the build host", "decoy-General.git", "pkgwasm-sentinel", root]
+
+            function reachable_markers(roots)
+                seen = Base.IdSet{Any}()
+                stack = Any[roots...]
+                found = Set{String}()
+                while !isempty(stack)
+                    x = pop!(stack)
+                    (x isa Module || x isa Type || x isa Function || x isa Method || x isa Core.MethodInstance) && continue
+                    x isa Symbol && continue
+                    if x isa AbstractString
+                        for m in markers
+                            occursin(m, x) && push!(found, m)
+                        end
+                        continue
+                    end
+                    isbits(x) && continue
+                    x in seen && continue
+                    push!(seen, x)
+                    if x isa IOBuffer
+                        push!(stack, String(copy(x.data)))
+                    elseif x isa AbstractDict
+                        for (k, v) in x
+                            push!(stack, k, v)
+                        end
+                    elseif x isa AbstractArray || x isa Tuple || x isa AbstractSet
+                        for (i, v) in pairs(x isa AbstractSet ? collect(x) : x)
+                            (x isa AbstractArray && !isassigned(x, i)) || push!(stack, v)
+                        end
+                    else
+                        for i in 1:nfields(x)
+                            isdefined(x, i) && push!(stack, getfield(x, i))
+                        end
+                    end
+                end
+                return found
+            end
+            function pkgwasm_global_values()
+                vals = Any[]
+                mods = Module[Pkg]
+                while !isempty(mods)
+                    m = pop!(mods)
+                    for n in names(m; all = true, imported = false)
+                        isdefined(m, n) || continue
+                        Base.isdeprecated(m, n) && continue
+                        v = getfield(m, n)
+                        if v isa Module
+                            v !== m && parentmodule(v) === m && push!(mods, v)
+                        else
+                            push!(vals, v)
+                        end
+                    end
+                end
+                return vals
+            end
+            @test !isempty(reachable_markers(pkgwasm_global_values())) # the walker sees the poison
+            Pkg.sanitize_globals!()
+            @test isempty(reachable_markers(pkgwasm_global_values()))
+            @test !Pkg.UPDATED_REGISTRY_THIS_SESSION[] && !Pkg.OFFLINE_MODE[]
+            @test Pkg.HOST_PLATFORM[] === Pkg.HOST_PLATFORM_PLACEHOLDER
+            # idempotent, and init restores a usable session
+            Pkg.sanitize_globals!()
+            @test isempty(reachable_markers(pkgwasm_global_values()))
+            @test Pkg.pkgwasm_init() == 0
+            @test Pkg.host_platform() isa Base.BinaryPlatforms.Platform
+        end
+    end
+
     @testset "D11 registry installed unpacked with verified tree hash" begin
         mktempdir() do depot
             old_depot_path = copy(DEPOT_PATH)

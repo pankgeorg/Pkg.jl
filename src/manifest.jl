@@ -305,6 +305,18 @@ end
     return validate_manifest(julia_version, project_hash, environment_id, environment_name, manifest_format, stage1, other, registries, manifest_path)
 end
 
+# `Base.is_v1_format_manifest(raw)`, its `mf isa Dict{String}` told apart by the type TOML's
+# parser makes (M4.2: static dispatch); others as Base natively
+function is_v1_format_manifest(raw::Dict{String, Any})
+    haskey(raw, "manifest_format") || return true
+    mf = raw["manifest_format"]
+    mf isa Dict{String, Any} && return haskey(mf, "uuid")
+    mf isa Dict{String} || return false
+    WASM_TARGET && error("PkgWasm: unsupported manifest_format table")
+    return Base.inferencebarrier(Base.is_v1_format_manifest)(raw)::Bool
+end
+is_v1_format_manifest(raw::Dict) = Base.is_v1_format_manifest(raw)
+
 function read_manifest(f_or_io::Union{String, IO})
     raw = try
         if f_or_io isa IO
@@ -318,7 +330,7 @@ function read_manifest(f_or_io::Union{String, IO})
         end
         rethrow()
     end
-    if Base.is_v1_format_manifest(raw)
+    if is_v1_format_manifest(raw)
         if isempty(raw) # treat an empty Manifest file as v2 format for convenience
             raw["manifest_format"] = "2.0.0"
         else
@@ -451,10 +463,11 @@ function destructure(manifest::Manifest)::Dict
                 if all(dep -> haskey(unique_name, first(dep)), deptype) && all(dep -> unique_name[first(dep)], deptype)
                     new_entry[depname] = sort(collect(keys(deptype)))
                 else
-                    new_entry[depname] = Dict{String, String}()
+                    depdict = Dict{String, String}()  # (built typed, then stored: M4.2)
                     for (name, uuid) in deptype
-                        new_entry[depname][name] = string(uuid)
+                        depdict[name] = string(uuid)
                     end
+                    new_entry[depname] = depdict
                 end
             end
         end
@@ -481,7 +494,14 @@ function destructure(manifest::Manifest)::Dict
         if manifest.manifest_format.major == 1
             push!(get!(raw, entry.name, Dict{String, Any}[]), new_entry)
         elseif manifest.manifest_format.major == 2
-            push!(get!(raw["deps"], entry.name, Dict{String, Any}[]), new_entry)
+            # (the deps table made above, typed: M4.2)
+            deps_table = raw["deps"]
+            if deps_table isa Dict{String, Vector{Dict{String, Any}}}
+                push!(get!(deps_table, entry.name, Dict{String, Any}[]), new_entry)
+            else
+                WASM_TARGET && error("PkgWasm: unexpected deps table in a manifest")
+                Base.inferencebarrier(push!)(Base.inferencebarrier(get!)(deps_table, entry.name, Dict{String, Any}[]), new_entry)
+            end
         end
     end
     return raw

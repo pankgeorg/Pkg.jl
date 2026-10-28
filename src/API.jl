@@ -172,7 +172,7 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
                 saved_initial_snapshot[] = true
             end
             kwargs = merge((; kwargs...), (; io)) # (a NamedTuple: its names known statically)
-            pkgs = deepcopy(pkgs) # don't mutate input
+            pkgs = Types.copy_packagespecs(pkgs) # don't mutate input (deepcopy's, typed: M4.2)
             foreach(handle_package_input!, pkgs)
             ret = $f(ctx, pkgs; kwargs...)
             lazy = get(kwargs, :lazy, false)

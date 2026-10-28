@@ -476,6 +476,17 @@ copy_exts(e::Dict{String, Union{Vector{String}, String}}) =
     Dict{String, Union{Vector{String}, String}}(k => (v isa Vector{String} ? copy(v) : v) for (k, v) in e)
 copy_gitrepo(r::GitRepo) = GitRepo(r.source, r.rev, r.subdir)
 
+# `deepcopy(pkgs)` of PackageSpecs, typed: each spec and its GitRepo copied once, so what is
+# shared in `pkgs` is shared in the copy, as deepcopy's memo has it
+function copy_packagespecs(pkgs::Vector{PackageSpec})
+    specs = IdDict{PackageSpec, PackageSpec}()
+    repos = IdDict{GitRepo, GitRepo}()
+    return PackageSpec[get!(specs, p) do
+        repo = get!(() -> copy_gitrepo(p.repo), repos, p.repo)
+        PackageSpec(p.name, p.uuid, copy_version(p.version), p.tree_hash, repo, p.path, p.pinned, p.url, p.rev, p.subdir)
+    end for p in pkgs]
+end
+
 # (`deepcopy` of a project file's comments)
 copy_comments(::Nothing) = nothing
 copy_comments(c::TOML.Comments) = TOML.Comments(

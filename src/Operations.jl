@@ -1514,9 +1514,10 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                 url = "$server/package/$(pkg.uuid)/$(pkg.tree_hash)"
                 push!(archive_urls, url => true)
             end
-            # PkgWasm (PLAN.md D4): no GitHub-tarball fallback (`get_archive_url_for_version`,
-            # a regex over the repo URL and a request to api.github.com); packages come from the
-            # Pkg server only, and a miss ends in the git exclusion error of `install_git`.
+            for repo_url in urls
+                url = get_archive_url_for_version(repo_url, pkg.tree_hash)
+                url !== nothing && push!(archive_urls, url => false)
+            end
             try
                 success = install_archive(archive_urls, pkg.tree_hash, path, io = ctx.io)
                 if success && readonly

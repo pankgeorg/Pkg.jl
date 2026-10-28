@@ -28,7 +28,6 @@ global, and takes no lock. Afterwards `host_platform()` throws until `init_globa
 (or `pkgwasm_init()`) runs again, so native use in the same process must re-init first.
 """
 function sanitize_globals!()
-    DEFAULT_IO[] = nothing
     OFFLINE_MODE[] = false
     UPDATED_REGISTRY_THIS_SESSION[] = false
     RESPECT_SYSIMAGE_VERSIONS[] = true

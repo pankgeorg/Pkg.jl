@@ -2,6 +2,7 @@
 
 module Resolve
 import ..Pkg
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using ..Versions
 import ..stdout_f, ..stderr_f
@@ -168,13 +169,13 @@ function sanity_check(graph::Graph, sources::Set{UUID} = Set{UUID}(), verbose::B
 
     id(p) = pkgID(p, graph)
 
-    isempty(req_inds) || @warn("sanity check called on a graph with non-empty requirements")
+    isempty(req_inds) || @pkg_warn("sanity check called on a graph with non-empty requirements")
     if !any(is_julia(graph, fp0) for fp0 in fix_inds)
-        @warn("sanity check called on a graph without julia requirement, adding it")
+        @pkg_warn("sanity check called on a graph without julia requirement, adding it")
         add_fixed!(graph, Dict(uuid_julia => Fixed(VERSION)))
     end
     if length(fix_inds) ≠ 1
-        @warn("sanity check called on a graph with extra fixed requirements (besides julia)")
+        @pkg_warn("sanity check called on a graph with extra fixed requirements (besides julia)")
     end
 
     isources = isempty(sources) ?
@@ -403,11 +404,11 @@ function verify_solution(sol::Vector{Int}, graph::Graph)
     # verify constraints and dependencies
     for p0 in 1:np
         s0 = sol[p0]
-        gconstr[p0][s0] || (@warn("gconstr[$p0][$s0] fail"); return false)
+        gconstr[p0][s0] || (@pkg_warn("gconstr[$p0][$s0] fail"); return false)
         for (j1, p1) in enumerate(gadj[p0])
             msk = gmsk[p0][j1]
             s1 = sol[p1]
-            msk[s1, s0] || (@warn("gmsk[$p0][$p1][$s1,$s0] fail"); return false)
+            msk[s1, s0] || (@pkg_warn("gmsk[$p0][$p1][$s1,$s0] fail"); return false)
         end
     end
     return true

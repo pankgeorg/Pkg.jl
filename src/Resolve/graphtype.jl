@@ -746,7 +746,7 @@ end
 
 function log_event_global!(graph::Graph, msg::String)
     rlog = graph.data.rlog
-    rlog.verbose && @info(msg)
+    rlog.verbose && @pkg_info(msg)
     return push!(rlog.globals, (nothing, msg))
 end
 
@@ -1271,7 +1271,7 @@ function validate_versions!(graph::Graph, sources::Set{Int} = Set{Int}(); skim::
                 # we'll trigger a failure by pinning the highest version
                 v0 = findlast(old_gconstr0[1:(end - 1)])
                 @assert v0 ≢ nothing # this should be ensured by a previous pruning
-                # @info "pinning $(logstr(id(p0))) to version $(pvers[p0][v0])"
+                # @pkg_info "pinning $(logstr(id(p0))) to version $(pvers[p0][v0])"
                 log_event_pin!(graph, pkgs[p0], pvers[p0][v0])
                 graph.gconstr[p0][v0] = true
                 err_msg_preamble = "Package $(logstr(id(p0))) has no possible versions; here is the log when trying to validate the highest version left until this point, $(logstr(id(p0), pvers[p0][v0]))):\n"

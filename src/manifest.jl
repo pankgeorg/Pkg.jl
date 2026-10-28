@@ -92,15 +92,9 @@ function read_apps(apps::Dict)
     for (appname, app) in apps
         # (each app's table, told apart by type: M4.2)
         appinfo = with_toml_dict(app) do app
-            submodule = get(app, "submodule", nothing)
+            submodule = toml_string_or_nothing(get(app, "submodule", nothing))
             julia_flags_raw = get(app, "julia_flags", nothing)
-            julia_flags = if julia_flags_raw === nothing
-                String[]
-            else
-                with_toml_type(julia_flags_raw) do julia_flags_raw
-                    String[flag::String for flag in julia_flags_raw]
-                end
-            end
+            julia_flags = julia_flags_raw === nothing ? String[] : toml_strings(julia_flags_raw)
             AppInfo(
                 appname::String,
                 app["julia_command"]::String,
@@ -108,7 +102,7 @@ function read_apps(apps::Dict)
                 julia_flags,
                 app
             )
-        end
+        end::AppInfo
         appinfos[appinfo.name] = appinfo
     end
     return appinfos
@@ -194,9 +188,9 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
     manifest_format = VersionNumber(raw["manifest_format"]::String)
     if !in(manifest_format.major, 1:2)
         if f_or_io isa IO
-            @warn "Unknown Manifest.toml format version detected in streamed manifest. Unexpected behavior may occur" manifest_format
+            @pkg_warn "Unknown Manifest.toml format version detected in streamed manifest. Unexpected behavior may occur" manifest_format
         else
-            @warn "Unknown Manifest.toml format version detected in file `$(f_or_io)`. Unexpected behavior may occur" manifest_format maxlog = 1 _id = Symbol(f_or_io)
+            @pkg_warn "Unknown Manifest.toml format version detected in file `$(f_or_io)`. Unexpected behavior may occur" manifest_format maxlog = 1 _id = Symbol(f_or_io)
         end
     end
     stage1 = Dict{String, Vector{Stage1}}()
@@ -227,7 +221,7 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
                     entry.exts = get(Dict{String, String}, info, "extensions")
                 catch
                     # TODO: Should probably not unconditionally log something
-                    # @debug "Could not parse manifest entry for `$name`" f_or_io
+                    # @pkg_debug "Could not parse manifest entry for `$name`" f_or_io
                     rethrow()
                 end
                 entry.other = info
@@ -386,7 +380,7 @@ function write_manifest(env::EnvCache)
 end
 function write_manifest(manifest::Manifest, manifest_file::AbstractString)
     if manifest.manifest_format.major == 1
-        @warn """The active manifest file at `$(manifest_file)` has an old format that is being maintained.
+        @pkg_warn """The active manifest file at `$(manifest_file)` has an old format that is being maintained.
         To update to the new format, which is supported by Julia versions ≥ 1.6.2, run `import Pkg; Pkg.upgrade_manifest()` which will upgrade the format without re-resolving.
         To then record the julia version re-resolve with `Pkg.resolve()` and if there are resolve conflicts consider `Pkg.update()`.""" maxlog = 1 _id = Symbol(manifest_file)
     end
@@ -421,7 +415,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
             return
         end
     end
@@ -432,7 +426,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
             return
         end
     end
@@ -442,7 +436,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
         end
     end
 end

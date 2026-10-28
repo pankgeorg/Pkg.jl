@@ -461,7 +461,7 @@ function parse_package_identifier(pkg_id::PackageIdentifier; add_or_develop = fa
     word = pkg_id.val
     if add_or_develop
         if occursin(name_re, word) && isdir(expanduser(word))
-            @info "Use `./$word` to add or develop the local directory at `$(Base.contractuser(abspath(word)))`."
+            @pkg_info "Use `./$word` to add or develop the local directory at `$(Base.contractuser(abspath(word)))`."
         end
         if isurl(word)
             return PackageSpec(; url = word)

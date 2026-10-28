@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module GitTools
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using ..Pkg
 using ..MiniProgressBars
@@ -267,7 +268,7 @@ function blob_hash(::Type{HashType}, path::AbstractString) where {HashType}
         if isa(e, InterruptException)
             rethrow(e)
         end
-        @warn("Unable to open $(path) for hashing; git-tree-sha1 likely suspect")
+        @pkg_warn("Unable to open $(path) for hashing; git-tree-sha1 likely suspect")
     end
 
     # Finish it off and return the digest!

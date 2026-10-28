@@ -209,3 +209,56 @@ function toml_float(@nospecialize(x))
     WASM_TARGET && error("PkgWasm: expected a TOML number")
     return Base.inferencebarrier(Float64)(x)::Float64
 end
+
+"`UUID(x)` for a value from a TOML table (a String; an integer as UUID takes it)."
+function toml_uuid(@nospecialize(x))
+    x isa String && return Base.UUID(x)
+    x isa Int64 && return Base.UUID(x)
+    x isa Bool && return Base.UUID(x)
+    WASM_TARGET && throw(MethodError(Base.UUID, (x,)))
+    return Base.inferencebarrier(Base.UUID)(x)::Base.UUID
+end
+
+"A TOML value as a `Union{String, Nothing}` field takes it (its `convert`)."
+function toml_string_or_nothing(@nospecialize(x))
+    x isa Union{String, Nothing} && return x
+    WASM_TARGET && throw(MethodError(convert, (Union{String, Nothing}, x)))
+    return Base.inferencebarrier(convert)(Union{String, Nothing}, x)::Union{String, Nothing}
+end
+
+"`String[s::String for s in x]` for a TOML value `x`."
+function toml_strings(@nospecialize(x))
+    x isa Vector{String} && return String[s for s in x]
+    x isa Vector{Any} && return String[s::String for s in x]
+    if x isa Union{Vector{Int64}, Vector{Float64}, Vector{Bool}}
+        isempty(x) && return String[]
+        throw(TypeError(:typeassert, "", String, first(x)))
+    end
+    WASM_TARGET && error("PkgWasm: expected a TOML array of strings")
+    return Base.inferencebarrier(v -> String[s::String for s in v])(x)::Vector{String}
+end
+
+"`for v in x; f(v); end` for a TOML value `x`, told apart by the types TOML's parser makes."
+function toml_foreach(f::F, @nospecialize(x)) where {F}
+    if x isa Vector{Any}
+        foreach(f, x)
+    elseif x isa Vector{String}
+        foreach(f, x)
+    elseif x isa Vector{Int64}
+        foreach(f, x)
+    elseif x isa Vector{Float64}
+        foreach(f, x)
+    elseif x isa Vector{Bool}
+        foreach(f, x)
+    elseif x isa String
+        foreach(f, x)
+    elseif x isa Dict{String, Any}
+        foreach(f, x)
+    elseif x isa Union{Int64, Float64, Bool}
+        f(x)  # (a number is an iterable of itself)
+    else
+        WASM_TARGET && error("PkgWasm: unsupported TOML value type")
+        Base.inferencebarrier(foreach)(f, x)
+    end
+    return nothing
+end

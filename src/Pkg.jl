@@ -122,6 +122,7 @@ usable_io(io) = (io isa Base.TTY) || (io isa IOContext{IO} && io.io isa Base.TTY
 can_fancyprint(io::IO) = (usable_io(io)) && (get(ENV, "CI", nothing) != "true")
 should_autoprecompile() = Base.JLOptions().use_compiled_modules == 1 && Base.get_bool_env("JULIA_PKG_PRECOMPILE_AUTO", true)
 
+include("logging.jl")
 include("toml_writer.jl")
 include("utils.jl")
 include("stdlib_data.jl")
@@ -892,7 +893,7 @@ end
 ################
 
 function installed()
-    @warn "Pkg.installed() is deprecated"
+    @pkg_warn "Pkg.installed() is deprecated"
     deps = dependencies()
     installs = Dict{String, VersionNumber}()
     for (uuid, dep) in deps
@@ -904,7 +905,7 @@ function installed()
 end
 
 function dir(pkg::String, paths::AbstractString...)
-    @warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
+    @pkg_warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
     pkgid = Base.identify_package(pkg)
     pkgid === nothing && return nothing
     path = Base.locate_package(pkgid)

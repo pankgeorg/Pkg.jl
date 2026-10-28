@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module API
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Printf
@@ -70,7 +71,7 @@ function package_info(env::EnvCache, pkg::PackageSpec, entry::PackageEntry)::Pac
         safe_realpath(manifest_rel_path(env, pkg.repo.source::String))
     _source_path = Operations.source_path(env.manifest_file, pkg)
     if _source_path === nothing
-        @debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
+        @pkg_debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
         pkgerror("could not find source path for package $(err_rep(pkg)) based on $(env.manifest_file)")
     end
     info = PackageInfo(
@@ -768,7 +769,7 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
         manifest = try
             read_manifest(path)
         catch e
-            @warn "Reading manifest file at $path failed with error" exception = e
+            @pkg_warn "Reading manifest file at $path failed with error" exception = e
             return nothing
         end
 
@@ -812,7 +813,7 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
         artifact_dict = try
             parse_toml(path)
         catch e
-            @warn "Reading artifacts file at $path failed with error" exception = e
+            @pkg_warn "Reading artifacts file at $path failed with error" exception = e
             return nothing
         end
 
@@ -1068,12 +1069,12 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
                     try
                         size += lstat(path).size
                     catch ex
-                        @error("Failed to calculate size of $path", exception = ex)
+                        @pkg_error("Failed to calculate size of $path", exception = ex)
                     end
                 end
             end
         catch ex
-            @error("Failed to calculate size of $path", exception = ex)
+            @pkg_error("Failed to calculate size of $path", exception = ex)
         end
         return size
     end
@@ -1084,7 +1085,7 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
             try
                 lstat(path).size
             catch ex
-                @error("Failed to calculate size of $path", exception = ex)
+                @pkg_error("Failed to calculate size of $path", exception = ex)
                 0
             end
         else
@@ -1094,7 +1095,7 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
             Base.Filesystem.prepare_for_deletion(path)
             Base.rm(path; recursive = true, force = true)
         catch e
-            @warn("Failed to delete $path", exception = e)
+            @pkg_warn("Failed to delete $path", exception = e)
             return 0
         end
         if verbose
@@ -1165,7 +1166,7 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
                     Base.rm(p; recursive = true, force = true, allow_delayed_delete = false)
                     Base.rm(f)
                 catch e
-                    @debug "Failed to delete $p" exception = e
+                    @pkg_debug "Failed to delete $p" exception = e
                 end
             end
             for dir in delayed_delete_dirs
@@ -1257,7 +1258,7 @@ function precompile(
     Context!(ctx; kwargs...)
     if !already_instantiated
         instantiate(ctx; allow_autoprecomp = false, kwargs...)
-        @debug "precompile: instantiated"
+        @pkg_debug "precompile: instantiated"
     end
 
     # TODO: Maybe this should be done in Base?
@@ -1329,7 +1330,7 @@ function instantiate(
     Types.check_manifest_julia_version_compat(ctx.env.manifest, ctx.env.manifest_file; julia_version_strict)
 
     if Operations.is_manifest_current(ctx.env) === false
-        @warn """The project dependencies or compat requirements have changed since the manifest was last resolved.
+        @pkg_warn """The project dependencies or compat requirements have changed since the manifest was last resolved.
         It is recommended to `Pkg.resolve()` or consider `Pkg.update()` if necessary."""
     end
 

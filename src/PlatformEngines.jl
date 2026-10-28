@@ -3,6 +3,7 @@
 # Content in this file is extracted from BinaryProvider.jl, see LICENSE.method
 
 module PlatformEngines
+import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using SHA, Downloads, Tar
 import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, toml_float
@@ -54,7 +55,7 @@ function get_server_dir(
     url == server || startswith(url, "$server/") || return
     m = match(r"^\w+:///?([^\\/]+)(?:$|/)", server)
     if m === nothing
-        @warn "malformed Pkg server value" server
+        @pkg_warn "malformed Pkg server value" server
         return
     end
     isempty(Base.DEPOT_PATH) && return
@@ -117,19 +118,19 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     isfile(auth_file) || return handle_auth_error(url, "no-auth-file"; verbose = verbose)
     # TODO: check for insecure auth file permissions
     if !is_secure_url(url)
-        @warn "refusing to send auth info over insecure connection" url = url
+        @pkg_warn "refusing to send auth info over insecure connection" url = url
         return handle_auth_error(url, "insecure-connection"; verbose = verbose)
     end
     # parse the auth file
     auth_info = try
         TOML.parsefile(auth_file)
     catch err
-        @error "malformed auth file" file = auth_file err = err
+        @pkg_error "malformed auth file" file = auth_file err = err
         return handle_auth_error(url, "malformed-file"; verbose = verbose)
     end
     # check for an auth token
     if !haskey(auth_info, "access_token")
-        @warn "auth file without access_token field" file = auth_file
+        @pkg_warn "auth file without access_token field" file = auth_file
         return handle_auth_error(url, "no-access-token"; verbose = verbose)
     end
     auth_token = auth_info["access_token"]::String
@@ -149,31 +150,31 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     end
     if !haskey(auth_info, "refresh_url") || !haskey(auth_info, "refresh_token")
         if expires_at ≤ time_now
-            @warn "expired auth without refresh keys" file = auth_file
+            @pkg_warn "expired auth without refresh keys" file = auth_file
         end
         # try it anyway since we can't refresh
         return something(handle_auth_error(url, "no-refresh-key"; verbose = verbose), auth_header)
     end
     refresh_url = auth_info["refresh_url"]::String
     if !is_secure_url(refresh_url)
-        @warn "ignoring insecure auth refresh URL" url = refresh_url
+        @pkg_warn "ignoring insecure auth refresh URL" url = refresh_url
         return something(handle_auth_error(url, "insecure-refresh-url"; verbose = verbose), auth_header)
     end
-    verbose && @info "Refreshing expired auth token..." file = auth_file
+    verbose && @pkg_info "Refreshing expired auth token..." file = auth_file
     tmp = tempname()
     refresh_token = auth_info["refresh_token"]::String
     refresh_auth = "Authorization" => "Bearer $refresh_token"
     try
         download(refresh_url, tmp, auth_header = refresh_auth, verbose = verbose)
     catch err
-        @warn "token refresh failure" file = auth_file url = refresh_url err = err
+        @pkg_warn "token refresh failure" file = auth_file url = refresh_url err = err
         rm(tmp, force = true)
         return handle_auth_error(url, "token-refresh-failed"; verbose = verbose)
     end
     auth_info = try
         TOML.parsefile(tmp)
     catch err
-        @warn "discarding malformed auth file" url = refresh_url err = err
+        @pkg_warn "discarding malformed auth file" url = refresh_url err = err
         rm(tmp, force = true)
         return something(handle_auth_error(url, "malformed-file"; verbose = verbose), auth_header)
     end
@@ -181,7 +182,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
         if haskey(auth_info, "refresh_token")
             auth_info["refresh_token"] = "*"^64
         end
-        @warn "discarding auth file without access token" auth = auth_info
+        @pkg_warn "discarding auth file without access token" auth = auth_info
         rm(tmp, force = true)
         return something(handle_auth_error(url, "no-access-token"; verbose = verbose), auth_header)
     end
@@ -404,7 +405,7 @@ function download_verify(
     if isfile(dest)
         file_existed = true
         if verbose
-            @info("Destination file $(dest) already exists, verifying...")
+            @pkg_info("Destination file $(dest) already exists, verifying...")
         end
 
         # verify download, if it passes, return happy.  If it fails, (and
@@ -426,7 +427,7 @@ function download_verify(
             download(url, dest; verbose = verbose || !quiet_download, progress)
             break
         catch err
-            @debug "download and verify failed on attempt $i/$attempts" url dest err
+            @pkg_debug "download and verify failed on attempt $i/$attempts" url dest err
             # for system errors like `no space left on device` exit after first try
             if err isa SystemError || i == attempts
                 rethrow()
@@ -442,7 +443,7 @@ function download_verify(
         # and start over from scratch.
         if file_existed
             if verbose
-                @info("Continued download didn't work, restarting from scratch")
+                @pkg_info("Continued download didn't work, restarting from scratch")
             end
             Base.rm(dest; force = true)
 
@@ -608,7 +609,7 @@ function download_verify_unpack(
     should_delete = !download_verify(url, hash, tarball_path; force, verbose, quiet_download, progress)
     if should_delete
         if verbose
-            @info("Removing dest directory $(dest) as source tarball changed")
+            @pkg_info("Removing dest directory $(dest) as source tarball changed")
         end
         Base.rm(dest; recursive = true, force = true)
     end
@@ -616,7 +617,7 @@ function download_verify_unpack(
     # If the destination path already exists, don't bother to unpack
     if !ignore_existence && isdir(dest)
         if verbose
-            @info("Destination directory $(dest) already exists, returning")
+            @pkg_info("Destination directory $(dest) already exists, returning")
         end
 
         # Signify that we didn't do any unpacking
@@ -625,7 +626,7 @@ function download_verify_unpack(
 
     try
         if verbose
-            @info("Unpacking $(tarball_path) into $(dest)...")
+            @pkg_info("Unpacking $(tarball_path) into $(dest)...")
         end
         isnothing(progress) || progress(10000, 10000; status = "unpacking")
         with_decompressed(tarball_path) do tar_path
@@ -698,7 +699,7 @@ function verify(
             if stat(hash_path).mtime >= stat(path).mtime
                 # If all of that is true, then we're good!
                 if verbose
-                    @info("Hash cache is consistent, returning true")
+                    @pkg_info("Hash cache is consistent, returning true")
                 end
                 status = :hash_cache_consistent
 
@@ -710,19 +711,19 @@ function verify(
                 end
             else
                 if verbose
-                    @info("File has been modified, hash cache invalidated")
+                    @pkg_info("File has been modified, hash cache invalidated")
                 end
                 status = :file_modified
             end
         else
             if verbose
-                @info("Verification hash mismatch, hash cache invalidated")
+                @pkg_info("Verification hash mismatch, hash cache invalidated")
             end
             status = :hash_cache_mismatch
         end
     else
         if verbose
-            @info("No hash cache found")
+            @pkg_info("No hash cache found")
         end
         status = :hash_cache_missing
     end
@@ -733,7 +734,7 @@ function verify(
     @assert occursin(r"^[0-9a-f]{64}$", calc_hash)
 
     if verbose
-        @info("Calculated hash $calc_hash for file $path")
+        @pkg_info("Calculated hash $calc_hash for file $path")
     end
 
     if calc_hash != hash
@@ -741,7 +742,7 @@ function verify(
         msg *= "  Expected sha256:   $hash\n"
         msg *= "  Calculated sha256: $calc_hash"
         if isnothing(details)
-            @error(msg)
+            @pkg_error(msg)
         else
             push!(details, msg)
         end
@@ -763,7 +764,7 @@ function verify(
         end
 
         if verbose
-            @warn("Unable to create hash cache file $(hash_path)")
+            @pkg_warn("Unable to create hash cache file $(hash_path)")
         end
     end
 
@@ -782,11 +783,11 @@ function verify_archive_tree_hash(tar_gz::AbstractString, expected_hash::Base.SH
     calc_hash = try
         Base.SHA1(with_decompressed(tar_path -> open(Tar.tree_hash, tar_path), tar_gz))
     catch err
-        @warn "unable to decompress and read archive" exception = err
+        @pkg_warn "unable to decompress and read archive" exception = err
         return false
     end
     if calc_hash != expected_hash
-        @warn "tarball content does not match expected git-tree-sha1"
+        @pkg_warn "tarball content does not match expected git-tree-sha1"
         return false
     end
     return true

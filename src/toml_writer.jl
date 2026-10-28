@@ -311,14 +311,20 @@ end
 """
     TOMLWriter.print([f], io, table; sorted = false, by = identity, inline_tables = nothing)
 
-`TOML.print(f, io, table; sorted, by, inline_tables)`, with `inline_tables` a vector of
-tables (or `nothing`).
+`TOML.print(f, io, table; sorted, by, inline_tables)`; `inline_tables` an `IdSet` (as
+stock), a vector of tables or `nothing`.
 """
 print(f::F, io::IO, a::AbstractDict; sorted::Bool = false, by::B = identity,
-      inline_tables::Union{Nothing, Vector} = nothing) where {F, B} =
-    print_table(f, io, a; sorted, by, inline_tables)
+      inline_tables = nothing) where {F, B} =
+    print_table(f, io, a; sorted, by, inline_tables = inline_vector(inline_tables))
 print(io::IO, a::AbstractDict; sorted::Bool = false, by::B = identity,
-      inline_tables::Union{Nothing, Vector} = nothing) where {B} =
-    print_table(nothing, io, a; sorted, by, inline_tables)
+      inline_tables = nothing) where {B} =
+    print_table(nothing, io, a; sorted, by, inline_tables = inline_vector(inline_tables))
+
+# the inline tables as a vector (compared by identity): as given, or the elements of the
+# `IdSet` stock `TOML.print` takes
+inline_vector(::Nothing) = nothing
+inline_vector(v::Vector) = v
+inline_vector(s::Base.IdSet) = Any[x for x in s]
 
 end # module

@@ -418,14 +418,28 @@ end
 # by `EnvCache` are only compared and read.)
 copy_versionspec(v::VersionSpec) = VersionSpec(copy(v.ranges))
 copy_version(@nospecialize(v)) = v isa VersionSpec ? copy_versionspec(v) : v
-copy_appinfo(a::AppInfo) = AppInfo(a.name, a.julia_command, a.submodule, copy(a.julia_flags), deepcopy_toml(a.other))
+# `deepcopy(v)` of a value of a table kept in a snapshot: by the types TOML's parser makes,
+# others (programmatic metadata) natively by `deepcopy` (built for Wasm an error)
+function snapshot_copy(@nospecialize(v))
+    v isa Dict{String, Any} && return Dict{String, Any}(k => snapshot_copy(x) for (k, x) in v)
+    v isa Union{String, Int64, Float64, Bool, Nothing, Dates.DateTime, Dates.Date, Dates.Time} && return v
+    v isa Vector{Any} && return Any[snapshot_copy(x) for x in v]
+    v isa Vector{String} && return copy(v)
+    v isa Vector{Int64} && return copy(v)
+    v isa Vector{Float64} && return copy(v)
+    v isa Vector{Bool} && return copy(v)
+    WASM_TARGET && error("PkgWasm: unsupported value in a project or manifest table")
+    return Base.inferencebarrier(deepcopy)(v)
+end
+
+copy_appinfo(a::AppInfo) = AppInfo(a.name, a.julia_command, a.submodule, copy(a.julia_flags), snapshot_copy(a.other))
 copy_exts(e::Dict{String, Union{Vector{String}, String}}) =
     Dict{String, Union{Vector{String}, String}}(k => (v isa Vector{String} ? copy(v) : v) for (k, v) in e)
 copy_gitrepo(r::GitRepo) = GitRepo(r.source, r.rev, r.subdir)
 
 function copy_project(p::Project)
     return Project(;
-        other = deepcopy_toml(p.other),
+        other = snapshot_copy(p.other),
         name = p.name, uuid = p.uuid, version = copy_version(p.version),
         manifest = p.manifest, entryfile = p.entryfile,
         deps = copy(p.deps), _deps_weak = copy(p._deps_weak), weakdeps = copy(p.weakdeps),
@@ -434,7 +448,7 @@ function copy_project(p::Project)
         apps = Dict{String, AppInfo}(k => copy_appinfo(v) for (k, v) in p.apps),
         compat = Dict{String, Compat}(k => Compat(copy_versionspec(v.val), v.str) for (k, v) in p.compat),
         sources = Dict{String, Dict{String, String}}(k => copy(v) for (k, v) in p.sources),
-        workspace = deepcopy_toml(p.workspace),
+        workspace = snapshot_copy(p.workspace),
     )
 end
 
@@ -445,7 +459,7 @@ function copy_entry(e::PackageEntry)
         repo = copy_gitrepo(e.repo), tree_hash = e.tree_hash,
         deps = copy(e.deps), weakdeps = copy(e.weakdeps), exts = copy_exts(e.exts), uuid = e.uuid,
         apps = Dict{String, AppInfo}(k => copy_appinfo(v) for (k, v) in e.apps),
-        other = other === nothing ? nothing : other isa Dict{String, Any} ? deepcopy_toml(other) :
+        other = other === nothing ? nothing : other isa Dict{String, Any} ? snapshot_copy(other) :
             WASM_TARGET ? error("PkgWasm: unsupported manifest entry table") : Base.inferencebarrier(deepcopy)(other),
     )
 end
@@ -454,7 +468,7 @@ function copy_manifest(m::Manifest)
     return Manifest(;
         julia_version = m.julia_version, project_hash = m.project_hash, manifest_format = m.manifest_format,
         deps = Dict{UUID, PackageEntry}(k => copy_entry(v) for (k, v) in m.deps),
-        other = deepcopy_toml(m.other),
+        other = snapshot_copy(m.other),
     )
 end
 

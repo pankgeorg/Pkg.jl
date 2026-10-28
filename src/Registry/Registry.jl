@@ -347,7 +347,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                 try
                     download_verify(url, nothing, tmp)
                 catch err
-                    Pkg.Types.pkgerror("could not download $url \nException: $(sprint(showerror, err))")
+                    Pkg.Types.pkgerror("could not download $url \nException: $(sprint(Pkg.showerror_known, err))")
                 end
                 _hash = pkg_server_url_hash(url)
                 if !verify_archive_tree_hash(tmp, _hash)
@@ -392,7 +392,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         try
                             download_registry_dir(url, hash, tmp)
                         catch err
-                            Pkg.Types.pkgerror("could not download $url \nException: $(sprint(showerror, err))")
+                            Pkg.Types.pkgerror("could not download $url \nException: $(sprint(Pkg.showerror_known, err))")
                         end
                         tree_info_file = joinpath(tmp, ".tree_info.toml")
                         write(tree_info_file, "git-tree-sha1 = " * repr(string(hash)))
@@ -479,7 +479,7 @@ function rm(regs::Vector{RegistrySpec}; io::IO = stderr_f())
         if isfile(registry.path)
             d = TOML.parsefile(registry.path)
             if haskey(d, "path")
-                compressed_tar = joinpath(dirname(registry.path), d["path"])
+                compressed_tar = joinpath(dirname(registry.path), d["path"]::String)
                 Base.rm(compressed_tar; force = true)
                 remove_registry_cache(compressed_tar)
             end
@@ -641,7 +641,7 @@ end
                             try
                                 download_verify(url, nothing, tmp)
                             catch err
-                                push!(errors, (reg.path, "failed to download from $(url). Exception: $(sprint(showerror, err))"))
+                                push!(errors, (reg.path, "failed to download from $(url). Exception: $(sprint(Pkg.showerror_known, err))"))
                                 @goto done_tarball_read
                             end
                             hash = pkg_server_url_hash(url)
@@ -680,7 +680,7 @@ end
                                     download_registry_dir(url, new_hash, tmp)
                                     registry_update_log[string(reg.uuid)] = now()
                                 catch err
-                                    push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(sprint(showerror, err))"))
+                                    push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(sprint(Pkg.showerror_known, err))"))
                                     @goto done_tarball_unpack
                                 end
                                 tree_info_file = joinpath(tmp, ".tree_info.toml")
@@ -819,7 +819,7 @@ function status(io::IO = stderr_f())
             print(io, "    ", registry_description(reg))
             update_time = get(registry_update_log, string(reg.uuid), nothing)
             if !isnothing(update_time)
-                time_string = Dates.format(update_time, dateformat"yyyy-mm-dd HH:MM:SS")
+                time_string = Dates.format(update_time::DateTime, dateformat"yyyy-mm-dd HH:MM:SS") # written by save_registry_update_log
                 print(io, ", last updated $(time_string)")
             end
             println(io)

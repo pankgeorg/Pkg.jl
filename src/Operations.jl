@@ -1859,7 +1859,7 @@ function add(
     else
         record_project_hash(ctx.env)
         write_env(ctx.env)
-        names_str = join(names, ", ")
+        names_str = join(String[string(name) for name in names], ", ") # typed (string(nothing) == "nothing" as before)
         printpkgstyle(ctx.io, :Added, "$names_str to [$(target)]")
     end
     return

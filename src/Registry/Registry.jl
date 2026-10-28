@@ -259,7 +259,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                 try
                     download_verify(url, nothing, tmp)
                 catch err
-                    Pkg.Types.pkgerror("could not download $url \nException: $(sprint(showerror, err))")
+                    Pkg.Types.pkgerror("could not download $url \nException: $(sprint(Pkg.showerror_known, err))")
                 end
                 _hash = pkg_server_url_hash(url)
                 if !verify_archive_tree_hash(tmp, _hash)
@@ -301,7 +301,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         try
                             download_registry_dir(url, hash, tmp)
                         catch err
-                            Pkg.Types.pkgerror("could not download $url \nException: $(sprint(showerror, err))")
+                            Pkg.Types.pkgerror("could not download $url \nException: $(sprint(Pkg.showerror_known, err))")
                         end
                         tree_info_file = joinpath(tmp, ".tree_info.toml")
                         write(tree_info_file, "git-tree-sha1 = " * repr(string(hash)))
@@ -382,7 +382,7 @@ function rm(regs::Vector{RegistrySpec}; io::IO = stderr_f())
         if isfile(registry.path)
             d = TOML.parsefile(registry.path)
             if haskey(d, "path")
-                Base.rm(joinpath(dirname(registry.path), d["path"]); force = true)
+                Base.rm(joinpath(dirname(registry.path), d["path"]::String); force = true)
             end
         end
         Base.rm(registry.path; force = true, recursive = true)
@@ -511,7 +511,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                         try
                                             download_verify(url, nothing, tmp)
                                         catch err
-                                            push!(errors, (reg.path, "failed to download from $(url). Exception: $(sprint(showerror, err))"))
+                                            push!(errors, (reg.path, "failed to download from $(url). Exception: $(sprint(Pkg.showerror_known, err))"))
                                             @goto done_tarball_read
                                         end
                                         hash = pkg_server_url_hash(url)
@@ -549,7 +549,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                                 download_registry_dir(url, new_hash, tmp)
                                                 registry_update_log[string(reg.uuid)] = now()
                                             catch err
-                                                push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(sprint(showerror, err))"))
+                                                push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(sprint(Pkg.showerror_known, err))"))
                                                 @goto done_tarball_unpack
                                             end
                                             tree_info_file = joinpath(tmp, ".tree_info.toml")

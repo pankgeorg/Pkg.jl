@@ -93,6 +93,7 @@ end
 pkgwasm_main()::Int32 = pkgwasm_main(ARGS)
 
 const SUPPORTED_COMMANDS = ("add", "rm", "resolve", "instantiate", "status", "registry")
+const SUPPORTED_COMMANDS_LIST = join(SUPPORTED_COMMANDS, ", ") # computed at load time: no runtime join
 
 function pkgwasm_main(args::Vector{String})::Int32
     return try
@@ -105,7 +106,7 @@ function pkgwasm_main(args::Vector{String})::Int32
 end
 
 function run_command(args::Vector{String})
-    isempty(args) && Types.pkgerror("usage: pkgwasm <command> [packages...]; commands: ", join(SUPPORTED_COMMANDS, ", "))
+    isempty(args) && Types.pkgerror("usage: pkgwasm <command> [packages...]; commands: ", SUPPORTED_COMMANDS_LIST)
     cmd = args[1]
     cmd == "registry" && return run_registry_command(args[2:end])
     pkgs = PackageSpec[PackageSpec(name) for name in args[2:end]]
@@ -124,7 +125,7 @@ function run_command(args::Vector{String})
     elseif cmd == "status"
         API.status(pkgs)
     else
-        Types.pkgerror("unknown command `", cmd, "`; supported: ", join(SUPPORTED_COMMANDS, ", "))
+        Types.pkgerror("unknown command `", cmd, "`; supported: ", SUPPORTED_COMMANDS_LIST)
     end
     return nothing
 end
@@ -141,7 +142,7 @@ function run_registry_command(args::Vector{String})
     words = args[2:end]
     sub = sub == "remove" ? "rm" : sub == "up" ? "update" : sub == "st" ? "status" : sub
     sub in REGISTRY_SUBCOMMANDS ||
-        Types.pkgerror("unknown registry command `", args[1], "`; supported: ", join(REGISTRY_SUBCOMMANDS, ", "))
+        Types.pkgerror("unknown registry command `", args[1], "`; supported: add, rm, update, status")
     # argument counts of the REPL declarations (command_declarations.jl)
     lo, hi = sub == "rm" ? (1, typemax(Int)) : sub == "status" ? (0, 0) : (0, typemax(Int))
     lo <= length(words) <= hi || Types.pkgerror("Wrong number of arguments")

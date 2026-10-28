@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Resolve
+import ..Pkg
 
 using ..Versions
 import ..stdout_f, ..stderr_f

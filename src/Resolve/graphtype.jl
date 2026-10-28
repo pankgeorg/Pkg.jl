@@ -636,7 +636,7 @@ function init_log!(data::GraphData)
             name = data.uuid_to_name[uuid]
             pkgid = Base.PkgId(uuid, name)
             msg = "possible versions are: $vers or uninstalled"
-            if Base.in_sysimage(pkgid)
+            if Pkg.Types.in_sysimage(pkgid) # (Types is loaded after Resolve on 1.12)
                 msg *= " (package in sysimage!)"
             end
         end

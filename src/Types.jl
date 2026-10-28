@@ -501,25 +501,49 @@ is_project_uuid(env::EnvCache, uuid::UUID) = project_uuid(env) == uuid
 const UPGRADABLE_STDLIBS = ["DelimitedFiles", "Statistics"]
 const UPGRADABLE_STDLIBS_UUIDS = Set{UUID}()
 const STDLIB = Ref{Union{DictStdLibs, Nothing}}(nothing)
+# PkgWasm (PLAN.md D10): built from the embedded Julia 1.12.7 stdlib metadata
+# (`src/stdlib_data.jl`) instead of reading the project files under `stdlib_dir()`.
+# Same filtering as stock: entries without uuid are absent from the data, upgradable
+# stdlibs only record their UUID.
 function load_stdlib()
     stdlib = DictStdLibs()
-    for name in readdir(stdlib_dir())
-        projfile = projectfile_path(stdlib_path(name); strict = true)
-        nothing === projfile && continue
-        project = parse_toml(projfile)
-        uuid = get(project, "uuid", nothing)::Union{String, Nothing}
-        v_str = get(project, "version", nothing)::Union{String, Nothing}
-        version = isnothing(v_str) ? nothing : VersionNumber(v_str)
-        nothing === uuid && continue
-        if name in UPGRADABLE_STDLIBS
-            push!(UPGRADABLE_STDLIBS_UUIDS, UUID(uuid))
+    for e in Pkg.STDLIB_DATA
+        uuid = UUID(e.uuid)
+        if e.name in UPGRADABLE_STDLIBS
+            push!(UPGRADABLE_STDLIBS_UUIDS, uuid)
             continue
         end
-        deps = UUID.(values(get(project, "deps", Dict{String, Any}())))
-        weakdeps = UUID.(values(get(project, "weakdeps", Dict{String, Any}())))
-        stdlib[UUID(uuid)] = StdlibInfo(name, Base.UUID(uuid), version, deps, weakdeps)
+        version = e.version === nothing ? nothing : VersionNumber(e.version)
+        deps = UUID[UUID(last(d)) for d in e.deps]
+        weakdeps = UUID[UUID(last(d)) for d in e.weakdeps]
+        stdlib[uuid] = StdlibInfo(e.name, uuid, version, deps, weakdeps)
     end
     return stdlib
+end
+
+# The embedded entry for the stdlib `uuid` of the running Julia version, or `nothing`.
+function stdlib_data(uuid::UUID)
+    for e in Pkg.STDLIB_DATA
+        UUID(e.uuid) == uuid && return e
+    end
+    return nothing
+end
+
+# PkgWasm (PLAN.md D10): fixed default-sysimage policy, replacing `Base.in_sysimage` and the
+# versions in `Base.pkgorigins` (embedded from the 1.12.7 default sysimage).
+function in_sysimage(pkgid::Base.PkgId)
+    pkgid.uuid === nothing && return false
+    for e in Pkg.SYSIMAGE_PKGS
+        UUID(e.uuid) == pkgid.uuid && return true
+    end
+    return false
+end
+function sysimage_version(pkgid::Base.PkgId)::Union{VersionNumber, Nothing}
+    pkgid.uuid === nothing && return nothing
+    for e in Pkg.SYSIMAGE_PKGS
+        UUID(e.uuid) == pkgid.uuid && return e.version === nothing ? nothing : VersionNumber(e.version)
+    end
+    return nothing
 end
 
 function stdlibs()
@@ -768,7 +792,7 @@ function error_if_in_sysimage(pkg::PackageSpec)
         return false
     end
     pkgid = Base.PkgId(pkg.uuid, pkg.name)
-    return if Base.in_sysimage(pkgid)
+    return if in_sysimage(pkgid)
         pkgerror("Tried to develop or add by URL package $(pkgid) which is already in the sysimage, use `Pkg.respect_sysimage_versions(false)` to disable this check.")
     end
 end

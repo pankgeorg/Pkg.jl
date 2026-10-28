@@ -65,6 +65,7 @@ can_fancyprint(io::IO) = (usable_io(io)) && (get(ENV, "CI", nothing) != "true")
 should_autoprecompile() = Base.JLOptions().use_compiled_modules == 1 && Base.get_bool_env("JULIA_PKG_PRECOMPILE_AUTO", true)
 
 include("utils.jl")
+include("stdlib_data.jl")
 include("MiniProgressBars.jl")
 include("GitTools.jl")
 include("Host.jl")

@@ -117,7 +117,14 @@ function normalize_url(url::AbstractString)
     end
 end
 
+# PkgWasm (PLAN.md D4): no git. Every clone/fetch entry point of the fork (package tarball
+# fallback, git registries, repo-tracked manifest entries, `add url=`/`#rev`) fails here,
+# before LibGit2 or a `git` subprocess is reached.
+git_unsupported(what::AbstractString) =
+    throw(Pkg.Types.PkgError(string("git (", what, ") is not supported in PkgWasm")))
+
 function ensure_clone(io::IO, target_path, url; kwargs...)
+    git_unsupported("clone of $url")
     if ispath(target_path)
         return LibGit2.GitRepo(target_path)
     else
@@ -136,6 +143,7 @@ function checkout_tree_to_path(repo::LibGit2.GitRepo, tree::LibGit2.GitObject, p
 end
 
 function clone(io::IO, url, source_path; header = nothing, credentials = nothing, isbare = false, depth::Integer = 0, kwargs...)
+    git_unsupported("clone of $url")
     url = String(url)::String
     source_path = String(source_path)::String
     @assert !isdir(source_path) || isempty(readdir(source_path))
@@ -216,6 +224,7 @@ function geturl(repo)
 end
 
 function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = nothing, credentials = nothing, refspecs::Vector{String} = [""], depth::Integer = 0, kwargs...)
+    git_unsupported("fetch")
     if remoteurl === nothing
         remoteurl = geturl(repo)
     end

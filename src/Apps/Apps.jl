@@ -28,6 +28,7 @@ const _apps_lock_held = Base.ScopedValues.ScopedValue(false)
 
 # Serialize operations that mutate the app environments and the AppManifest
 function with_apps_lock(f)
+    Pkg.API.unsupported("apps") # PkgWasm (D4): before any side effect
     # Operations can be nested (e.g. update calls add) so the lock is reentrant
     _apps_lock_held[] && return f()
     mkpath(app_env_folder())

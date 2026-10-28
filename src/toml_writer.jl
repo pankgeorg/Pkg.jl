@@ -189,7 +189,8 @@ function is_array_of_tables(@nospecialize(value))
     value isa Vector{Dict{String, Dates.DateTime}} && return length(value) > 0
     value isa Vector{Any} && return length(value) > 0 && all(v -> isa(v, AbstractDict), value)
     # (the typed vectors of TOML's parser: no tables)
-    value isa Vector{<:Union{String, Int64, Float64, Bool, Dates.DateTime, Dates.Date, Dates.Time}} && return false
+    (value isa Vector{String} || value isa Vector{Int64} || value isa Vector{Float64} || value isa Vector{Bool} ||
+     value isa Vector{Dates.DateTime} || value isa Vector{Dates.Date} || value isa Vector{Dates.Time}) && return false
     value isa AbstractArray || return false
     WASM_TARGET && error("PkgWasm TOML writer: unsupported array type")
     return Base.inferencebarrier(Base.TOML.Printer.is_array_of_tables)(value)::Bool
@@ -199,19 +200,21 @@ is_tabular(@nospecialize(value)) = is_table(value) || is_array_of_tables(value)
 isinline(@nospecialize(value), inline_tables::Union{Nothing, Vector}) =
     inline_tables !== nothing && any(t -> t === value, inline_tables)
 
-# `print_table` on a table of a type Pkg's tables hold
-function print_subtable(f::F, io::IO, @nospecialize(value), ks::Vector{String}; kw...) where {F}
+# `print_table` on a table of a type Pkg's tables hold (the keywords explicit: no splat)
+function print_subtable(f::F, io::IO, @nospecialize(value), ks::Vector{String};
+                        indent::Int = 0, first_block::Bool = true, sorted::Bool = false,
+                        by::B = identity, inline_tables::Union{Nothing, Vector} = nothing) where {F, B}
     if value isa Dict{String, Any}
-        print_table(f, io, value, ks; kw...)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     elseif value isa Dict{String, String}
-        print_table(f, io, value, ks; kw...)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     elseif value isa Dict{String, Vector{String}}
-        print_table(f, io, value, ks; kw...)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     elseif value isa Dict{String, Dates.DateTime}
-        print_table(f, io, value, ks; kw...)
+        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     else
         WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
-        Base.inferencebarrier(print_table)(f, io, value, ks; kw...)
+        Base.inferencebarrier(print_table)(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
     end
     return nothing
 end

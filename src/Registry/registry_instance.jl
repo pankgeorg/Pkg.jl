@@ -412,6 +412,16 @@ end
 
 const REGISTRY_CACHE = Dict{String, Tuple{Base.SHA1, Bool, RegistryInstance}}()
 
+# a Versions.toml entry: `VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)`,
+# `v` told apart as a parsed TOML table (M4.2: static dispatch)
+function version_info_entry(@nospecialize(v))
+    if v isa Dict{String, Any}
+        return VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)
+    end
+    Pkg.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
+    return Base.inferencebarrier(v -> VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool))(v)::VersionInfo
+end
+
 function init_package_info!(registry::RegistryInstance, pkg::PkgEntry)
     # Thread-safe lazy loading with double-check pattern
     # Use the registry's load_lock to protect lazy loading of package info
@@ -437,8 +447,7 @@ function init_package_info!(registry::RegistryInstance, pkg::PkgEntry)
         d_v = custom_isfile(in_memory_registry, pkg.registry_path, joinpath(pkg.path, "Versions.toml")) ?
             parsefile(in_memory_registry, pkg.registry_path, joinpath(pkg.path, "Versions.toml")) : Dict{String, Any}()
         version_info = Dict{VersionNumber, VersionInfo}(
-            VersionNumber(k) =>
-                VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool) for (k, v) in d_v
+            VersionNumber(k) => version_info_entry(v) for (k, v) in d_v
         )
 
         # Deps.toml (load first to build name -> UUID mapping)

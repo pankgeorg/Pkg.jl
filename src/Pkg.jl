@@ -107,8 +107,8 @@ in_repl_mode() = @something(Base.ScopedValues.get(IN_REPL_MODE), false)
 include("utils.jl")
 include("MiniProgressBars.jl")
 include("GitTools.jl")
-include("PlatformEngines.jl")
 include("Host.jl")
+include("PlatformEngines.jl")
 include("Versions.jl")
 include("Registry/Registry.jl")
 include("Types.jl")
@@ -1091,49 +1091,20 @@ end
 # AUTO GC #
 ###########
 
-const DEPOT_ORPHANAGE_TIMESTAMPS = Dict{String, Float64}()
+# PkgWasm (PLAN.md D4): automatic hooks inside supported operations are removed, not thrown.
+# Neither the depot-orphanage GC after `rm`/`up`/... nor auto-precompilation after
+# `add`/`instantiate` runs. `_auto_gc_enabled` is kept because the public toggle sets it.
 const _auto_gc_enabled = Ref{Bool}(true)
-function _auto_gc(ctx::Types.Context)
-    if !_auto_gc_enabled[]
-        return
-    end
-
-    # If we don't know the last time this depot was GC'ed (because this is the
-    # first time we've looked this session), or it looks like we might want to
-    # collect; let's go ahead and hit the filesystem to find the mtime of the
-    # `orphaned.toml` file, which should tell us how long since the last time
-    # we GC'ed.
-    orphanage_path = joinpath(logdir(depots1()), "orphaned.toml")
-    delay_secs = Second(Day(7)).value  # Run auto-GC at most once every 7 days
-    curr_time = time()
-    if curr_time - get(DEPOT_ORPHANAGE_TIMESTAMPS, depots1(), 0.0) >= delay_secs
-        DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = mtime(orphanage_path)
-    end
-
-    return if curr_time - DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] > delay_secs
-        printpkgstyle(ctx.io, :Info, "We haven't cleaned this depot up for a bit, running Pkg.gc()...", color = Base.info_color())
-        try
-            Pkg.gc(ctx)
-            DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = curr_time
-        catch ex
-            @error("GC failed", exception = ex)
-        end
-    end
-end
-
+_auto_gc(ctx::Types.Context) = nothing
 
 ##################
 # Precompilation #
 ##################
 
-function _auto_precompile(ctx::Types.Context, pkgs::Vector{PackageSpec} = PackageSpec[]; warn_loaded = true, already_instantiated = false, workspace = false)
-    return if should_autoprecompile()
-        # Auto precompile runs in foreground with detachable support
-        Pkg.precompile(ctx, pkgs; internal_call = true, warn_loaded = warn_loaded, already_instantiated = already_instantiated, workspace = workspace)
-    end
-end
+_auto_precompile(ctx::Types.Context, pkgs::Vector{PackageSpec} = PackageSpec[]; kwargs...) = nothing
 
-include("precompile.jl")
+# PkgWasm: the stock precompile workload (precompile.jl) is not included. It exercises
+# unsupported operations (develop, path adds, precompile) and the Downloads global state.
 
 # Reset globals that might have been mutated during precompilation.
 Pkg.UPDATED_REGISTRY_THIS_SESSION[] = false

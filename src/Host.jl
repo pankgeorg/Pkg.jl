@@ -9,7 +9,7 @@
 module Host
 
 import Downloads
-import ..Pkg.PlatformEngines: exe7z, exezstd
+import ..Pkg # PlatformEngines is included after Host; its helpers are looked up at call time
 
 """
     Host.Response(status, url, headers)
@@ -121,9 +121,9 @@ function decompress(src::String, dst::String)::Nothing
         rm(tmp; force = true)
         magic = open(io -> read(io, 4), src)
         cmd = if length(magic) >= 2 && magic[1] == 0x1f && magic[2] == 0x8b
-            `$(exe7z()) x -tgzip -so $src`
+            `$(Pkg.PlatformEngines.exe7z()) x -tgzip -so $src`
         elseif magic == UInt8[0x28, 0xb5, 0x2f, 0xfd]
-            `$(exezstd()) -d -c -q $src`
+            `$(Pkg.PlatformEngines.exezstd()) -d -c -q $src`
         else
             throw(HostError(WASI_EILSEQ, "$what: unrecognized compression format"))
         end

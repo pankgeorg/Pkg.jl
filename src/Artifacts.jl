@@ -5,7 +5,7 @@ using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 using FileWatching: FileWatching
 
-import ..set_readonly, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..mkpidlock, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle, ..mv_temp_dir_retries, ..atomic_toml_write, ..create_cachedir_tag
 
 import Base: get, SHA1
@@ -338,7 +338,7 @@ function download_artifact(
             progress(0, 0; status = "downloading in another process")
         end
     end
-    ret = FileWatching.mkpidlock(pidfile, stale_age = 20) do
+    ret = mkpidlock(pidfile, stale_age = 20) do
         close(t_wait_msg)
         if artifact_exists(tree_hash)
             return true

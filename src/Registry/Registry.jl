@@ -41,7 +41,7 @@ module Registry
 import ..Pkg
 using ..Pkg: depots, depots1, printpkgstyle, stderr_f, isdir_nothrow, pathrepr, pkg_server,
     GitTools, atomic_toml_write, create_cachedir_tag
-using ..Pkg.PlatformEngines: download_verify_unpack, download, download_verify, verify_archive_tree_hash, get_extract_cmd, detect_archive_format
+using ..Pkg.PlatformEngines: download_verify_unpack, download, download_verify, verify_archive_tree_hash, get_extract_cmd, detect_archive_format, with_decompressed
 using UUIDs, LibGit2, TOML, Dates
 import FileWatching
 
@@ -226,6 +226,33 @@ end
 registry_read_from_tarball() =
     registry_use_pkg_server() && !Base.get_bool_env("JULIA_PKG_UNPACK_REGISTRY", false)
 
+# PkgWasm (PLAN.md D11): registries from the Pkg server are always *installed* unpacked into
+# `registries/<name>` (the `in_memory_registry === nothing` path), whatever
+# JULIA_PKG_UNPACK_REGISTRY says; an existing unpacked registry is updated in place as a
+# directory. Compressed registries already in a depot (e.g. installed by stock Pkg) are still
+# read, and updated in their own format, under `registry_read_from_tarball()`.
+#
+# The tarball is downloaded, decompressed once through `Host.decompress`, its git tree hash is
+# checked against the hash in the server URL with `Tar.tree_hash`, and then it is extracted
+# with `Tar.extract` into the empty directory `dir`. Registry identity is recorded by the
+# caller in `.tree_info.toml`, as stock Pkg does for unpacked registries.
+function download_registry_dir(url::String, hash::Base.SHA1, dir::String)
+    tarball = tempname()
+    try
+        download_verify(url, nothing, tarball)
+        with_decompressed(tarball) do tar_path
+            computed = Base.SHA1(open(Tar.tree_hash, tar_path))
+            computed == hash || Pkg.Types.pkgerror(
+                "registry download from $url has git-tree-sha1 $computed, expected $hash"
+            )
+            Tar.extract(tar_path, dir; copy_symlinks = Pkg.PlatformEngines.copy_symlinks())
+        end
+    finally
+        Base.rm(tarball; force = true)
+    end
+    return nothing
+end
+
 function check_registry_state(reg)
     reg_currently_uses_pkg_server = reg.tree_info !== nothing
     reg_should_use_pkg_server = registry_use_pkg_server()
@@ -269,7 +296,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
     isdir(regdir) || mkpath(regdir)
     create_cachedir_tag(regdir)
     # only allow one julia process to download and install registries at a time
-    FileWatching.mkpidlock(joinpath(regdir, ".pid"), stale_age = 10) do
+    Pkg.mkpidlock(joinpath(regdir, ".pid"), stale_age = 10) do
         # once we're pidlocked check if another process has installed any of the registries
         reachable_uuids = map(r -> r.uuid, reachable_registries(; depots))
         filter!(r -> !in(r.uuid, reachable_uuids), regs)
@@ -286,7 +313,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                 )
             end
             url = get(registry_urls, reg.uuid, nothing)
-            if url !== nothing && registry_read_from_tarball()
+            if false # PkgWasm (D11): never install compressed; stock: `url !== nothing && registry_read_from_tarball()`
                 tmp = tempname()
                 try
                     download_verify(url, nothing, tmp)
@@ -332,13 +359,13 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         )
                     elseif url !== nothing && registry_use_pkg_server()
                         # download from Pkg server
+                        hash = pkg_server_url_hash(url)
                         try
-                            download_verify_unpack(url, nothing, tmp, ignore_existence = true, io = io)
+                            download_registry_dir(url, hash, tmp)
                         catch err
                             Pkg.Types.pkgerror("could not download $url \nException: $(sprint(showerror, err))")
                         end
                         tree_info_file = joinpath(tmp, ".tree_info.toml")
-                        hash = pkg_server_url_hash(url)
                         write(tree_info_file, "git-tree-sha1 = " * repr(string(hash)))
                     elseif reg.path !== nothing # copy from local source
                         printpkgstyle(io, :Copying, "registry from `$(Base.contractuser(reg.path))`")
@@ -524,7 +551,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
         isdir(regdir) || mkpath(regdir)
         create_cachedir_tag(regdir)
         # only allow one julia process to update registries in this depot at a time
-        FileWatching.mkpidlock(joinpath(regdir, ".pid"), stale_age = 10) do
+        Pkg.mkpidlock(joinpath(regdir, ".pid"), stale_age = 10) do
             depot_regs = isempty(regs) ? reachable_registries(; depots = depot) : regs
             errors = Tuple{String, String}[]
             # Only ask the pkg server for registry urls if some registry is actually going to be updated
@@ -578,7 +605,8 @@ end
                     # TODO: update faster by using a diff, if available
                     # TODO: DRY with the code in `download_default_registries`
                     let new_hash = new_hash, url = url
-                        if registry_read_from_tarball()
+                        # PkgWasm (D11): an unpacked registry stays unpacked
+                        if registry_read_from_tarball() && !isdir(reg.path)
                             tmp = tempname()
                             try
                                 download_verify(url, nothing, tmp)
@@ -605,21 +633,11 @@ end
                             registry_update_log[string(reg.uuid)] = now()
                             @label done_tarball_read
                         else
-                            if reg.name == "General" &&
-                                    Base.get_bool_env("JULIA_PKG_GEN_REG_FMT_CHECK", true) &&
-                                    get(ENV, "JULIA_PKG_SERVER", nothing) != ""
-                                # warn if JULIA_PKG_SERVER is set to a non-empty string or not set
-                                @info """
-                                The General registry is installed via unpacked tarball.
-                                Consider reinstalling it via the newer faster direct from
-                                tarball format by running:
-                                  pkg> registry rm General; registry add General
-
-                                """ maxlog = 1
-                            end
+                            # PkgWasm (D11): unpacked is the intended format, so stock's
+                            # "consider reinstalling as a tarball" @info is not printed.
                             mktempdir() do tmp
                                 try
-                                    download_verify_unpack(url, nothing, tmp, ignore_existence = true, io = io)
+                                    download_registry_dir(url, new_hash, tmp)
                                     registry_update_log[string(reg.uuid)] = now()
                                 catch err
                                     push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(sprint(showerror, err))"))

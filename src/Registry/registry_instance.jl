@@ -366,10 +366,13 @@ function uncompress_registry(compressed_tar::AbstractString)
     data = Dict{String, String}()
     buf = Vector{UInt8}(undef, Tar.DEFAULT_BUFFER_SIZE)
     io = IOBuffer()
-    open(get_extract_cmd(compressed_tar)) do tar
-        read_tarball_simple(x -> true, tar; buf = buf) do hdr
-            Tar.read_data(tar, io; size = hdr.size, buf = buf)
-            data[hdr.path] = String(take!(io))
+    # PkgWasm (PLAN.md D2): decompressed through the Host seam, not a `zstd`/`7z` pipeline
+    with_decompressed(compressed_tar) do tar_path
+        open(tar_path) do tar
+            read_tarball_simple(x -> true, tar; buf = buf) do hdr
+                Tar.read_data(tar, io; size = hdr.size, buf = buf)
+                data[hdr.path] = String(take!(io))
+            end
         end
     end
     return data
@@ -631,7 +634,7 @@ function load_or_build_registry_cache(compressed_tar::AbstractString, tree_hash:
         cache_dir = dirname(cache_path)
         mkpath(cache_dir)
         lock_path = joinpath(cache_dir, ".$(registry_cache_name(compressed_tar)).pid")
-        cache = FileWatching.mkpidlock(lock_path, stale_age = 10) do
+        cache = Pkg.mkpidlock(lock_path, stale_age = 10) do # PkgWasm (D3)
             # Another process may have built the cache while we waited for the lock.
             locked_cache = load_registry_cache(cache_path, tree_hash)
             locked_cache === nothing || return locked_cache

@@ -8,6 +8,7 @@ using SHA, Downloads, Tar, Dates, Printf
 using ArgTools: FileSpec, arg_write
 using Base.ScopedValues: ScopedValue, @with
 import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, atomic_toml_write
+import ..Host
 using ..MiniProgressBars
 using Base.BinaryPlatforms, p7zip_jll, Zstd_jll
 
@@ -362,41 +363,48 @@ function download(
         push!(headers, header)
     end
 
-    do_fancy = verbose && can_fancyprint(io)
-    progress = if !isnothing(progress)
-        progress
-    elseif do_fancy
-        bar = MiniProgressBar(header = "Downloading", color = Base.info_color())
-        start_progress(io, bar)
-        let bar = bar
-            (total, now) -> begin
-                bar.max = total
-                bar.current = now
-                # Downloads.download attatches the progress indicator to the header request too
-                # which is only ~100 bytes, and will report as 0 - 100% progress immediately
-                # then dip down to 0 before the actual download starts. So we only show the
-                # progress bar once the real download starts.
-                total > 1000 && show_progress(io, bar)
-            end
-        end
-    else
-        nothing
+    # PkgWasm (PLAN.md D2, D3): the transfer goes through the Host seam: one request, no
+    # Downloads.jl tasks, no progress callbacks or cancellation events (`progress` is accepted
+    # and ignored). As in stock Pkg, a non-2xx final status is an error and `dest` is not left
+    # behind; it is reported like the `Downloads.RequestError` stock Pkg throws.
+    dest isa FileSpec && return download_filespec(String(url), dest, headers)
+    response = Host.download(String(url), String(dest), headers)
+    if !(200 <= response.status < 300)
+        Base.rm(dest; force = true)
+        throw(HTTPStatusError(String(url), response.status))
     end
-    cancellation = DOWNLOAD_CANCELLATION[]
-    interrupt = register_download!(cancellation)
-    return try
-        # `Downloads.download` cannot be interrupted once the transfer has started, so do
-        # what it would do for us around `Downloads.request`, which takes an interrupt event.
-        arg_write(dest) do output
-            response = Downloads.request(url; output, headers, progress, interrupt)
-            Downloads.Curl.status_ok(response) && return output
-            throw(Downloads.RequestError(url, Downloads.Curl.CURLE_OK, "", response))
-        end
-    finally
-        unregister_download!(cancellation, interrupt)
-        do_fancy && end_progress(io, bar)
-    end
+    return dest
 end
+
+# A `FileSpec` destination (master: e.g. a refreshed token, mode 0o600) is created with its
+# mode, as `ArgTools.arg_write` does: the download goes to a fresh private directory next to
+# it, so the file is never readable by others, then is given the mode and renamed into place.
+function download_filespec(url::String, dest::FileSpec, headers::Vector{Pair{String, String}})
+    dir = mktempdir(dirname(abspath(dest.path)))
+    try
+        tmp = joinpath(dir, "download")
+        response = Host.download(url, tmp, headers)
+        200 <= response.status < 300 || throw(HTTPStatusError(url, response.status))
+        chmod(tmp, dest.mode)
+        mv(tmp, dest.path; force = true)
+    finally
+        Base.rm(dir; force = true, recursive = true)
+    end
+    return dest.path
+end
+
+"""
+    HTTPStatusError(url, status)
+
+PkgWasm: a download whose final HTTP status is not 2xx. It prints as stock Pkg's
+`Downloads.RequestError` does for a response without a status message.
+"""
+struct HTTPStatusError <: Exception
+    url::String
+    status::Int
+end
+Base.showerror(io::IO, err::HTTPStatusError) =
+    print(io, "RequestError: Error status ", err.status, " while requesting ", err.url)
 
 """
     download_verify(
@@ -578,12 +586,34 @@ function get_extract_cmd(tarball_path::AbstractString)
     end
 end
 
+"""
+    with_decompressed(f, tarball_path)
+
+PkgWasm (PLAN.md D2): call `f(tar_path)` on a decompressed copy of `tarball_path`, made by
+[`Host.decompress`](@ref) in a fresh `tempname()` and removed afterwards. This replaces the
+`zstd -d -c` / `7z x -so` pipelines of `get_extract_cmd`. Only gzip and zstd are accepted
+(anything else throws `Host.HostError` with EILSEQ), which is what the Pkg server serves.
+"""
+function with_decompressed(f, tarball_path::AbstractString)
+    # (master: an uncompressed tar is passed through, as `get_extract_cmd` does)
+    detect_archive_format(tarball_path) == "tar" && return f(String(tarball_path))
+    tar_path = tempname()
+    try
+        Host.decompress(String(tarball_path), tar_path)
+        return f(tar_path)
+    finally
+        Base.rm(tar_path; force = true)
+    end
+end
+
 function unpack(
         tarball_path::AbstractString,
         dest::AbstractString;
         verbose::Bool = false,
     )
-    return Tar.extract(get_extract_cmd(tarball_path), dest, copy_symlinks = copy_symlinks())
+    return with_decompressed(tarball_path) do tar_path
+        Tar.extract(tar_path, dest, copy_symlinks = copy_symlinks())
+    end
 end
 
 """
@@ -722,8 +752,8 @@ function download_verify_unpack(
             @info("Unpacking $(tarball_path) into $(dest)...")
         end
         isnothing(progress) || progress(10000, 10000; status = "unpacking")
-        open(get_extract_cmd(tarball_path)) do io
-            Tar.extract(io, dest, copy_symlinks = copy_symlinks())
+        with_decompressed(tarball_path) do tar_path
+            Tar.extract(tar_path, dest, copy_symlinks = copy_symlinks())
         end
     finally
         if remove_tarball
@@ -874,7 +904,7 @@ function verify_archive_tree_hash(compressed_tar::AbstractString, expected_hash:
     # tarball, tree hash verification requires that the file can i) be
     # decompressed and ii) is a proper archive.
     calc_hash = try
-        Base.SHA1(open(Tar.tree_hash, get_extract_cmd(compressed_tar)))
+        Base.SHA1(with_decompressed(tar_path -> open(Tar.tree_hash, tar_path), compressed_tar))
     catch err
         @warn "unable to decompress and read archive" exception = err
         return false

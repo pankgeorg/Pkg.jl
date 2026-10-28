@@ -17,7 +17,7 @@ using Base.BinaryPlatforms
 import ...Pkg
 import ...Pkg: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
 import ...Pkg: UPDATED_REGISTRY_THIS_SESSION, RESPECT_SYSIMAGE_VERSIONS, should_autoprecompile
-import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path
+import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock
 
 #########
 # Utils #
@@ -370,24 +370,8 @@ function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Host
         sourcepath === nothing && return false
         isdir(sourcepath) || return false
     end
-    # Make sure artifacts exist, including those of the project even if it is not a package
-    pkg_info = artifact_package_info(env, [pkg.uuid => pkg for pkg in pkgs])
-    for info in pkg_info
-        info.has_selector && continue
-        check_artifacts_downloaded(info.root; platform) || return false
-    end
-    # Run selectors in dependency order and stop at the first missing artifact, so a
-    # selector never runs while a dependency it may load cannot initialize.
-    levels = selector_levels(env, pkg_info)
-    isempty(levels) && return true
-    env_key = selector_env_key(env)
-    for level in levels
-        for info in level
-            check_artifacts_downloaded(
-                info.root; platform, selector_project = env.project_file, env_key
-            ) || return false
-        end
-    end
+    # PkgWasm (PLAN.md D4): source-only installation. Artifacts are never installed, so they never
+    # make an environment "not instantiated" (stock checks them here, running artifact selectors).
     return true
 end
 
@@ -1676,7 +1660,7 @@ function install_archive(
         try
             unpack(path, dir; verbose = false)
         catch e
-            e isa ProcessFailedException || rethrow()
+            e isa ProcessFailedException || e isa Pkg.Host.HostError || rethrow()
             @warn "failed to extract archive downloaded from $(url)"
             url_success = false
         end
@@ -1728,6 +1712,11 @@ function install_git(
                 "Please check that the package name is correct and that your registries are up to date."
         )
     end
+    # PkgWasm (PLAN.md D4): no git. Stock Pkg clones here when no tarball could be installed.
+    pkgerror(
+        "Package $name [$uuid] could not be installed from a tarball, and installing from git ",
+        "($(join(sort!(collect(urls)), ", "))) is not supported in PkgWasm"
+    )
 
     repo = nothing
     tree = nothing
@@ -1896,175 +1885,6 @@ mutable struct DownloadState
     const bar::MiniProgressBar
 end
 
-function install_collected_artifacts!(
-        ctx::Context, all_collected_artifacts;
-        server_registry_info, verbose::Bool, io::IO
-    )
-    isempty(all_collected_artifacts) && return
-
-    fancyprint = can_fancyprint(io)
-    print_lock = Base.ReentrantLock() # for non-fancyprint printing
-    ansi_moveup(n::Int) = string("\e[", n, "A")
-    ansi_movecol1 = "\e[1G"
-    ansi_cleartoend = "\e[0J"
-    ansi_cleartoendofline = "\e[0K"
-    ansi_enablecursor = "\e[?25h"
-    ansi_disablecursor = "\e[?25l"
-    download_jobs = Dict{SHA1, Function}()
-    download_states = Dict{SHA1, DownloadState}()
-    errors = Channel{Any}(Inf)
-    is_done = Ref(false)
-    longest_name_length = maximum(all_collected_artifacts; init = 0) do (_, artifacts, _)
-        maximum(textwidth, keys(artifacts); init = 0)
-    end
-    for (artifacts_toml, artifacts, pkg_uuid) in all_collected_artifacts
-        # For each Artifacts.toml, install each artifact we've collected from it
-        for name in keys(artifacts)
-            local rname = rpad(name, longest_name_length)
-            local hash = SHA1(artifacts[name]["git-tree-sha1"]::String)
-            local bar = MiniProgressBar(; header = rname, main = false, indent = 2, color = Base.info_color()::Symbol, mode = :data, always_reprint = true)
-            local dstate = DownloadState(:ready, "", time_ns(), Base.ReentrantLock(), bar)
-            function progress(total, current; status = "")
-                local t = time_ns()
-                if isempty(status)
-                    dstate.bar.max = total
-                    dstate.bar.current = current
-                end
-                return lock(dstate.status_lock) do
-                    dstate.status = status
-                    dstate.status_update_time = t
-                end
-            end
-            # Check if the current package is eligible for PkgServer artifact downloads
-            local pkg_server_eligible = pkg_uuid !== nothing && Registry.is_pkg_in_pkgserver_registry(pkg_uuid, server_registry_info, ctx.registries)
-
-            # returns a string if exists, or function that downloads the artifact if not
-            local ret = ensure_artifact_installed(
-                name, artifacts[name], artifacts_toml;
-                pkg_server_eligible, verbose, quiet_download = !(usable_io(io)), io, progress
-            )
-            if ret isa Function
-                download_states[hash] = dstate
-                download_jobs[hash] =
-                    () -> begin
-                    try
-                        dstate.state = :running
-                        ret()
-                        if !fancyprint && dstate.bar.max > 1 # if another process downloaded, then max is never set greater than 1
-                            @lock print_lock printpkgstyle(io, :Installed, "artifact $rname $(MiniProgressBars.pkg_format_bytes(dstate.bar.max; sigdigits = 1))")
-                        end
-                    catch
-                        dstate.state = :failed
-                        rethrow()
-                    else
-                        dstate.state = :done
-                    end
-                end
-            end
-        end
-    end
-
-    if !isempty(download_jobs)
-        if fancyprint
-            t_print = Threads.@spawn begin
-                try
-                    print(io, ansi_disablecursor)
-                    first = Ref(true)
-                    timer = Timer(0, interval = 1 / 10)
-                    # TODO: Implement as a new MiniMultiProgressBar
-                    main_bar = MiniProgressBar(; indent = 2, header = "Installing artifacts", color = :green, mode = :int, always_reprint = true)
-                    main_bar.max = length(download_states)
-                    # `sprint` draws into a buffer, which does not know the width of the terminal
-                    context = IOContext(io, :displaysize => displaysize(io))
-                    while !is_done[]
-                        main_bar.current = count(x -> x.state == :done, values(download_states))
-                        local str = sprint(; context) do iostr
-                            first[] || print(iostr, ansi_cleartoend)
-                            n_printed = 1
-                            show_progress(iostr, main_bar; carriagereturn = false)
-                            println(iostr)
-                            for dstate in sort!(collect(values(download_states)), by = v -> v.bar.max, rev = true)
-                                local status, status_update_time = lock(() -> (dstate.status, dstate.status_update_time), dstate.status_lock)
-                                # only update the bar's status message if it is stalled for at least 0.5 s.
-                                # If the new status message is empty, go back to showing the bar without waiting.
-                                if isempty(status) || time_ns() - status_update_time > UInt64(500_000_000)
-                                    dstate.bar.status = status
-                                end
-                                dstate.state == :running && (dstate.bar.max > 1000 || !isempty(dstate.bar.status)) || continue
-                                show_progress(iostr, dstate.bar; carriagereturn = false)
-                                println(iostr)
-                                n_printed += 1
-                            end
-                            is_done[] || print(iostr, ansi_moveup(n_printed), ansi_movecol1)
-                            first[] = false
-                        end
-                        print(io, str)
-                        wait(timer)
-                    end
-                    print(io, ansi_cleartoend)
-                    main_bar.current = count(x -> x[2].state == :done, download_states)
-                    show_progress(io, main_bar; carriagereturn = false)
-                    println(io)
-                catch e
-                    e isa InterruptException || rethrow()
-                finally
-                    print(io, ansi_enablecursor)
-                end
-            end
-            Base.errormonitor(t_print)
-        else
-            printpkgstyle(io, :Installing, "$(length(download_jobs)) artifacts")
-        end
-        sema = Base.Semaphore(ctx.num_concurrent_downloads)
-        interrupted = Ref{Bool}(false)
-        cancellation = PlatformEngines.DownloadCancellation()
-        try
-            PlatformEngines.with_download_cancellation(cancellation) do
-                @sync for f in values(download_jobs)
-                    interrupted[] && break
-                    Base.acquire(sema)
-                    Threads.@spawn try
-                        f()
-                    catch e
-                        e isa InterruptException && (interrupted[] = true)
-                        put!(errors, e)
-                    finally
-                        Base.release(sema)
-                    end
-                end
-            end
-        finally
-            # An interrupt unwinds the task waiting above, but the downloads it spawned
-            # would otherwise keep transferring in the background until they finished.
-            PlatformEngines.cancel_downloads(cancellation)
-            # `t_print` loops until `is_done[]`, so if we leave via an interrupt or an
-            # error it would otherwise keep drawing the progress bar over the prompt
-            # forever, and never restore the cursor it hid.
-            is_done[] = true
-            if fancyprint
-                try
-                    wait(t_print)
-                catch
-                    # already reported by the `errormonitor` above
-                end
-            end
-        end
-        close(errors)
-
-        if !isempty(errors)
-            all_errors = collect(errors)
-            local str = sprint(context = io) do iostr
-                for e in all_errors
-                    Base.showerror(iostr, e)
-                    length(all_errors) > 1 && println(iostr)
-                end
-            end
-            pkgerror("Failed to install some artifacts:\n\n$(strip(str, '\n'))")
-        end
-    end
-    return
-end
-
 # Copy the resolved environment and its workspace ancestors. The ancestors supply
 # preferences, but all projects must use the resolved manifest in the temporary tree.
 function selector_environment(env::EnvCache)
@@ -2188,20 +2008,6 @@ function selector_levels(env::EnvCache, pkg_info::Vector{ArtifactPackageInfo})
     return levels
 end
 
-const CollectedArtifact = Tuple{String, Base.TOML.TOMLDict, Union{UUID, Nothing}}
-
-function collect_package_artifacts(
-        info, used_artifact_tomls;
-        platform::AbstractPlatform, include_lazy::Bool,
-        selector_project::Union{Nothing, String} = nothing,
-        env_key::Union{Nothing, UInt} = nothing
-    )
-    artifacts = collect_artifacts(info.root; platform, include_lazy, selector_project, env_key)
-    union!(used_artifact_tomls, map(first, artifacts))
-    # Fixed eltype so that the specializations downstream do not depend on whether the project has a uuid
-    return CollectedArtifact[(artifacts_toml, artifacts, info.uuid) for (artifacts_toml, artifacts) in artifacts]
-end
-
 function download_artifacts(
         ctx::Context, pkgs;
         platform::AbstractPlatform = HostPlatform(),
@@ -2211,63 +2017,24 @@ function download_artifacts(
         include_lazy::Bool = false,
         include_project::Bool = true
     )
+    # PkgWasm (PLAN.md D4): source-only installation. Artifact payloads are never downloaded
+    # (no platform probing, selector scripts, threads or timers). If the project or any of the
+    # given packages has an (Julia)Artifacts.toml, a single warning says so.
     env = ctx.env
-    io = ctx.io
     pkg_uuids = Set(pkg.uuid for pkg in pkgs)
-    manifest_pkgs = [uuid => manifest_info(env.manifest, uuid) for uuid in keys(env.manifest) if uuid in pkg_uuids]
-    pkg_info = artifact_package_info(env, manifest_pkgs; julia_version, include_project)
-    used_artifact_tomls = Set{String}()
-
-    # A selector dependency must be able to initialize before its consumer's hook runs.
-    # Install all statically selected artifacts first, retaining parallel downloads.
-    static_pkg_info = filter(info -> !info.has_selector, pkg_info)
-    static_artifacts = reduce(
-        vcat,
-        map(
-            info -> collect_package_artifacts(
-                info, used_artifact_tomls; platform, include_lazy
-            ),
-            static_pkg_info,
-        );
-        init = CollectedArtifact[]
-    )
-    levels = selector_levels(env, pkg_info)
-    # Check what registries the current pkg server tracks, but don't ask when there is nothing that could be served,
-    # e.g. in offline mode with all artifacts installed (#4580)
-    all_installed = all(static_artifacts) do (_, artifacts, _)
-        all(meta -> artifact_exists(SHA1(meta["git-tree-sha1"]::String)), values(artifacts))
+    n = has_artifacts_toml(dirname(env.project_file)) ? 1 : 0
+    for (uuid, _) in env.manifest
+        uuid in pkg_uuids || continue
+        pkg_root = source_path(env.manifest_file, manifest_info(env.manifest, uuid), julia_version)
+        pkg_root !== nothing && has_artifacts_toml(pkg_root) && (n += 1)
     end
-    server_registry_info = if all_installed && isempty(levels)
-        nothing
-    else
-        Registry.pkg_server_registry_info()
+    if n > 0
+        printpkgstyle(
+            ctx.io, :Warning, "PkgWasm installs package sources only: artifacts of $n package(s) were not downloaded",
+            color = Base.warn_color()
+        )
     end
-    install_collected_artifacts!(ctx, static_artifacts; server_registry_info, verbose, io)
-
-    if !isempty(levels)
-        env_key = selector_env_key(env)
-        with_resolved_artifact_env(env) do selector_project
-            # Run each level's selectors, then download their artifacts concurrently
-            # before starting selectors that may load those packages.
-            for level in levels
-                selected_artifacts = reduce(
-                    vcat,
-                    [
-                        collect_package_artifacts(
-                                info, used_artifact_tomls;
-                                platform, include_lazy, selector_project, env_key,
-                            ) for info in level
-                    ];
-                    init = CollectedArtifact[]
-                )
-                install_collected_artifacts!(
-                    ctx, selected_artifacts; server_registry_info, verbose, io
-                )
-            end
-        end
-    end
-
-    return write_env_usage(used_artifact_tomls, "artifact_usage.toml")
+    return nothing
 end
 
 function download_artifacts(
@@ -2281,34 +2048,11 @@ function download_artifacts(
     return download_artifacts(ctx, values(ctx.env.manifest); platform, julia_version, verbose, io, include_lazy)
 end
 
-function check_artifacts_downloaded(
-        pkg_root::String;
-        platform::AbstractPlatform = HostPlatform(), selector_project::Union{Nothing, String} = nothing,
-        env_key::Union{Nothing, UInt} = nothing, run_selectors::Bool = true
-    )
-    # Without running the selector there is no way to know which artifacts it would pick,
-    # so callers that opt out treat such packages as downloaded. Installation still runs
-    # the selector, so a missing selection is corrected there.
-    run_selectors || !has_artifact_selector(pkg_root) || return true
-    collected_artifacts = try
-        collect_artifacts(pkg_root; platform, selector_project, env_key)
-    catch err
-        err isa ProcessFailedException || rethrow()
-        # Dependencies may be missing, particularly during a status check. Report the
-        # package as not downloaded and let installation retry the selector after
-        # bootstrapping its dependencies.
-        @debug "Artifact selector failed" pkg_root exception = err
-        return false
-    end
-    for (artifacts_toml, artifacts) in collected_artifacts
-        for name in keys(artifacts)
-            if !artifact_exists(Base.SHA1(artifacts[name]["git-tree-sha1"]))
-                return false
-            end
-        end
-    end
-    return true
-end
+has_artifacts_toml(pkg_root::String) = any(f -> isfile(joinpath(pkg_root, f)), artifact_names)
+
+# PkgWasm (PLAN.md D4): source-only predicate. Artifacts are never installed, so they never
+# make an environment "not instantiated"; a repeated `instantiate` is therefore a no-op.
+check_artifacts_downloaded(pkg_root::String; platform = nothing, selector_project = nothing, env_key = nothing, run_selectors::Bool = true) = true
 
 
 function find_urls(registries::Vector{Registry.RegistryInstance}, uuid::UUID)
@@ -2381,7 +2125,7 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true, tmpdir::Unio
             pidfile = joinpath(dir, basename(path) * ".pid")
         end
 
-        FileWatching.mkpidlock(() -> ispath(path), pidfile, stale_age = pidfile_stale_age) && continue
+        mkpidlock(() -> ispath(path), pidfile, stale_age = pidfile_stale_age) && continue
         urls = find_urls(ctx.registries, pkg.uuid)
         push!(pkgs_to_install, (; pkg = DownloadPkg(pkg.name, pkg.uuid, pkg.version, pkg.tree_hash), urls, path))
     end
@@ -2406,108 +2150,89 @@ function download_source(
     # Check what registries the current pkg server tracks
     server_registry_info = Registry.pkg_server_registry_info()
 
-    # use eager throw version
-    Base.Experimental.@sync begin
-        jobs = Channel{eltype(pkgs_to_install)}(ctx.num_concurrent_downloads)
-        results = Channel(ctx.num_concurrent_downloads)
-
-        @async begin
-            for pkg in pkgs_to_install
-                put!(jobs, pkg)
+    # PkgWasm (PLAN.md D3): the stock version runs a producer task and
+    # `ctx.num_concurrent_downloads` worker tasks connected by Channels. Here the same per-package
+    # body runs in a serial loop, so no task is created. Results are handled exactly as the
+    # stock consumer handles them; the first error is reported with the same text.
+    function install_one(pkg, urls, path)
+        mkpath(dirname(path)) # the `packages/Package` dir needs to exist for the pidfile to be created
+        return mkpidlock(path * ".pid", stale_age = pidfile_stale_age) do
+            ispath(path) && return (pkg, nothing, (urls, path))
+            ctx.use_git_for_all_downloads && return (pkg, false, (urls, path))
+            archive_urls = Pair{String, Bool}[]
+            # Check if the current package is available in one of the registries being tracked by the pkg server
+            # In that case, download from the package server
+            if Registry.is_pkg_in_pkgserver_registry(pkg.uuid, server_registry_info, ctx.registries)
+                server, registry_info = server_registry_info
+                url = "$server/package/$(pkg.uuid)/$(pkg.tree_hash)"
+                push!(archive_urls, url => true)
+            end
+            for repo_url in urls
+                url = get_archive_url_for_version(repo_url, pkg.tree_hash)
+                url !== nothing && push!(archive_urls, url => false)
+            end
+            try
+                success = install_archive(archive_urls, pkg.tree_hash, path; name = pkg.name, io = ctx.io)
+                if success && readonly
+                    set_readonly(path) # In add mode, files should be read-only
+                end
+                if ctx.use_only_tarballs_for_downloads && !success
+                    pkgerror("failed to get tarball from $(urls)")
+                end
+                return (pkg, success, (urls, path))
+            catch err
+                return (pkg, err, catch_backtrace())
             end
         end
+    end
 
-        for i in 1:ctx.num_concurrent_downloads # (default 8)
-            @async begin
-                for (pkg, urls, path) in jobs
-                    mkpath(dirname(path)) # the `packages/Package` dir needs to exist for the pidfile to be created
-                    FileWatching.mkpidlock(path * ".pid", stale_age = pidfile_stale_age) do
-                        if ispath(path)
-                            put!(results, (pkg, nothing, (urls, path)))
-                            return
-                        end
-                        if ctx.use_git_for_all_downloads
-                            put!(results, (pkg, false, (urls, path)))
-                            return
-                        end
-                        archive_urls = Pair{String, Bool}[]
-                        # Check if the current package is available in one of the registries being tracked by the pkg server
-                        # In that case, download from the package server
-                        if Registry.is_pkg_in_pkgserver_registry(pkg.uuid, server_registry_info, ctx.registries)
-                            server, registry_info = server_registry_info
-                            url = "$server/package/$(pkg.uuid)/$(pkg.tree_hash)"
-                            push!(archive_urls, url => true)
-                        end
-                        for repo_url in urls
-                            url = get_archive_url_for_version(repo_url, pkg.tree_hash)
-                            url !== nothing && push!(archive_urls, url => false)
-                        end
-                        try
-                            success = install_archive(archive_urls, pkg.tree_hash, path; name = pkg.name, io = ctx.io)
-                            if success && readonly
-                                set_readonly(path) # In add mode, files should be read-only
-                            end
-                            if ctx.use_only_tarballs_for_downloads && !success
-                                pkgerror("failed to get tarball from $(urls)")
-                            end
-                            put!(results, (pkg, success, (urls, path)))
-                        catch err
-                            put!(results, (pkg, err, catch_backtrace()))
-                        end
+    bar = MiniProgressBar(;
+        indent = 1, header = "Downloading packages", color = Base.info_color(),
+        mode = :int, always_reprint = true
+    )
+    bar.max = length(pkgs_to_install)
+    fancyprint = can_fancyprint(ctx.io)
+    # `sprint` draws into a buffer, which does not know the width of the terminal
+    context = IOContext(ctx.io, :displaysize => displaysize(ctx.io))
+    try
+        for (i, (pkg_i, urls_i, path_i)) in enumerate(pkgs_to_install)
+            pkg::DownloadPkg, exc_or_success_or_nothing, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
+            if exc_or_success_or_nothing isa Exception
+                exc = exc_or_success_or_nothing
+                pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
+            end
+            if exc_or_success_or_nothing === nothing
+                continue # represents when another process did the install
+            end
+            success = exc_or_success_or_nothing::Bool
+            (urls, path) = bt_or_pathurls::Tuple{Set{String}, String}
+            success || push!(missed_packages, (; pkg, urls, path))
+            bar.current = i
+            str = sprint(; context) do io
+                if success
+                    fancyprint && print_progress_bottom(io)
+                    vstr = if pkg.version !== nothing
+                        "v$(pkg.version)"
+                    else
+                        short_treehash = string(pkg.tree_hash)[1:16]
+                        "[$short_treehash]"
                     end
+                    artifact_str = artifact_suffix(count_artifacts(path))
+                    printpkgstyle(io, done_verb, string(rpad(pkg.name * " ", max_name + 2, "─"), " ", vstr, artifact_str))
+                    fancyprint && show_progress(io, bar)
                 end
             end
+            print(ctx.io, str)
         end
-
-        bar = MiniProgressBar(;
-            indent = 1, header = "Downloading packages", color = Base.info_color(),
-            mode = :int, always_reprint = true
-        )
-        bar.max = length(pkgs_to_install)
-        fancyprint = can_fancyprint(ctx.io)
-        # `sprint` draws into a buffer, which does not know the width of the terminal
-        context = IOContext(ctx.io, :displaysize => displaysize(ctx.io))
-        try
-            for i in 1:length(pkgs_to_install)
-                pkg::DownloadPkg, exc_or_success_or_nothing, bt_or_pathurls = take!(results)
-                if exc_or_success_or_nothing isa Exception
-                    exc = exc_or_success_or_nothing
-                    pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
-                end
-                if exc_or_success_or_nothing === nothing
-                    continue # represents when another process did the install
-                end
-                success = exc_or_success_or_nothing::Bool
-                (urls, path) = bt_or_pathurls::Tuple{Set{String}, String}
-                success || push!(missed_packages, (; pkg, urls, path))
-                bar.current = i
-                str = sprint(; context) do io
-                    if success
-                        fancyprint && print_progress_bottom(io)
-                        vstr = if pkg.version !== nothing
-                            "v$(pkg.version)"
-                        else
-                            short_treehash = string(pkg.tree_hash)[1:16]
-                            "[$short_treehash]"
-                        end
-                        artifact_str = artifact_suffix(count_artifacts(path))
-                        printpkgstyle(io, done_verb, string(rpad(pkg.name * " ", max_name + 2, "─"), " ", vstr, artifact_str))
-                        fancyprint && show_progress(io, bar)
-                    end
-                end
-                print(ctx.io, str)
-            end
-        finally
-            fancyprint && end_progress(ctx.io, bar)
-            close(jobs)
-        end
+    finally
+        fancyprint && end_progress(ctx.io, bar)
     end
 
     ##################################################
     # Use LibGit2 to download any remaining packages #
     ##################################################
     for (pkg, urls, path) in missed_packages
-        FileWatching.mkpidlock(path * ".pid", stale_age = pidfile_stale_age) do
+        mkpidlock(path * ".pid", stale_age = pidfile_stale_age) do
             ispath(path) && return
             install_git(ctx.io, pkg.uuid, pkg.name, pkg.tree_hash, urls, path)
             readonly && set_readonly(path)
@@ -2758,6 +2483,12 @@ function build_versions(ctx::Context, uuids::Set{UUID}; verbose = false, allow_r
         end
         ispath(path) || error("Build path for $name does not exist: $path")
         ispath(buildfile(path)) && push!(builds, (uuid, name, path, version))
+    end
+    # PkgWasm (PLAN.md D4): builds need a Julia subprocess, so a package with a
+    # `deps/build.jl` makes add/instantiate fail. Packages without one are unaffected.
+    if !isempty(builds)
+        names = join(sort!([build[2] for build in builds]), ", ")
+        pkgerror("building packages is not supported in PkgWasm; these packages have a `deps/build.jl`: ", names)
     end
     # toposort builds by dependencies
     build_uuids = UUID[first(build) for build in builds]

@@ -3,14 +3,14 @@
 # The Wasm module exports these three functions. Natively they are plain Julia functions, so
 # the same command driver can be exercised (and compared against stock Pkg) without a compile.
 #
-#   pkgwasm_abi_version() -> Int32   must return ABI_VERSION (ABI.md §6 step 3)
+#   pkgwasm_abi_version() -> Int32   must return ABI_VERSION (ABI.md v2 §6 step 5)
 #   pkgwasm_init()        -> Int32   0 = ok, 1 = error (printed to stderr)
 #   pkgwasm_main()        -> Int32   exit code: 0 = ok, 1 = reported error
 #
 # Command line (WASI args, argv[0] stripped into ARGS): `pkgwasm <cmd> [pkgs...]` with
 # <cmd> one of add, rm, resolve, instantiate, status.
 
-const ABI_VERSION = Int32(1)
+const ABI_VERSION = Int32(2) # ABI.md v2
 
 pkgwasm_abi_version() = ABI_VERSION
 
@@ -26,6 +26,10 @@ function init_globals!()
     return nothing
 end
 
+# ABI v2 §6 step 6: the Base-side init (RNG seed via `random_get`, ENV/ARGS/DEPOT_PATH/
+# LOAD_PATH/cwd/homedir/tempdir from WASI) belongs to L1's runtime and runs before this in the
+# Wasm build; natively Julia's own startup has done it. This function only owns the PkgWasm
+# globals (D8). The start function must not call any import, so nothing here runs at image load.
 function pkgwasm_init()::Int32
     return try
         init_globals!()

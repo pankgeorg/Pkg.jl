@@ -298,7 +298,7 @@ function load_all_deps_loadable(env::EnvCache)
 end
 
 
-function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Pkg.PKGWASM_PLATFORM)::Bool
+function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Pkg.host_platform())::Bool
     # Load everything
     if workspace
         pkgs = Operations.load_all_deps(env)
@@ -1348,7 +1348,7 @@ function install_git(
     end
 end
 
-function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM, include_lazy::Bool = false)
+function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.host_platform(), include_lazy::Bool = false)
     # Check to see if this package has an (Julia)Artifacts.toml
     artifacts_tomls = Tuple{String, Base.TOML.TOMLDict}[]
     for f in artifact_names
@@ -1391,7 +1391,7 @@ end
 
 function download_artifacts(
         ctx::Context, pkgs;
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
+        platform::AbstractPlatform = Pkg.host_platform(),
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -1423,7 +1423,7 @@ end
 
 function download_artifacts(
         ctx::Context;
-        platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
+        platform::AbstractPlatform = Pkg.host_platform(),
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -2257,7 +2257,7 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git = Set{UUID}();
-        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM,
+        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.host_platform(),
         target::Symbol = :deps, prefer_loaded_versions::Bool = false
     )
     assert_can_add(ctx, pkgs)
@@ -2363,7 +2363,7 @@ end
 # Input: name, uuid, and path
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git::Set{UUID};
-        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.PKGWASM_PLATFORM
+        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.host_platform()
     )
     assert_can_add(ctx, pkgs)
     # no need to look at manifest.. dev will just nuke whatever is there before
@@ -3362,7 +3362,7 @@ function diff_array(old_env::Union{EnvCache, Nothing}, new_env::EnvCache; manife
     return Tuple{T, S, S}[(uuid, index_pkgs(old, uuid), index_pkgs(new, uuid))::Tuple{T, S, S} for uuid in all_uuids]
 end
 
-function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = Pkg.PKGWASM_PLATFORM)
+function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = Pkg.host_platform())
     # PkgWasm (PLAN.md D10): a stdlib's source is available by definition (no filesystem probe)
     stdlib_source_data(pkg) === nothing || return true
     sourcepath = source_path(manifest_file, pkg)

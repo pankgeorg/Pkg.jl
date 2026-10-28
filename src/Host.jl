@@ -77,6 +77,15 @@ function native_downloader()
 end
 
 """
+    Host.platform() -> Base.BinaryPlatforms.Platform
+
+The platform of the machine PkgWasm runs on (PLAN.md D13): natively `HostPlatform()`; in the
+Wasm build the patch answers it from `julia_io.host_platform` (ABI v3) plus `julia_version`.
+Called once per session by `pkgwasm_init`/`__init__`; use `PkgWasm.host_platform()` elsewhere.
+"""
+platform()::Base.BinaryPlatforms.Platform = Base.BinaryPlatforms.HostPlatform()
+
+"""
     Host.download(url, dest, headers) -> Host.Response
 
 GET `url` into `dest`, following at most 10 redirects. The body is written to

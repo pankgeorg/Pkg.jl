@@ -450,6 +450,33 @@ end
         close(server)
     end
 
+    @testset "D4 update: typed artifact selection = stdlib selection" begin
+        BP = Base.BinaryPlatforms
+        tomls = String[]
+        for depot in DEPOT_PATH
+            pdir = joinpath(depot, "packages")
+            isdir(pdir) || continue
+            for name in readdir(pdir), slug in (isdir(joinpath(pdir, name)) ? readdir(joinpath(pdir, name)) : String[])
+                f = joinpath(pdir, name, slug, "Artifacts.toml")
+                isfile(f) && push!(tomls, f)
+            end
+        end
+        plats = [Pkg.host_platform(), BP.HostPlatform(), BP.Platform("x86_64", "linux"),
+                 BP.Platform("aarch64", "macos"), BP.Platform("x86_64", "windows"),
+                 BP.Platform("x86_64", "linux"; libc = "musl"), BP.Platform("armv7l", "linux"),
+                 BP.Platform("x86_64", "linux"; libgfortran_version = v"4"),
+                 BP.Platform("x86_64", "linux"; libstdcxx_version = v"3.4.20"),
+                 BP.Platform("x86_64", "macos"; os_version = v"10.13")]
+        n = 0
+        for f in tomls, p in plats, lazy in (false, true)
+            a = Pkg.Artifacts.select_downloadable_artifacts_typed(f; platform = p, include_lazy = lazy)
+            b = Base.invokelatest(Pkg.Artifacts.select_downloadable_artifacts, f; platform = p, include_lazy = lazy)
+            @test a == b
+            n += 1
+        end
+        @info "typed artifact selection checked" tomls = length(tomls) cases = n
+    end
+
     @testset "D4 update: artifact selection hooks are rejected" begin
         mktempdir() do dir
             write(joinpath(dir, "Project.toml"), "[deps]\n")

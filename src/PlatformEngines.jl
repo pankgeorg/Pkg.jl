@@ -710,7 +710,7 @@ function download_verify_unpack(
             end
 
             # Try to detect extension
-            dot_idx = findlast(isequal('.'), url)
+            dot_idx = Pkg.REPLMode.findlast_char('.', String(url)) # (PkgWasm, trim: Base's findlast goes through an untyped predicate)
             if dot_idx === nothing
                 return nothing
             end

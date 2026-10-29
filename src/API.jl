@@ -665,7 +665,11 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             end
 
             for (filename, infos) in parse_toml(usage_filepath)
-                f.(Ref(filename), infos)
+                # (PkgWasm, trim: stock broadcasts `f.(Ref(filename), infos)` over the entries
+                # of the TOML array, a Vector{Any})
+                for info in infos::Vector{Any}
+                    f(filename, info)
+                end
             end
             return
         end
@@ -849,9 +853,10 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
 
         artifact_path_list = String[]
         for name in keys(artifact_dict)
-            getpaths(meta) = artifact_paths(SHA1(hex2bytes(meta["git-tree-sha1"])))
+            # (PkgWasm, trim: the TOML values typed; arrays are Vector{Any})
+            getpaths(meta) = artifact_paths(SHA1(hex2bytes((meta::Dict{String, Any})["git-tree-sha1"]::String)))
             if isa(artifact_dict[name], Vector)
-                for platform_meta in artifact_dict[name]
+                for platform_meta in artifact_dict[name]::Vector{Any}
                     append!(artifact_path_list, getpaths(platform_meta))
                 end
             else

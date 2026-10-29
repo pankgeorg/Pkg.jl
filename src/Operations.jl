@@ -1401,7 +1401,12 @@ function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.ho
                 )
             else
                 # Otherwise, use the standard selector from `Artifacts`
-                artifacts = select_downloadable_artifacts(artifacts_toml; platform, include_lazy)
+                # (PkgWasm, trim: the typed twin of the stdlib selection, PkgArtifacts)
+                artifacts = if WASM_TARGET || platform isa Platform
+                    Pkg.Artifacts.select_downloadable_artifacts_typed(artifacts_toml; platform = platform::Platform, include_lazy)
+                else
+                    select_downloadable_artifacts(artifacts_toml; platform, include_lazy)
+                end
                 push!(artifacts_tomls, (artifacts_toml, artifacts))
             end
             break

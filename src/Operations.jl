@@ -3551,7 +3551,7 @@ function print_status(
                 end
                 union!(matching_ids, deps_to_add)
             end
-            xs = filter(x -> x[1] in matching_ids, xs)  # (the same rows, no tuple conversion: G3 #21-22)
+            xs = Base.filter(x -> x[1] in matching_ids, xs)  # (the same rows, no tuple conversion: G3 #21-22; `filter` is a local Bool here)
         end
         if isempty(xs)
             printpkgstyle(

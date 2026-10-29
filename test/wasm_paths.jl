@@ -127,6 +127,37 @@ git-tree-sha1 = "89abcdef0123456789abcdef0123456789abcdef"
 uuid = "33333333-3333-3333-3333-333333333333"
 version = "2.0.0"
 ''')
+# (G3) every frame of the writer's and toml_eq's recursions has a CodeInstance (an uncached
+# one, settled with limited accuracy, has no code for the trim verifier), and no dynamic call
+let T = Pkg.Types, W = Pkg.TOMLWriter
+    precompile(T.write_project, (IOBuffer, Dict{String, Any}))
+    precompile(T.write_manifest, (IOBuffer, Dict{String, Any}))
+    precompile(Core.kwcall, (@NamedTuple{sorted::Bool}, typeof(Pkg.atomic_toml_write), String, Dict{String, Any}))
+    precompile(T.toml_eq, (Any, Any))
+    total = 0; uncached = 0; dynamic = 0
+    for mod in (W, T), name in names(mod; all = true)
+        isdefined(mod, name) || continue
+        f = getfield(mod, name)
+        f isa Function || continue
+        mod === T && !startswith(string(name), "toml_") && continue
+        for m in methods(f), mi in Base.specializations(m)
+            mi isa Core.MethodInstance || continue
+            total += 1
+            isdefined(mi, :cache) || (uncached += 1; println(stderr, "UNCACHED ", mi.specTypes))
+        end
+    end
+    for (f, tt) in ((W.printvalue, (typeof(identity), IOBuffer, Any, Bool)), (W.printvector, (typeof(identity), IOBuffer, AbstractVector, Bool)),
+                    (W.print_inline_table, (typeof(identity), IOBuffer, AbstractDict, Bool)), (T.toml_eq, (Any, Any)), (T.toml_vec_eq, (Any, Any)))
+        ci, _ = only(code_typed(f, tt))
+        for st in ci.code
+            st isa Expr && st.head === :call || continue
+            g = st.args[1]; gv = g isa GlobalRef ? getglobal(g.mod, g.name) : g
+            (gv isa Core.Builtin || gv isa Core.IntrinsicFunction) && continue
+            dynamic += 1; println(stderr, "DYNAMIC ", f, " ", st)
+        end
+    end
+    println("CYCLES total=", total, " uncached=", uncached, " dynamic=", dynamic)
+end
 res(f) = try f() catch e; "ERR " * sprint(showerror, e) end
 for mod in (Pkg, Pkg)
     T = mod.Types
@@ -157,6 +188,8 @@ end
         haskey(ENV, "WASM_PATHS_DEBUG") && foreach(println, ms)
         @test length(ps) == 2 && ps[1] == ps[2] && !occursin("ERR", ps[1]) && occursin("[extensions]", ps[1]) && occursin("[sources]", ps[1])
         @test length(ms) == 2 && ms[1] == ms[2] && !occursin("ERR", ms[1]) && occursin("deps.A.extensions", ms[1])
+        cyc = match(r"CYCLES total=(\d+) uncached=(\d+) dynamic=(\d+)", join(lines, '\n'))
+        @test cyc !== nothing && parse(Int, cyc[1]) > 20 && cyc[2] == "0" && cyc[3] == "0"
     end
 end
 end # module

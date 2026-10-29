@@ -285,7 +285,11 @@ function read_project(f_or_io::Union{String, IO})
         if e isa TOML.ParserError
             pkgerror("Could not parse project: ", sprint(showerror, e::TOML.ParserError))
         end
-        pkgerror("Errored when reading $f_or_io, got: ", Pkg.error_text(e))
+        # (`$f_or_io` typed, G3: Base's default show of devnull, the only IO passed here besides
+        # an IOBuffer of a git blob)
+        what = f_or_io isa AbstractString ? String(f_or_io) : f_or_io isa Base.DevNull ? "Base.DevNull()" :
+            f_or_io isa IOBuffer ? sprint(show, f_or_io::IOBuffer) : "(an IO)"
+        pkgerror("Errored when reading $what, got: ", Pkg.error_text(e))
     end
     return Project(raw; file = f_or_io isa IO ? nothing : f_or_io)
 end

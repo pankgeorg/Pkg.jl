@@ -84,7 +84,7 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
         try
             run(pipeline(cmd; stdout = devnull))
         catch err
-            Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
+            Pkg.Types.pkgerror("The command $(cmd) failed, error: $(error_string(err))")
         end
         return LibGit2.GitRepo(source_path)
     catch err
@@ -101,6 +101,17 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
     finally
         fancyprint && end_progress(io, bar)
     end
+end
+
+# `string(err)` of what `run` throws, typed (PkgWasm, G3): the same text as Base's default
+# `show` of ProcessFailedException and IOError; any other error as its message
+function error_string(@nospecialize(err))
+    if err isa ProcessFailedException
+        return string("ProcessFailedException(Base.Process[", join([sprint(show, p) for p in err.procs], ", "), "])")
+    elseif err isa Base.IOError
+        return string("Base.IOError(", repr(err.msg), ", ", err.code, ")")
+    end
+    return Pkg.error_text(err)
 end
 
 function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = nothing, credentials = nothing, refspecs = [""], kwargs...)
@@ -120,7 +131,7 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
                 try
                     run(pipeline(cmd; stdout = devnull))
                 catch err
-                    Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
+                    Pkg.Types.pkgerror("The command $(cmd) failed, error: $(error_string(err))")
                 end
             end
         end
@@ -286,7 +297,7 @@ function check_valid_HEAD(repo)
     return try
         LibGit2.head(repo)
     catch err
-        Pkg.Types.pkgerror("invalid git HEAD ($(err.msg))")
+        Pkg.Types.pkgerror("invalid git HEAD ($(err isa LibGit2.GitError ? err.msg : Pkg.error_text(err)))")
     end
 end
 

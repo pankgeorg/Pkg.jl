@@ -221,6 +221,20 @@ function download_registry_dir(url::String, hash::Base.SHA1, dir::String)
     return nothing
 end
 
+# Stock's `retry(GitTools.clone, delays = fill(1.0, 5), check = (s, e) -> isa(e, LibGit2.GitError))`
+# as a loop (PkgWasm, G3: no splatting closure): up to 6 attempts, 1 s apart, on a GitError only
+function clone_with_retry(io::IO, url::String, tmp::String)
+    for attempt in 1:6
+        try
+            return GitTools.clone(io, url, tmp; header = "registry from $(repr(url))")
+        catch e
+            (e isa LibGit2.GitError && attempt < 6) || rethrow()
+        end
+        sleep(1.0)
+    end
+    error("unreachable")
+end
+
 function check_registry_state(reg)
     reg_currently_uses_pkg_server = reg.tree_info !== nothing
     reg_should_use_pkg_server = registry_use_pkg_server()
@@ -316,7 +330,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         return
                     elseif reg.url !== nothing # clone from url
                         # retry to help spurious connection issues, particularly on CI
-                        repo = retry(GitTools.clone, delays = fill(1.0, 5), check = (s, e) -> isa(e, LibGit2.GitError))(io, reg.url, tmp; header = "registry from $(repr(reg.url))")
+                        repo = clone_with_retry(io, reg.url::String, tmp)
                         LibGit2.close(repo)
                     else
                         Pkg.Types.pkgerror("no path or url specified for registry")

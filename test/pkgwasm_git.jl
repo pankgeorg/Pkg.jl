@@ -30,8 +30,14 @@ snapshot(root) = Dict(relpath(joinpath(d, f), root) =>
                        (filemode(joinpath(d, f)) & 0o777, read(joinpath(d, f), String)))
                       for (d, _, fs) in walkdir(root) for f in fs)
 
+# hermetic: git sees no configuration or repository outside the test's own temp root
+const ROOT = mktempdir()
+ENV["HOME"] = ROOT
+ENV["GIT_CEILING_DIRECTORIES"] = ROOT
+ENV["GIT_CONFIG_NOSYSTEM"] = "1"
+
 @testset "GitCLI vs LibGit2" begin
-    mktempdir() do dir
+    mktempdir(ROOT) do dir
         make_fixture(dir)
         foo = joinpath(dir, "Foo")
         bare = joinpath(dir, "Foo.git")
@@ -87,7 +93,7 @@ snapshot(root) = Dict(relpath(joinpath(d, f), root) =>
                 m in (0o022, 0o002, 0o077), pre in (false, true)
             old = ccall(:umask, Base.Cmode_t, (Base.Cmode_t,), m)
             try
-                a, b = mktempdir(), mktempdir()
+                a, b = mktempdir(ROOT), mktempdir(ROOT)
                 if pre
                     for d in (a, b)
                         mkdir(joinpath(d, "src"); mode = 0o700)
@@ -109,7 +115,7 @@ snapshot(root) = Dict(relpath(joinpath(d, f), root) =>
             write(joinpath(foo, "f.txt"), "lower\n")
             fgit(foo, "add", "-A"); fgit(foo, "commit", "-qm", "filters")
             r2, lr2 = GitCLI.GitRepo(foo), LibGit2.GitRepo(foo)
-            a, b = mktempdir(), mktempdir()
+            a, b = mktempdir(ROOT), mktempdir(ROOT)
             Pkg.GitTools.checkout_tree_to_path(r2, GitCLI.GitObject(r2, tree_of(foo, "HEAD")), a)
             Pkg.GitTools.checkout_tree_to_path(lr2, LibGit2.GitObject(lr2, tree_of(foo, "HEAD")), b)
             @test read(joinpath(a, "f.txt"), String) == read(joinpath(b, "f.txt"), String) == "lower\n"
@@ -128,7 +134,7 @@ snapshot(root) = Dict(relpath(joinpath(d, f), root) =>
 end
 
 @testset "Pkg's git operations: PkgWasm == stock Pkg (JULIA_PKG_USE_CLI_GIT)" begin
-    mktempdir() do dir
+    mktempdir(ROOT) do dir
         work = joinpath(dir, "w")
         script = joinpath(@__DIR__, "git", "ops.jl")
         pkgwasm = dirname(@__DIR__)

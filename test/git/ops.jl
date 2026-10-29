@@ -33,7 +33,7 @@ empty!(DEPOT_PATH)
 push!(DEPOT_PATH, DEPOT)
 ENV["JULIA_PKG_SERVER"] = ""
 ENV["JULIA_PKG_PRECOMPILE_AUTO"] = "0"
-which == "stock" && (P._auto_gc_enabled[] = false)   # (gc is not part of PkgWasm)
+P._auto_gc_enabled[] = false   # (both: the auto-gc after rm is not part of the transcript)
 
 out = IOBuffer()
 norm(s) = replace(s, work => "<W>", r"\e\[[0-9;]*m" => "", r"last updated [0-9-]+ [0-9:]+" => "last updated <T>")

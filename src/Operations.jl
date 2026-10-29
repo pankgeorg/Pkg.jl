@@ -1476,7 +1476,7 @@ function download_artifacts(
 
     download_states = Dict{SHA1, DownloadState}()
 
-    errors = String[] # PkgWasm: each error's text (stock: a Channel{Any} of the errors)
+    errors = String[] # PkgWasm: each error's text (stock: the error objects, put by the pool's tasks)
     is_done = Ref{Bool}(false)
     ansi_moveup(n::Int) = string("\e[", n, "A")
     ansi_movecol1 = "\e[1G"

@@ -226,8 +226,15 @@ end
             Pkg.activate(dir; io = devnull)
             @test Pkg.Operations.is_instantiated(Pkg.Types.EnvCache())
             @test keys(Pkg.dependencies()) == keys(Pkg.dependencies())
-            # rm keeps the package files (no auto-gc)
-            Pkg.rm("Example"; io = out)
+            # rm keeps the package files when the auto-gc is off (stock's auto-gc after rm,
+            # restored by the D4 update, is in the S-gc-auto scenario)
+            gc_auto = Pkg._auto_gc_enabled[]
+            Pkg._auto_gc_enabled[] = false
+            try
+                Pkg.rm("Example"; io = out)
+            finally
+                Pkg._auto_gc_enabled[] = gc_auto
+            end
             @test isdir(src)
             @test !haskey(Pkg.TOML.parsefile(joinpath(dir, "Project.toml"))["deps"], "Example")
             Pkg.activate(; io = devnull)

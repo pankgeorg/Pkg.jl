@@ -784,7 +784,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             filter!(((k, v),) -> k in all_scratch_dirs, usage)
 
             # Expand it back into a dict-of-dicts
-            expanded_usage = Dict{String, Vector{Dict}}()
+            expanded_usage = Dict{String, Vector{Dict{String, Any}}}() # (PkgWasm, trim: stock's Vector{Dict})
             for (k, v) in usage
                 # Drop scratch spaces whose parents are all non-existent
                 parents = scratch_parents_by_depot[depot][k]
@@ -794,7 +794,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                 end
 
                 expanded_usage[k] = [
-                    Dict(
+                    Dict{String, Any}(
                         "time" => v,
                         "parent_projects" => collect(parents),
                     ),

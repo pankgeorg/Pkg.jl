@@ -338,7 +338,10 @@ function download_artifact(
     t_wait_msg = if CONCURRENT
         Timer(2) do t
             if progress === nothing
-                @pkg_info "downloading $tarball_url ($hex) in another process"
+                # (stock interpolates `hex`, a binding Pkg does not have: UndefVarError if the
+                # notice ever ran; here the tree hash. The notice never runs in PkgWasm, whose
+                # `mkpidlock` does not wait: the timer is closed right away)
+                @pkg_info "downloading $tarball_url ($(bytes2hex(tree_hash.bytes))) in another process"
             else
                 progress(0, 0; status = "downloading in another process")
             end

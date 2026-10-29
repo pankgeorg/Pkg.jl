@@ -59,7 +59,8 @@ end
 # `_generic` methods), and an error built for Wasm.
 const TABLE_TYPES = (Dict{String, Any}, Dict{String, String}, Dict{String, Vector{String}}, Dict{String, UUID},
     Dict{String, Vector{Dict{String, Any}}}, Dict{String, Union{String, Vector{String}}},
-    Dict{String, Dict{String, String}}, Dict{String, Dates.DateTime})
+    Dict{String, Dict{String, String}}, Dict{String, Dates.DateTime},
+    Dict{String, Vector{Dict{String, Dates.DateTime}}}) # (the last: Pkg.gc's condensed usage logs)
 const VECTOR_TYPES = (Vector{Any}, Vector{String}, Vector{Int64}, Vector{Float64}, Vector{Bool},
     Vector{Dates.DateTime}, Vector{Dates.Date}, Vector{Dates.Time},
     Vector{Dict{String, Any}}, Vector{Dict{String, Dates.DateTime}})
@@ -374,6 +375,7 @@ function is_empty_table(@nospecialize(t))
     t isa Dict{String, Union{String, Vector{String}}} && return isempty(t)
     t isa Dict{String, Dict{String, String}} && return isempty(t)
     t isa Dict{String, Dates.DateTime} && return isempty(t)
+    t isa Dict{String, Vector{Dict{String, Dates.DateTime}}} && return isempty(t)
     WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
     return Base.inferencebarrier(isempty)(t)::Bool
 end
@@ -386,6 +388,7 @@ function all_values(p::P, @nospecialize(t)) where {P}
     t isa Dict{String, Union{String, Vector{String}}} && return all(p, values(t))
     t isa Dict{String, Dict{String, String}} && return all(p, values(t))
     t isa Dict{String, Dates.DateTime} && return all(p, values(t))
+    t isa Dict{String, Vector{Dict{String, Dates.DateTime}}} && return all(p, values(t))
     WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
     return Base.inferencebarrier(all)(p, values(t))::Bool
 end
@@ -398,6 +401,7 @@ function any_value(p::P, @nospecialize(t)) where {P}
     t isa Dict{String, Union{String, Vector{String}}} && return any(p, values(t))
     t isa Dict{String, Dict{String, String}} && return any(p, values(t))
     t isa Dict{String, Dates.DateTime} && return any(p, values(t))
+    t isa Dict{String, Vector{Dict{String, Dates.DateTime}}} && return any(p, values(t))
     WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
     return Base.inferencebarrier(any)(p, values(t))::Bool
 end

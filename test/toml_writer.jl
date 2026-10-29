@@ -119,6 +119,13 @@ end
             @test a == b
         end
     end
+    @testset "Pkg.gc's condensed usage tables (D4 update)" begin
+        t = DateTime(2026, 10, 29, 21, 0, 0, 123)
+        @test same(Dict("/a/Manifest.toml" => [Dict("time" => t)], "/b/Manifest.toml" => [Dict("time" => t)]); sorted = true)
+        @test same(Dict{String, Vector{Dict{String, DateTime}}}(); sorted = true)
+        @test same(Dict("/s" => [Dict{String, Any}("time" => t, "parent_projects" => ["/p/Project.toml"])]); sorted = true)
+        @test W.is_typed_table(Dict("/a" => [Dict("time" => t)]))
+    end
     @testset "atomic_toml_write with an IdSet of inline tables, as stock (review-5 #1)" begin
         stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
         mktempdir() do dir

@@ -9,7 +9,9 @@ using TOML
 
 const TESTDIR = dirname(@__DIR__)
 
-testset_name(arg) = arg isa String ? arg : sprint(Base.show_unquoted, arg)
+# an interpolated name keeps its `$(...)` parts: "downloads with X = $(v)"
+testset_name(arg) = arg isa String ? arg :
+    join(a isa String ? a : string("\$(", sprint(Base.show_unquoted, a), ")") for a in arg.args)
 
 # `pkg"cmd ..."` and `pkgstr("cmd ...")` count as REPL-mode calls of `cmd`.
 repl_cmd(s::AbstractString) = (w = split(strip(s)); isempty(w) ? "?" : w[1] == "registry" && length(w) > 1 ? "registry " * w[2] : w[1])
@@ -36,8 +38,18 @@ function walk!(calls, flags, ex)
             calls["pkg\"$s\""] = get(calls, "pkg\"$s\"", 0) + 1
         end
         f in (:git_init_and_commit, :git_init_package) && push!(flags, "git")
-        f === :julia_cmd || (f isa Expr && f.head === :. && f.args[end] == QuoteNode(:julia_cmd)) && push!(flags, "julia-subprocess")
-    elseif ex.head === :macrocall && ex.args[1] === Symbol("@pkg_str")
+        if f === :julia_cmd || (f isa Expr && f.head === :. && f.args[end] == QuoteNode(:julia_cmd))
+            push!(flags, "julia-subprocess")
+        end
+    elseif ex.head === :(=) && ex.args[1] isa Expr && ex.args[1].head === :ref && ex.args[2] === true &&
+            sprint(Base.show_unquoted, ex.args[1].args[1]) == "Pkg.REPLMode.TEST_MODE"
+        push!(flags, "repl-parse-only") # pkg"..." only parses the command under TEST_MODE
+    elseif ex.head === :macrocall && ex.args[1] isa GlobalRef && ex.args[1].name === Symbol("@cmd")
+        # `$(Base.julia_cmd()) ...` is inside the command string
+        occursin("julia_cmd", string(ex.args[end])) && push!(flags, "julia-subprocess")
+        occursin(r"^\s*git ", string(ex.args[end])) && push!(flags, "git")
+    elseif ex.head === :macrocall && (ex.args[1] === Symbol("@pkg_str") ||
+            (ex.args[1] isa Expr && ex.args[1].head === :. && ex.args[1].args[end] == QuoteNode(Symbol("@pkg_str"))))
         s = ex.args[end] isa String ? repl_cmd(ex.args[end]) : "?"
         calls["pkg\"$s\""] = get(calls, "pkg\"$s\"", 0) + 1
     elseif ex.head === :kw && ex.args[1] in (:url, :rev, :repo)

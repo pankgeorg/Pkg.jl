@@ -6,7 +6,7 @@ module PlatformEngines
 import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using SHA, Downloads, Tar
-import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, toml_float
+import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, toml_float, WASM_TARGET
 import ..Host
 using ..MiniProgressBars
 using Base.BinaryPlatforms, p7zip_jll
@@ -68,6 +68,11 @@ const AUTH_ERROR_HANDLERS = Pair{Union{String, Regex}, Any}[]
 
 function handle_auth_error(url, err; verbose::Bool = false)
     handled, should_retry = false, false
+    # (built for Wasm no handlers can be registered, the table is empty: G3 #29)
+    if WASM_TARGET
+        isempty(AUTH_ERROR_HANDLERS) || Pkg.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
+        return nothing
+    end
     for (scheme, handler) in AUTH_ERROR_HANDLERS
         occursin(scheme, url) || continue
         handled, should_retry = handler(url, pkg_server(), err)
@@ -97,6 +102,7 @@ is `true`.
 `register_auth_error_handler` returns a zero-arg function that can be called to deregister the handler.
 """
 function register_auth_error_handler(urlscheme::Union{AbstractString, Regex}, @nospecialize(f))
+    WASM_TARGET && Pkg.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
     unique!(pushfirst!(AUTH_ERROR_HANDLERS, urlscheme => f))
     return () -> deregister_auth_error_handler(urlscheme, f)
 end

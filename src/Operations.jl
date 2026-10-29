@@ -1132,8 +1132,14 @@ function download_source(ctx::Context, pkgs; readonly = true)
             end
             return (pkg, success, (urls, path))
         catch err
-            # (built for Wasm no backtraces: the error is reported without one, M4.2 G3)
-            return (pkg, err, WASM_TARGET ? nothing : catch_backtrace())
+            # (built for Wasm the install error is raised here, without a backtrace: no
+            # Any-typed error in the returned tuple, G3 #17-28; downloads are serial, D3)
+            if WASM_TARGET
+                buf = IOBuffer()  # (`sprint(showerror_known, err)` without an Any-typed argument tuple)
+                Pkg.showerror_known(buf, err)
+                pkgerror("Error when installing package $(pkg.name):\n", String(take!(buf)))
+            end
+            return (pkg, err, catch_backtrace())
         end
     end
 
@@ -1147,7 +1153,6 @@ function download_source(ctx::Context, pkgs; readonly = true)
         for (i, (pkg_i, urls_i, path_i)) in enumerate(pkgs_to_install)
             pkg::eltype(pkgs), exc_or_success, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
             if exc_or_success isa Exception
-                WASM_TARGET && pkgerror("Error when installing package $(pkg.name):\n", sprint(Pkg.showerror_known, exc_or_success))
                 pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc_or_success, bt_or_pathurls))
             end
             # (the result's parts asserted to their types, as 1.13's consumer does)
@@ -2654,8 +2659,8 @@ function print_diff(io::IO, old::Union{Nothing, PackageSpec}, new::Union{Nothing
     elseif !is_instantiated(new)
         printstyled(io, "- $(stat_rep(old))"; color = :light_red)
     elseif is_tracking_registry(old) && is_tracking_registry(new) &&
-            new.version isa VersionNumber && old.version isa VersionNumber && new.version != old.version
-        if new.version > old.version
+            (nv = new.version; ov = old.version; nv isa VersionNumber && ov isa VersionNumber && nv != ov)  # (read once: typed, G3 #16)
+        if nv::VersionNumber > ov::VersionNumber  # (G3 V44)
             printstyled(io, "↑ $(stat_rep(old)) ⇒ $(stat_rep(new; name = false))"; color = :light_yellow)
         else
             printstyled(io, "↓ $(stat_rep(old)) ⇒ $(stat_rep(new; name = false))"; color = :light_magenta)
@@ -2874,7 +2879,7 @@ function print_status(
             printpkgstyle(io, :Project, "No packages added to or removed from $(pathrepr(env.project_file))", ignore_indent; color = Base.info_color())
         end
     else
-        xs = !filter ? xs : eltype(xs)[(id, old, new) for (id, old, new) in xs if (id in uuids || something(new, old).name in names)]
+        xs = !filter ? xs : Base.filter(x -> (x[1] in uuids || something(x[3], x[2]).name in names), xs)  # (the same rows, no tuple conversion: G3 #21-22)
         if isempty(xs)
             printpkgstyle(
                 io, Symbol("No Matches"),

@@ -258,7 +258,7 @@ end
             dir = joinpath(root, "proj")
             mkpath(dir)
             write(joinpath(dir, "Project.toml"), "[deps]\n")
-            withenv("HOME" => root) do
+            withenv("HOME" => root, "GIT_CEILING_DIRECTORIES" => root) do
                 @test homedir() == root
                 Pkg.activate(dir; io = devnull)
                 @test Pkg.discover_repo(dir) === nothing

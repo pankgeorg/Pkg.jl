@@ -20,6 +20,10 @@ include(joinpath(@__DIR__, "fixture.jl"))
 
 rm(work; recursive = true, force = true)
 mkpath(work)
+# hermetic: HOME and the git discovery ceiling are the run's own directory
+ENV["HOME"] = work
+ENV["GIT_CEILING_DIRECTORIES"] = work
+ENV["GIT_CONFIG_NOSYSTEM"] = "1"
 make_fixture(joinpath(work, "src"))
 const FOO = joinpath(work, "src", "Foo")
 const REG = joinpath(work, "src", "Reg")

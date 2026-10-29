@@ -107,7 +107,7 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
         try
             run(pipeline(cmd; stdout = devnull))
         catch err
-            Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
+            Pkg.Types.pkgerror("The command $(cmd) failed, error: $(error_string(err))")
         end
         return LibGit2.GitRepo(source_path)
     catch err
@@ -127,6 +127,17 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
 end
 
 geturl(repo) = LibGit2.remote_url(repo, "origin")
+
+# `string(err)` of what `run` throws, typed (PkgWasm, G3): the same text as Base's default
+# `show` of ProcessFailedException and IOError; any other error as its message
+function error_string(@nospecialize(err))
+    if err isa ProcessFailedException
+        return string("ProcessFailedException(Base.Process[", join([sprint(show, p) for p in err.procs], ", "), "])")
+    elseif err isa Base.IOError
+        return string("Base.IOError(", repr(err.msg), ", ", err.code, ")")
+    end
+    return Pkg.error_text(err)
+end
 
 function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = nothing, credentials = nothing, refspecs::Vector{String} = [""], depth::Integer = 0, kwargs...)
     if remoteurl === nothing
@@ -155,7 +166,7 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
                 run(pipeline(cmd; stdout = devnull, stderr = errbuf))
             catch err
                 git_err = strip(String(take!(errbuf)))
-                msg = "The command $(cmd) failed, error: $err"
+                msg = "The command $(cmd) failed, error: $(error_string(err))"
                 isempty(git_err) || (msg *= "\n$(git_err)")
                 Pkg.Types.pkgerror(msg)
             end
@@ -327,7 +338,7 @@ function check_valid_HEAD(repo)
         catch
             "(unknown url)"
         end
-        Pkg.Types.pkgerror("invalid git HEAD in $url ($(err.msg))")
+        Pkg.Types.pkgerror("invalid git HEAD in $url ($(err isa LibGit2.GitError ? err.msg : Pkg.error_text(err)))")
     end
 end
 

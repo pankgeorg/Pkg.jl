@@ -94,30 +94,34 @@ module PkgTestsInner
     rewrite_path(p) = (p isa Expr && p.head === :. && !isempty(p.args) && p.args[1] === :Pkg) ?
         Expr(:., :Pkg, p.args[2:end]...) : p
     function rewrite_import(ex::Expr)
+        if ex.head === :using && !any(a -> a isa Expr && a.head === :(:), ex.args)
+            # `using A, B, ...`: one statement per module, so the others stay `using`
+            stmts = Any[]
+            for a in ex.args
+                if a == Expr(:., :Pkg) # `using Pkg` binds `Pkg` and brings the exported names
+                    push!(stmts, Expr(:import, Expr(:as, Expr(:., :Pkg), :Pkg)), Expr(:using, Expr(:., :Pkg)))
+                elseif a isa Expr && a.head === :. && length(a.args) > 1 && a.args[1] === :. && a.args[end] === :Pkg
+                    # `using ..Pkg` binds the module's own name (`PkgWasm`); bind `Pkg` as well
+                    push!(stmts, Expr(:using, a), Expr(:import, a))
+                else
+                    push!(stmts, Expr(:using, rewrite_path(a)))
+                end
+            end
+            return Expr(:toplevel, stmts...)
+        end
+        # `import ...` and `using X: names`
         args = map(ex.args) do a
             if a isa Expr && a.head === :(:)
                 Expr(:(:), rewrite_path(a.args[1]), a.args[2:end]...)
             elseif a isa Expr && a.head === :as
                 Expr(:as, rewrite_path(a.args[1]), a.args[2])
-            elseif a == Expr(:., :Pkg)
-                # bare `import Pkg` / `using Pkg` must still bind the name `Pkg`
+            elseif a == Expr(:., :Pkg) # bare `import Pkg` must still bind the name `Pkg`
                 Expr(:as, Expr(:., :Pkg), :Pkg)
             else
                 rewrite_path(a)
             end
         end
-        bare_using = ex.head === :using && any(==(Expr(:., :Pkg)), ex.args)
-        new = Expr(ex.head === :using && bare_using ? :import : ex.head, args...)
-        if bare_using # `using Pkg` also brings the exported names
-            return Expr(:toplevel, new, Expr(:using, Expr(:., :Pkg)))
-        end
-        # `using ..Pkg` binds the module's own name (`PkgWasm`); bind `Pkg` as well
-        relative = filter(a -> a isa Expr && a.head === :. && length(a.args) > 1 &&
-            a.args[1] === :. && a.args[end] === :Pkg, ex.args)
-        if ex.head === :using && !isempty(relative)
-            return Expr(:toplevel, new, Expr(:import, relative...))
-        end
-        return new
+        return Expr(ex.head, args...)
     end
     function to_pkgwasm(ex)
         ex isa Expr || return ex

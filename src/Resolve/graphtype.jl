@@ -643,7 +643,7 @@ function logstr(pkgID, args...)
     # workout the string with the color codes, check stderr to decide if color is enabled
     # PkgWasm (B23): a concrete IOContext carrying stderr's :color, as `sprint(...; context =
     # stderr)` does for printstyled; built for Wasm the stream is the target's stderr
-    color = Pkg.WASM_TARGET ? get(stderr_f(), :color, false)::Bool : get(stderr, :color, false)::Bool
+    color = PkgWasm.WASM_TARGET ? get(stderr_f(), :color, false)::Bool : get(stderr, :color, false)::Bool
     buf = IOBuffer()
     printstyled(IOContext(buf, :color => color), args...; color = pkgID_color(pkgID))
     return String(take!(buf))

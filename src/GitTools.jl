@@ -1,9 +1,9 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module GitTools
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
-using ..Pkg
+using ..PkgWasm
 using ..MiniProgressBars
 import ..can_fancyprint, ..printpkgstyle, ..stdout_f, ..ispath_nothrow
 using SHA
@@ -111,19 +111,19 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
         try
             run(pipeline(cmd; stdout = devnull))
         catch err
-            Pkg.Types.pkgerror("The command $(cmd) failed, error: $(error_string(err))")
+            PkgWasm.Types.pkgerror("The command $(cmd) failed, error: $(error_string(err))")
         end
         return LibGit2.GitRepo(source_path)
     catch err
         rm(source_path; force = true, recursive = true)
         err isa LibGit2.GitError || err isa InterruptException || rethrow()
         if err isa InterruptException
-            Pkg.Types.pkgerror("git clone of `$url` interrupted")
+            PkgWasm.Types.pkgerror("git clone of `$url` interrupted")
         elseif (err.class == LibGit2.Error.Net && err.code == LibGit2.Error.EINVALIDSPEC) ||
                 (err.class == LibGit2.Error.Repository && err.code == LibGit2.Error.ENOTFOUND)
-            Pkg.Types.pkgerror("git repository not found at `$(url)`")
+            PkgWasm.Types.pkgerror("git repository not found at `$(url)`")
         else
-            Pkg.Types.pkgerror("failed to clone from $(url), error: $err")
+            PkgWasm.Types.pkgerror("failed to clone from $(url), error: $err")
         end
     finally
         fancyprint && end_progress(io, bar)
@@ -135,13 +135,13 @@ geturl(repo) = LibGit2.remote_url(repo, "origin")
 # `string(err)` of what `run` throws, typed (PkgWasm, G3): the same text as Base's default
 # `show` of ProcessFailedException and IOError; any other error as its message
 function error_string(@nospecialize(err))
-    Pkg.WASM_TARGET || return string(err)   # (natively stock's interpolation)
+    PkgWasm.WASM_TARGET || return string(err)   # (natively stock's interpolation)
     if err isa ProcessFailedException
         return string("ProcessFailedException(Base.Process[", join([sprint(show, p) for p in err.procs], ", "), "])")
     elseif err isa Base.IOError
         return string("Base.IOError(", repr(err.msg), ", ", err.code, ")")
     end
-    return Pkg.error_text(err)
+    return PkgWasm.error_text(err)
 end
 
 function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = nothing, credentials = nothing, refspecs::Vector{String} = [""], depth::Integer = 0, kwargs...)
@@ -173,15 +173,15 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
                 git_err = strip(String(take!(errbuf)))
                 msg = "The command $(cmd) failed, error: $(error_string(err))"
                 isempty(git_err) || (msg *= "\n$(git_err)")
-                Pkg.Types.pkgerror(msg)
+                PkgWasm.Types.pkgerror(msg)
             end
         end
     catch err
         err isa LibGit2.GitError || rethrow()
         if (err.class == LibGit2.Error.Repository && err.code == LibGit2.Error.ERROR)
-            Pkg.Types.pkgerror("Git repository not found at '$(remoteurl)'")
+            PkgWasm.Types.pkgerror("Git repository not found at '$(remoteurl)'")
         else
-            Pkg.Types.pkgerror("failed to fetch from $(remoteurl), error: $err")
+            PkgWasm.Types.pkgerror("failed to fetch from $(remoteurl), error: $err")
         end
     finally
         fancyprint && end_progress(io, bar)
@@ -346,7 +346,7 @@ function check_valid_HEAD(repo)
         catch
             "(unknown url)"
         end
-        Pkg.Types.pkgerror("invalid git HEAD in $url ($(err isa LibGit2.GitError ? err.msg : Pkg.error_text(err)))")
+        PkgWasm.Types.pkgerror("invalid git HEAD in $url ($(err isa LibGit2.GitError ? err.msg : PkgWasm.error_text(err)))")
     end
 end
 

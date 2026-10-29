@@ -1,12 +1,12 @@
 module PkgArtifacts
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Artifacts, Base.BinaryPlatforms, SHA
 using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 using FileWatching: FileWatching
 
-import ..set_readonly, ..mkpidlock, ..host_platform, ..CONCURRENT, ..WASM_TARGET, ..Pkg, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..mkpidlock, ..host_platform, ..CONCURRENT, ..WASM_TARGET, ..PkgWasm, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle, ..mv_temp_dir_retries, ..atomic_toml_write, ..create_cachedir_tag
 
 import Base: get, SHA1
@@ -565,7 +565,7 @@ end
 function download_error_text(@nospecialize(err))
     WASM_TARGET || return sprint(showerror, err)
     buf = IOBuffer()
-    Pkg.showerror_known(buf, err)
+    PkgWasm.showerror_known(buf, err)
     return String(take!(buf))
 end
 

@@ -1,6 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-module Pkg
+module PkgWasm
 
 # In Pkg tests we want to avoid Pkg being re-precompiled by subprocesses, so this is enabled in the test suite
 if Base.get_bool_env("JULIA_PKG_DISALLOW_PKG_PRECOMPILATION", false) == true
@@ -44,7 +44,7 @@ function depots1(depot_list::Union{String, Vector{String}} = depots())
     if depot_list isa String
         return depot_list
     else
-        isempty(depot_list) && Pkg.Types.pkgerror("no depots provided")
+        isempty(depot_list) && PkgWasm.Types.pkgerror("no depots provided")
         return depot_list[1]
     end
 end
@@ -99,7 +99,7 @@ end
 # runtime types these as its host streams). `DEFAULT_IO[]` (a test override, sanitised to
 # `nothing` in the Wasm image, D8) is then an error if set.
 
-const PKGWASM_UUID = Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
+const PKGWASM_UUID = Base.UUID("d562cdc0-5c7a-524d-b497-bb1ca2727331")
 Base.record_compiletime_preference(PKGWASM_UUID, "target")
 const TARGET = let t = get(Base.get_preferences(PKGWASM_UUID), "target", "native")
     t in ("native", "wasm") || error("PkgWasm: invalid preference target = $(repr(t)) (\"native\" or \"wasm\")")
@@ -1099,7 +1099,7 @@ function _auto_gc(ctx::Types.Context)
     return if curr_time - DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] > delay_secs
         printpkgstyle(ctx.io, :Info, "We haven't cleaned this depot up for a bit, running Pkg.gc()...", color = Base.info_color())
         try
-            Pkg.gc(ctx)
+            PkgWasm.gc(ctx)
             DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = curr_time
         catch ex
             @pkg_error("GC failed", exception = ex)
@@ -1120,7 +1120,7 @@ _auto_precompile(ctx::Types.Context, pkgs::Vector{PackageSpec} = PackageSpec[]; 
 
 # Reset globals that might have been mutated during precompilation.
 DEFAULT_IO[] = nothing
-Pkg.UPDATED_REGISTRY_THIS_SESSION[] = false
+PkgWasm.UPDATED_REGISTRY_THIS_SESSION[] = false
 PREV_ENV_PATH[] = ""
 Types.STDLIB[] = nothing
 empty!(Registry.REGISTRY_CACHE)

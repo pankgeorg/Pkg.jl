@@ -1,7 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Types
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Random
@@ -10,10 +10,10 @@ import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command lin
 import Base.string
 
 using TOML
-import ..Pkg, ..Registry
-import ..Pkg: GitTools, TOMLWriter, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
+import ..PkgWasm, ..Registry
+import ..PkgWasm: GitTools, TOMLWriter, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
 import Base.BinaryPlatforms: Platform
-using ..Pkg.Versions
+using ..PkgWasm.Versions
 import FileWatching
 
 import Base: SHA1
@@ -266,7 +266,7 @@ function find_project_file(env::Union{Nothing, String} = nothing)
         isfile(project_file) || !ispath(project_file) ||
             isdir(project_file) && isempty(readdir(project_file))
     )
-    return Pkg.safe_realpath(project_file)
+    return PkgWasm.safe_realpath(project_file)
 end
 
 Base.@kwdef mutable struct Compat
@@ -702,16 +702,16 @@ end
 # If path is absolute, returns it as-is
 function project_path_to_manifest_path(project_file::String, manifest_file::String, path::String)
     isabspath(path) && return path
-    abs_path = Pkg.safe_realpath(joinpath(dirname(project_file), path))
-    return relpath(abs_path, Pkg.safe_realpath(dirname(manifest_file)))
+    abs_path = PkgWasm.safe_realpath(joinpath(dirname(project_file), path))
+    return relpath(abs_path, PkgWasm.safe_realpath(dirname(manifest_file)))
 end
 
 # Convert a path from manifest-relative to project-relative
 # If path is absolute, returns it as-is
 function manifest_path_to_project_path(project_file::String, manifest_file::String, path::String)
     isabspath(path) && return path
-    abs_path = Pkg.safe_realpath(joinpath(dirname(manifest_file), path))
-    return relpath(abs_path, Pkg.safe_realpath(dirname(project_file)))
+    abs_path = PkgWasm.safe_realpath(joinpath(dirname(manifest_file), path))
+    return relpath(abs_path, PkgWasm.safe_realpath(dirname(project_file)))
 end
 
 include("project.jl")
@@ -764,7 +764,7 @@ const STDLIB = Ref{Union{DictStdLibs, Nothing}}(nothing)
 # stdlibs only record their UUID.
 function load_stdlib()
     stdlib = DictStdLibs()
-    for e in Pkg.STDLIB_DATA
+    for e in PkgWasm.STDLIB_DATA
         uuid = UUID(e.uuid)
         if e.name in UPGRADABLE_STDLIBS
             push!(UPGRADABLE_STDLIBS_UUIDS, uuid)
@@ -780,7 +780,7 @@ end
 
 # The embedded entry for the stdlib `uuid` of the running Julia version, or `nothing`.
 function stdlib_data(uuid::UUID)
-    for e in Pkg.STDLIB_DATA
+    for e in PkgWasm.STDLIB_DATA
         UUID(e.uuid) == uuid && return e
     end
     return nothing
@@ -790,14 +790,14 @@ end
 # versions in `Base.pkgorigins` (embedded from the 1.13.2 default sysimage).
 function in_sysimage(pkgid::Base.PkgId)
     pkgid.uuid === nothing && return false
-    for e in Pkg.SYSIMAGE_PKGS
+    for e in PkgWasm.SYSIMAGE_PKGS
         UUID(e.uuid) == pkgid.uuid && return true
     end
     return false
 end
 function sysimage_version(pkgid::Base.PkgId)::Union{VersionNumber, Nothing}
     pkgid.uuid === nothing && return nothing
-    for e in Pkg.SYSIMAGE_PKGS
+    for e in PkgWasm.SYSIMAGE_PKGS
         UUID(e.uuid) == pkgid.uuid && return e.version === nothing ? nothing : VersionNumber(e.version)
     end
     return nothing
@@ -915,7 +915,7 @@ function Context!(ctx::Context; kwargs...)
 
     # Highlight for logging purposes if julia_version is set to a different version than current VERSION
     if haskey(kwargs, :julia_version) && ctx.julia_version !== nothing && ctx.julia_version != VERSION
-        Pkg.printpkgstyle(
+        PkgWasm.printpkgstyle(
             ctx.io, :Context,
             "Pkg is operating with julia_version set to `$(ctx.julia_version)`",
             color = Base.warn_color()
@@ -960,14 +960,14 @@ end
 function workspace_resolve_hash(env::EnvCache)
     # Handle deps in both [deps] and [weakdeps]
     deps = Dict{String, UUID}()
-    for pkg in Pkg.Operations.load_direct_deps(env)
+    for pkg in PkgWasm.Operations.load_direct_deps(env)
         deps[pkg.name] = pkg.uuid
     end
     weakdeps = load_workspace_weak_deps(env)
     alldeps = merge(deps, weakdeps)
     compats = Dict{String, VersionSpec}()
     for (name, uuid) in alldeps
-        compats[name] = Pkg.Operations.get_compat_workspace(env, name)
+        compats[name] = PkgWasm.Operations.get_compat_workspace(env, name)
     end
     iob = IOBuffer()
     for (name, uuid) in sort!(collect(deps); by = first)
@@ -1033,12 +1033,12 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
     timestamp = now()
 
     ## Atomically write usage file using process id locking
-    Pkg.mkpidlock(usage_file * ".pid", stale_age = 3) do
+    PkgWasm.mkpidlock(usage_file * ".pid", stale_age = 3) do
         usage = if isfile(usage_file)
             try
                 TOML.parsefile(usage_file)
             catch err
-                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err = Pkg.log_value(err)
+                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err = PkgWasm.log_value(err)
                 Dict{String, Any}()
             end
         else
@@ -1094,14 +1094,14 @@ function relative_project_path(project_file::String, path::String)
     # compute path relative the project
     # realpath needed to expand symlinks before taking the relative path
     return relpath(
-        Pkg.safe_realpath(abspath(path)),
-        Pkg.safe_realpath(dirname(project_file))
+        PkgWasm.safe_realpath(abspath(path)),
+        PkgWasm.safe_realpath(dirname(project_file))
     )
 end
 
 function devpath(env::EnvCache, name::AbstractString, shared::Bool)
     @assert name != ""
-    dev_dir = shared ? abspath(Pkg.devdir()) : joinpath(dirname(env.project_file), "dev")
+    dev_dir = shared ? abspath(PkgWasm.devdir()) : joinpath(dirname(env.project_file), "dev")
     return joinpath(dev_dir, name)
 end
 
@@ -1114,7 +1114,7 @@ function error_if_in_sysimage(pkg::PackageSpec)
     pkgid = Base.PkgId(pkg.uuid, pkg.name)
     return if in_sysimage(pkgid)
         # (built for Wasm, G3: Base's default show of a PkgId as text; natively stock's interpolation)
-        what = Pkg.WASM_TARGET ? "Base.PkgId(Base.UUID(\"$(pkgid.uuid::Base.UUID)\"), $(repr(pkgid.name)))" : string(pkgid)
+        what = PkgWasm.WASM_TARGET ? "Base.PkgId(Base.UUID(\"$(pkgid.uuid::Base.UUID)\"), $(repr(pkgid.name)))" : string(pkgid)
         pkgerror("Tried to develop or add by URL package $(what) which is already in the sysimage, use `Pkg.respect_sysimage_versions(false)` to disable this check.")
     end
 end
@@ -1129,7 +1129,7 @@ function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
         # Resolve manifest-relative paths to absolute paths for file system operations
         dev_path = if is_local_path
             isabspath(pkg.repo.source) ? pkg.repo.source :
-                Pkg.manifest_rel_path(ctx.env, pkg.repo.source)
+                PkgWasm.manifest_rel_path(ctx.env, pkg.repo.source)
         else
             devpath(ctx.env, pkg.name, shared)
         end
@@ -1179,7 +1179,7 @@ function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
     if !has_name(pkg)
         # Resolve manifest-relative path to absolute before passing to git
         repo_source_resolved = !isurl(pkg.repo.source) && !isabspath(pkg.repo.source) ?
-            Pkg.manifest_rel_path(ctx.env, pkg.repo.source) :
+            PkgWasm.manifest_rel_path(ctx.env, pkg.repo.source) :
             pkg.repo.source
         LibGit2.close(GitTools.ensure_clone(ctx.io, repo_path, repo_source_resolved))
         cloned = true
@@ -1206,7 +1206,7 @@ function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
         if !cloned
             # Resolve manifest-relative path to absolute before passing to git
             repo_source_resolved = !isurl(pkg.repo.source) && !isabspath(pkg.repo.source) ?
-                Pkg.manifest_rel_path(ctx.env, pkg.repo.source) :
+                PkgWasm.manifest_rel_path(ctx.env, pkg.repo.source) :
                 pkg.repo.source
             LibGit2.close(GitTools.ensure_clone(ctx.io, dev_path, repo_source_resolved))
         else
@@ -1250,7 +1250,7 @@ function set_repo_source_from_registry!(ctx, pkg)
     registry_resolve!(ctx.registries, pkg)
     # Didn't find the package in the registry, but maybe it exists in the updated registry
     if !isresolved(pkg)
-        Pkg.Operations.update_registries(ctx; force = false)
+        PkgWasm.Operations.update_registries(ctx; force = false)
         registry_resolve!(ctx.registries, pkg)
     end
     ensure_resolved(ctx, ctx.env.manifest, [pkg]; registry = true)
@@ -1258,7 +1258,7 @@ function set_repo_source_from_registry!(ctx, pkg)
     for reg in ctx.registries
         regpkg = get(reg, pkg.uuid, nothing)
         regpkg === nothing && continue
-        info = Pkg.Registry.registry_info(reg, regpkg)
+        info = PkgWasm.Registry.registry_info(reg, regpkg)
         url = info.repo
         url === nothing && continue
         pkg.repo.source = url
@@ -1426,7 +1426,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             # If we already resolved a uuid, we can bail early if this package is already installed at the current tree_hash
             if has_uuid(pkg)
                 error_if_in_sysimage(pkg)
-                version_path = Pkg.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
+                version_path = PkgWasm.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
                 isdir(version_path) && return false
             end
 
@@ -1437,7 +1437,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
 
             # Now that we are fully resolved (name, UUID, tree_hash, repo.source, repo.rev), we can finally
             # check to see if the package exists at its canonical path.
-            version_path = Pkg.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
+            version_path = PkgWasm.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
             isdir(version_path) && return false
 
             # Otherwise, move the temporary path into its correct place and set read only
@@ -1701,7 +1701,7 @@ function registered_uuid(registries::Vector{Registry.RegistryInstance}, name::St
         for reg in registries
             pkg = get(reg, uuid, nothing)
             pkg === nothing && continue
-            info = Pkg.Registry.registry_info(reg, pkg)
+            info = PkgWasm.Registry.registry_info(reg, pkg)
             repo = info.repo
             repo === nothing && continue
             push!(repo_infos, (reg.name, repo, uuid))
@@ -1813,7 +1813,7 @@ function write_env(
     if env.manifest != env.original_manifest
         write_manifest(env)
     end
-    return update_undo && Pkg.API.add_snapshot_to_undo(env)
+    return update_undo && PkgWasm.API.add_snapshot_to_undo(env)
 end
 
 

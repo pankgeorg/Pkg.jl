@@ -5,8 +5,8 @@
 
 module WasmPathsTests
 using Test
-import Pkg
-O = Pkg.Operations
+import PkgWasm
+O = PkgWasm.Operations
 
 const EDGE = ["0.0.0", "1.2.3", "1.2.3-rc1", "2.0.1-rc1.21321", "1.0.0-alpha-1.2", "1.0.0-1", "1.0.0-1.2.3", "1.0.0-0",
               "1.0.0+build", "1.0.0+b.1", "1.0.0-rc.1+b.2", "1.0.0-a.b.c+x-y.z", "1.0.0-x-y-z", "1.13.0-DEV.123",
@@ -34,7 +34,7 @@ end
     n = 0
     for lo in tuples, hi in tuples
         a = stock.Versions.VersionRange(stock.Versions.VersionBound(lo...), stock.Versions.VersionBound(hi...))
-        b = Pkg.Versions.VersionRange(Pkg.Versions.VersionBound(lo...), Pkg.Versions.VersionBound(hi...))
+        b = PkgWasm.Versions.VersionRange(PkgWasm.Versions.VersionBound(lo...), PkgWasm.Versions.VersionBound(hi...))
         @test string(a) == string(b) && sprint(show, a) == sprint(show, b)
         n += occursin(" - ", string(b)) && occursin(".", string(b))
     end
@@ -57,7 +57,7 @@ end
             end
         end
         for args in (("Dates",), (["Dates", "UUIDs"],), ("NoSuchPackage",), ())
-            a, b = out(stock, args...), out(Pkg, args...)
+            a, b = out(stock, args...), out(PkgWasm, args...)
             @test a == b
             args == ("Dates",) && @test occursin("Dates", b) && !occursin("UUIDs", b)
         end
@@ -66,8 +66,8 @@ end
 
 const CHILD = raw"""
 import Pkg; Pkg.instantiate(; io = devnull)
-using Pkg
-@assert Pkg.TARGET == "wasm"
+using PkgWasm
+@assert PkgWasm.TARGET == "wasm"
 dir = mktempdir()
 write(joinpath(dir, "Project.toml"), '''
 name = "P"
@@ -129,10 +129,10 @@ version = "2.0.0"
 ''')
 # (G3) every frame of the writer's and toml_eq's recursions has a CodeInstance (an uncached
 # one, settled with limited accuracy, has no code for the trim verifier), and no dynamic call
-let T = Pkg.Types, W = Pkg.TOMLWriter
+let T = PkgWasm.Types, W = PkgWasm.TOMLWriter
     precompile(T.write_project, (IOBuffer, Dict{String, Any}))
     precompile(T.write_manifest, (IOBuffer, Dict{String, Any}))
-    precompile(Core.kwcall, (@NamedTuple{sorted::Bool}, typeof(Pkg.atomic_toml_write), String, Dict{String, Any}))
+    precompile(Core.kwcall, (@NamedTuple{sorted::Bool}, typeof(PkgWasm.atomic_toml_write), String, Dict{String, Any}))
     precompile(T.toml_eq, (Any, Any))
     total = 0; uncached = 0; dynamic = 0
     for mod in (W, T), name in names(mod; all = true)
@@ -159,7 +159,7 @@ let T = Pkg.Types, W = Pkg.TOMLWriter
     println("CYCLES total=", total, " uncached=", uncached, " dynamic=", dynamic)
 end
 res(f) = try f() catch e; "ERR " * sprint(showerror, e) end
-for mod in (Pkg, Pkg)
+for mod in (Pkg, PkgWasm)
     T = mod.Types
     println("P=", repr(res(() -> sprint(T.write_project, T.destructure(T.read_project(joinpath(dir, "Project.toml")))))))
     println("M=", repr(res(() -> sprint(io -> T.write_manifest(io, T.destructure(T.read_manifest(joinpath(dir, "Manifest.toml"))))))))
@@ -171,10 +171,10 @@ end
     mktempdir() do env
         write(joinpath(env, "Project.toml"), """
             [deps]
-            Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+            PkgWasm = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
             [sources]
-            Pkg = {path = "$(escape_string(fork))"}
-            [preferences.Pkg]
+            PkgWasm = {path = "$(escape_string(fork))"}
+            [preferences.PkgWasm]
             target = "wasm"
             """)
         script = joinpath(env, "script.jl")

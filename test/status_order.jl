@@ -3,12 +3,12 @@
 
 module StatusOrderTests
 using Test, Random, UUIDs
-const PKGWASM_ID = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
-const Pkg = let m = Base.maybe_root_module(PKGWASM_ID)
+const PKGWASM_ID = Base.PkgId(Base.UUID("d562cdc0-5c7a-524d-b497-bb1ca2727331"), "PkgWasm")
+const PkgWasm = let m = Base.maybe_root_module(PKGWASM_ID)
     m === nothing ? Base.require(PKGWASM_ID) : m
 end
-const O = Pkg.Operations
-const PS = Pkg.Types.PackageSpec
+const O = PkgWasm.Operations
+const PS = PkgWasm.Types.PackageSpec
 
 stock_order(xs) = sort(xs, by = (x -> (O.is_stdlib(x[1]), endswith(something(x[3], x[2]).name, "_jll"), something(x[3], x[2]).name, x[1])))
 function new_order(xs)

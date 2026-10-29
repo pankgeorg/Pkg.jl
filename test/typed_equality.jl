@@ -3,8 +3,8 @@
 
 module TypedEqualityTests
 using Test, Random, Dates
-import Pkg
-T = Pkg.Types
+import PkgWasm
+T = PkgWasm.Types
 
 # TOML values of the parser's types, small, with near-misses and shared shapes
 function rand_toml(rng, depth = 0)
@@ -50,7 +50,7 @@ end
     @test T.toml_eq(Any[1, true], Any[1.0, 1])
     # Project and Manifest: stock's `all(x -> getfield == getfield, fieldnames)`
     stock_eq(x, y) = all(f -> (getfield(x, f) == getfield(y, f))::Bool, fieldnames(typeof(x)))
-    versions = Any[nothing, v"1.2.3", Pkg.Versions.VersionSpec("1"), T.UPLEVEL_MINOR]
+    versions = Any[nothing, v"1.2.3", PkgWasm.Versions.VersionSpec("1"), T.UPLEVEL_MINOR]
     m = 0
     for v1 in versions, v2 in versions, o in (false, true), w in (false, true)
         p1 = T.Project(; name = "P", version = v1, other = Dict{String, Any}("name" => "P", "k" => Any[1]))
@@ -63,8 +63,8 @@ end
     # PackageSpec == (e2e B22): stock's field comparisons, `version` of every type of its Union
     stock_ps_eq(a, b) = a.name == b.name && a.uuid == b.uuid && a.version == b.version &&
         a.tree_hash == b.tree_hash && a.repo == b.repo && a.path == b.path && a.pinned == b.pinned
-    pversions = Any[nothing, v"1.2.3", v"1.2.3", Pkg.Versions.VersionSpec("1"), Pkg.Versions.VersionSpec("1"),
-                    Pkg.Versions.VersionSpec("2"), T.UPLEVEL_MINOR, T.UPLEVEL_MAJOR, "1.2.3", "x"]
+    pversions = Any[nothing, v"1.2.3", v"1.2.3", PkgWasm.Versions.VersionSpec("1"), PkgWasm.Versions.VersionSpec("1"),
+                    PkgWasm.Versions.VersionSpec("2"), T.UPLEVEL_MINOR, T.UPLEVEL_MAJOR, "1.2.3", "x"]
     k = 0
     for v1 in pversions, v2 in pversions, nm in ("A", "B"), pin in (false, true)
         a = T.PackageSpec(; name = "A", version = v1); b = T.PackageSpec(; name = nm, version = v2, pinned = pin)
@@ -87,20 +87,20 @@ haskey(ENV, "PKGWASM_TYPED_EQ_CHILD") || @testset "typed equality, target = wasm
     mktempdir() do env
         write(joinpath(env, "Project.toml"), """
             [deps]
-            Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+            PkgWasm = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
             [sources]
-            Pkg = {path = "$(escape_string(fork))"}
-            [preferences.Pkg]
+            PkgWasm = {path = "$(escape_string(fork))"}
+            [preferences.PkgWasm]
             target = "wasm"
             """)
         script = joinpath(env, "script.jl")
         write(script, """
             import Pkg; Pkg.instantiate(; io = devnull)
-            using Pkg, Random, Dates
-            @assert Pkg.TARGET == "wasm"
+            using PkgWasm, Random, Dates
+            @assert PkgWasm.TARGET == "wasm"
             include($(repr(@__FILE__)))  # (rand_toml; the module's native testsets run here as well)
             function check()
-            T = Pkg.Types; rng = Xoshiro(15); n = 0; bad = 0
+            T = PkgWasm.Types; rng = Xoshiro(15); n = 0; bad = 0
             for _ in 1:20000
                 a = TypedEqualityTests.rand_toml(rng); b = rand(rng, Bool) ? deepcopy(a) : TypedEqualityTests.rand_toml(rng)
                 r = try a == b catch e; e end
@@ -127,13 +127,13 @@ end
 # was defined in, so what it calls (`field_eq_expr`) must be defined before it.
 haskey(ENV, "PKGWASM_TYPED_EQ_CHILD") || @testset "typed equality, loaded from source" begin
     code = """
-    import Pkg; T = Pkg.Types
+    import PkgWasm; T = PkgWasm.Types
     m = T.Manifest(); m.julia_version = v"1.13.2"
     p = T.Project(); p.name = "P"
     println("FROMSOURCE ", T.Project() == T.Project(), " ", T.Manifest() == T.Manifest(), " ", p == T.Project(), " ", m == T.Manifest())
     """
     out = IOBuffer()
-    cmd = addenv(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --compiled-modules=no --pkgimages=no --project=$(pkgdir(Pkg)) -e $code`, "JULIA_PKG_PRECOMPILE_AUTO" => "0")
+    cmd = addenv(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --compiled-modules=no --pkgimages=no --project=$(pkgdir(PkgWasm)) -e $code`, "JULIA_PKG_PRECOMPILE_AUTO" => "0")
     @test success(pipeline(cmd; stdout = out, stderr = devnull))
     @test occursin("FROMSOURCE true true false false", String(take!(out)))
 end

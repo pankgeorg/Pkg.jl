@@ -1,7 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Operations
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Base: CacheFlags
 using FileWatching: FileWatching
@@ -15,10 +15,10 @@ import ..depots, ..depots1, ..devdir, ..set_readonly, ..Types.PackageEntry
 import ..Artifacts: ensure_artifact_installed, artifact_names, extract_all_hashes,
     artifact_exists, select_downloadable_artifacts, mv_temp_dir_retries, try_artifact_download_sources
 using Base.BinaryPlatforms
-import ...Pkg
-import ...Pkg: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
-import ...Pkg: UPDATED_REGISTRY_THIS_SESSION, RESPECT_SYSIMAGE_VERSIONS, should_autoprecompile
-import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock, WASM_TARGET, CONCURRENT
+import ...PkgWasm
+import ...PkgWasm: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
+import ...PkgWasm: UPDATED_REGISTRY_THIS_SESSION, RESPECT_SYSIMAGE_VERSIONS, should_autoprecompile
+import ...PkgWasm: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock, WASM_TARGET, CONCURRENT
 
 #########
 # Utils #
@@ -300,7 +300,7 @@ function load_all_deps_loadable(env::EnvCache)
 end
 
 
-function is_instantiated(env::EnvCache, workspace::Bool = false; platform = Pkg.host_platform())::Bool
+function is_instantiated(env::EnvCache, workspace::Bool = false; platform = PkgWasm.host_platform())::Bool
     # Load everything
     if workspace
         pkgs = Operations.load_all_deps(env)
@@ -1287,7 +1287,7 @@ function install_archive(
         try
             unpack(path, dir; verbose = false)
         catch e
-            e isa ProcessFailedException || e isa Pkg.Host.HostError || rethrow()
+            e isa ProcessFailedException || e isa PkgWasm.Host.HostError || rethrow()
             @pkg_warn "failed to extract archive downloaded from $(url)"
             url_success = false
         end
@@ -1382,7 +1382,7 @@ function install_git(
     end
 end
 
-function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.host_platform(), include_lazy::Bool = false)
+function collect_artifacts(pkg_root::String; platform::AbstractPlatform = PkgWasm.host_platform(), include_lazy::Bool = false)
     # Check to see if this package has an (Julia)Artifacts.toml
     artifacts_tomls = Tuple{String, Base.TOML.TOMLDict}[]
     for f in artifact_names
@@ -1403,7 +1403,7 @@ function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.ho
                 # Otherwise, use the standard selector from `Artifacts`
                 # (PkgWasm, trim: the typed twin of the stdlib selection, PkgArtifacts)
                 artifacts = if WASM_TARGET || platform isa Platform
-                    Pkg.Artifacts.select_downloadable_artifacts_typed(artifacts_toml; platform = platform::Platform, include_lazy)
+                    PkgWasm.Artifacts.select_downloadable_artifacts_typed(artifacts_toml; platform = platform::Platform, include_lazy)
                 else
                     select_downloadable_artifacts(artifacts_toml; platform, include_lazy)
                 end
@@ -1440,13 +1440,13 @@ end
 function artifact_error_text(@nospecialize(err))
     WASM_TARGET || return sprint(Base.showerror, err)
     buf = IOBuffer()
-    Pkg.showerror_known(buf, err)
+    PkgWasm.showerror_known(buf, err)
     return String(take!(buf))
 end
 
 function download_artifacts(
         ctx::Context, pkgs;
-        platform::AbstractPlatform = Pkg.host_platform(),
+        platform::AbstractPlatform = PkgWasm.host_platform(),
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -1669,7 +1669,7 @@ end
 
 function download_artifacts(
         ctx::Context;
-        platform::AbstractPlatform = Pkg.host_platform(),
+        platform::AbstractPlatform = PkgWasm.host_platform(),
         julia_version = VERSION,
         verbose::Bool = false,
         io::IO = stderr_f(),
@@ -1678,7 +1678,7 @@ function download_artifacts(
     return download_artifacts(ctx, values(ctx.env.manifest); platform, julia_version, verbose, io, include_lazy)
 end
 
-function check_artifacts_downloaded(pkg_root::String; platform::AbstractPlatform = Pkg.host_platform())
+function check_artifacts_downloaded(pkg_root::String; platform::AbstractPlatform = PkgWasm.host_platform())
     for (artifacts_toml, artifacts) in collect_artifacts(pkg_root; platform)
         for name in keys(artifacts)
             if !artifact_exists(Base.SHA1((artifacts[name]::Dict{String, Any})["git-tree-sha1"]::String))
@@ -1712,7 +1712,7 @@ download_source(ctx::Context; readonly::Bool = true) = download_source(ctx, coll
 function install_error_text(@nospecialize(err), bt)
     WASM_TARGET || return sprint(Base.showerror, err, bt)
     buf = IOBuffer()  # (`sprint(showerror_known, err)` without an Any-typed argument tuple)
-    Pkg.showerror_known(buf, err)
+    PkgWasm.showerror_known(buf, err)
     return String(take!(buf))
 end
 
@@ -2001,7 +2001,7 @@ end
 
 function build(ctx::Context, uuids::Set{UUID}, verbose::Bool; allow_reresolve::Bool = true)
     if any_package_not_installed(ctx.env.manifest) || !isfile(ctx.env.manifest_file)
-        Pkg.instantiate(ctx, allow_build = false, allow_autoprecomp = false)
+        PkgWasm.instantiate(ctx, allow_build = false, allow_autoprecomp = false)
     end
     all_uuids = get_deps(ctx.env, uuids)
     return build_versions(ctx, all_uuids; verbose, allow_reresolve)
@@ -2067,7 +2067,8 @@ function with_load_path(f::Function, new_load_path::Vector{String})
     end
 end
 
-const PkgUUID = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+# PkgWasm: its own scratch space, keyed by the fork's UUID (PLAN D1).
+const PkgUUID = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
 pkg_scratchpath() = joinpath(depots1(), "scratchspaces", PkgUUID)
 
 builddir(source_path::String) = joinpath(source_path, "deps")
@@ -2404,7 +2405,7 @@ function assert_can_add(ctx::Context, pkgs::Vector{PackageSpec})
             pkgerror(
             """Refusing to add package $(err_rep(pkg)).
             Package `$(pname)=$(existing_uuid)` with the same name already exists as a direct dependency.
-            To remove the existing package, use `$(Pkg.in_repl_mode() ? """pkg> rm $(pname)""" : """import Pkg; Pkg.rm("$(pname)")""")`.
+            To remove the existing package, use `$(PkgWasm.in_repl_mode() ? """pkg> rm $(pname)""" : """import Pkg; Pkg.rm("$(pname)")""")`.
             """
         )
         # package with the same uuid exist in the project: assert they have the same name
@@ -2413,7 +2414,7 @@ function assert_can_add(ctx::Context, pkgs::Vector{PackageSpec})
             pkgerror(
             """Refusing to add package $(err_rep(pkg)).
             Package `$name=$(puuid)` with the same UUID already exists as a direct dependency.
-            To remove the existing package, use `$(Pkg.in_repl_mode() ? """pkg> rm $name""" : """import Pkg; Pkg.rm("$name")""")`.
+            To remove the existing package, use `$(PkgWasm.in_repl_mode() ? """pkg> rm $name""" : """import Pkg; Pkg.rm("$name")""")`.
             """
         )
         # package with the same uuid exist in the manifest: assert they have the same name
@@ -2422,7 +2423,7 @@ function assert_can_add(ctx::Context, pkgs::Vector{PackageSpec})
             pkgerror(
             """Refusing to add package $(err_rep(pkg)).
             Package `$(ename)=$(puuid)` with the same UUID already exists in the manifest.
-            To remove the existing package, use `$(Pkg.in_repl_mode() ? """pkg> rm --manifest $(ename)=$(puuid)""" : """import Pkg; Pkg.rm(Pkg.PackageSpec(uuid="$(puuid)"); mode=Pkg.PKGMODE_MANIFEST)""")`.
+            To remove the existing package, use `$(PkgWasm.in_repl_mode() ? """pkg> rm --manifest $(ename)=$(puuid)""" : """import Pkg; Pkg.rm(Pkg.PackageSpec(uuid="$(puuid)"); mode=Pkg.PKGMODE_MANIFEST)""")`.
             """
         )
     end
@@ -2498,7 +2499,7 @@ function _resolve(
         if err isa Resolve.ResolverError
             yanked_pkgs = filter(pkg -> is_pkgversion_yanked(pkg, registries), load_all_deps(env))
             if !isempty(yanked_pkgs)
-                indent = " "^(Pkg.pkgstyle_indent)
+                indent = " "^(PkgWasm.pkgstyle_indent)
                 yanked_str = join(map(pkg -> indent * "   - " * err_rep(pkg, quotes = false) * " " * string(pkg.version), yanked_pkgs), "\n")
                 printpkgstyle(io, :Warning, """The following package versions were yanked from their registry and \
                 are not resolvable:\n$yanked_str""", color = Base.warn_color())
@@ -2580,7 +2581,7 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git = Set{UUID}();
-        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.host_platform(),
+        allow_autoprecomp::Bool = true, preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = PkgWasm.host_platform(),
         target::Symbol = :deps, prefer_loaded_versions::Bool = false
     )
     assert_can_add(ctx, pkgs)
@@ -2671,7 +2672,7 @@ function add(
         if allow_autoprecomp
             added = Set(pkg.uuid for pkg in pkgs)
             affected = filter(pkg -> !(pkg.uuid in added), changed_packages_and_dependents(ctx.env))
-            Pkg._auto_precompile(ctx, vcat(pkgs, affected))
+            PkgWasm._auto_precompile(ctx, vcat(pkgs, affected))
         end
     else
         record_project_hash(ctx.env)
@@ -2685,7 +2686,7 @@ end
 # Input: name, uuid, and path
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}, new_git::Set{UUID};
-        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = Pkg.host_platform()
+        preserve::PreserveLevel = default_preserve(), platform::AbstractPlatform = PkgWasm.host_platform()
     )
     assert_can_add(ctx, pkgs)
     # no need to look at manifest.. dev will just nuke whatever is there before
@@ -2909,7 +2910,7 @@ end
 
 function update_package_pin!(ctx::Context, pkg::PackageSpec, entry::Union{Nothing, PackageEntry})
     if entry === nothing
-        cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+        cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
         pkgerror("package $(err_rep(pkg)) not found in the manifest, run `$cmd` and retry.")
     end
     registries = ctx.registries
@@ -3136,7 +3137,7 @@ function sandbox_with_temp_env(
         end
 
         try
-            Pkg.resolve(temp_ctx; io = devnull, skip_writing_project = true)
+            PkgWasm.resolve(temp_ctx; io = devnull, skip_writing_project = true)
             @pkg_debug "Using _parent_ dep graph"
         catch err # TODO
             err isa Resolve.ResolverError || rethrow()
@@ -3151,7 +3152,7 @@ function sandbox_with_temp_env(
                 "when calling the `Pkg.test` function.",
             )
             printpkgstyle(ctx.io, :Test, msg, color = Base.warn_color())
-            Pkg.update(temp_ctx; skip_writing_project = true, update_registry = false, io = ctx.io)
+            PkgWasm.update(temp_ctx; skip_writing_project = true, update_registry = false, io = ctx.io)
             printpkgstyle(ctx.io, :Test, "Successfully re-resolved")
             @pkg_debug "Using _clean_ dep graph"
         end
@@ -3352,7 +3353,7 @@ function precompile_and_run_tests!(
         cacheflags = parse(CacheFlags, read(`$(Base.julia_cmd()) $(flags) --eval 'show(Base.CacheFlags())'`, String))
         # Don't warn about already loaded packages, since we are going to run tests in a new
         # subprocess anyway.
-        Pkg.precompile(run_ctx; io = run_ctx.io, warn_loaded = false, configs = flags => cacheflags)
+        PkgWasm.precompile(run_ctx; io = run_ctx.io, warn_loaded = false, configs = flags => cacheflags)
     end
 
     printpkgstyle(run_ctx.io, :Testing, "Running tests...")
@@ -3388,7 +3389,7 @@ function test(
         allow_earlier_backwards_compatible_versions::Bool = true,
         allow_reresolve::Bool = true
     )
-    Pkg.instantiate(ctx; allow_autoprecomp = false) # do precomp later within sandbox
+    PkgWasm.instantiate(ctx; allow_autoprecomp = false) # do precomp later within sandbox
 
     # load manifest data
     for pkg in pkgs
@@ -3432,7 +3433,7 @@ function test(
             # Use a Context pointing at the test env so that instantiate and
             # precompile operate on the test project rather than the parent.
             test_ctx = Context(env = env; io = ctx.io)
-            Pkg.instantiate(test_ctx; allow_autoprecomp = false)
+            PkgWasm.instantiate(test_ctx; allow_autoprecomp = false)
             precompile_and_run_tests!(
                 test_ctx, pkg, source_path, coverage, julia_args, pkgs_errored;
                 run_subprocess = (io, flags) -> run_test_subprocess_in_env(io, flags, source_path, test_args),
@@ -3703,7 +3704,7 @@ function diff_array(old_env::Union{EnvCache, Nothing}, new_env::EnvCache; manife
     return Tuple{T, S, S}[(uuid, index_pkgs(old, uuid), index_pkgs(new, uuid))::Tuple{T, S, S} for uuid in all_uuids]
 end
 
-function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = Pkg.host_platform())
+function is_package_downloaded(manifest_file::String, pkg::PackageSpec; platform = PkgWasm.host_platform())
     # PkgWasm (PLAN.md D10): a stdlib's source is available by definition (no filesystem probe)
     stdlib_source_data(pkg) === nothing || return true
     sourcepath = source_path(manifest_file, pkg)
@@ -4148,7 +4149,7 @@ function status(
     end
     return if is_manifest_current(env) === false
         tip = if show_usagetips
-            if Pkg.in_repl_mode()
+            if PkgWasm.in_repl_mode()
                 " It is recommended to `pkg> resolve` or consider `pkg> update` if necessary."
             else
                 " It is recommended to `Pkg.resolve()` or consider `Pkg.update()` if necessary."
@@ -4260,7 +4261,7 @@ function apply_force_latest_compatible_version!(
     else
         version_for_intersect = only_major_minor_patch(latest_compatible_version)
     end
-    compat_for_intersect = Pkg.Types.semver_spec("≥ $(version_for_intersect)")
+    compat_for_intersect = PkgWasm.Types.semver_spec("≥ $(version_for_intersect)")
     new_compat_spec = Base.intersect(old_compat_spec, compat_for_intersect)
     ctx.env.project.compat[name].val = new_compat_spec
     return nothing

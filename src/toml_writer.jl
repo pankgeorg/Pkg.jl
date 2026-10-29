@@ -80,7 +80,8 @@ isa_chain(x::Symbol, types, body, otherwise) =
     :(error("PkgWasm TOML writer: unsupported array type"))))
 # (a table's value by key, whatever its keys: natively for a table of another type)
 Base.@nospecializeinfer table_value(@nospecialize(t), @nospecialize(k)) =
-    is_typed_table(t) ? table_get(t, k::String) : Base.inferencebarrier(getindex)(t, k)
+    is_typed_table(t) ? table_get(t, k::String) :
+    WASM_TARGET ? error("PkgWasm TOML writer: unsupported table type") : Base.inferencebarrier(getindex)(t, k)
 
 ##########
 # Values #

@@ -160,6 +160,13 @@ end
         @test Pkg.mkpidlock(() -> 42, "/nonexistent/x.pid"; stale_age = 3) == 42
         code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")
         src = code("Operations.jl")
+        # S2 (preference tasks = "jspi"): stock's download pool is back, only in download_source's
+        # `if CONCURRENT` branch; with the default (tasks = "none") that branch is not compiled
+        @test !Pkg.CONCURRENT
+        @test count("    if CONCURRENT\n", src) == 1
+        pool = match(r"\n    if CONCURRENT\n(.*?)\n    else\n"s, src)
+        @test pool !== nothing && occursin("@async", pool[1]) && occursin("Channel", pool[1])
+        src = replace(src, pool.match => "\n")
         @test !occursin("Threads.@spawn", src) && !occursin("@async", src) && !occursin("Channel", src)
         @test !occursin("FileWatching.mkpidlock", src)
         @test !occursin(r"\bTimer\(", code(joinpath("Resolve", "maxsum.jl")))

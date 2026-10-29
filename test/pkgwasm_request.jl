@@ -227,3 +227,62 @@ end
     @test ctx.julia_version === nothing && ctx.use_git_for_all_downloads
     @test_throws FieldError Pkg.Types.Context!(ctx; no_such_field = 1)
 end
+
+# The index build reads headers with a byte scan in place of `Tar.check_header`'s regular
+# expressions and tracks offsets in place of `position`: same entries, same errors.
+function check_error(f)
+    try
+        f()
+        return nothing
+    catch e
+        return sprint(showerror, e)
+    end
+end
+@testset "registry cache: header check and offsets as Tar's" begin
+    paths = ["a", "a/b", "a/b/", "a/", "/a", "", ".", "./a", "a/.", "a/./b", "..", "../a", "a/..", "a/../b",
+        "a/...", "...", ".a", "..a", "a..", "a/..b", "a/b..", "a//b", "a/..\n", "a\nb", "a\0b", "ü", "a/ü/b",
+        "a\tb", "a\x7f", "a b", "x"^300]
+    n = 0
+    for path in paths, type in (:file, :directory, :symlink, :hardlink, :chardev), size in (0, 1, -1),
+            link in ("", "t", "/t", "../t", "t\0")
+        hdr = Tar.Header(path, type, 0o644, size, link)
+        stock = check_error(() -> Tar.check_header(hdr))
+        fast = check_error(() -> R.tar_header_ok(hdr) || Tar.check_header(hdr))
+        @test fast == stock
+        R.tar_header_ok(hdr) && (n += 1; @test stock === nothing)
+    end
+    @test n > 0
+
+    # entries (with long paths, as pax headers, a symlink, sizes at block boundaries) as the
+    # stock walk with `position` finds them
+    src = mktempdir()
+    long = joinpath("L", "d"^120, "e"^120, "f"^40)
+    mkpath(joinpath(src, dirname(long)))
+    write(joinpath(src, long), "long")
+    for k in (0, 1, 511, 512, 513, 70_000)
+        write(joinpath(src, "s$k"), rand(UInt8, k))
+    end
+    mkpath(joinpath(src, "empty"))
+    symlink("s1", joinpath(src, "link"))
+    tar = tempname()
+    Tar.create(src, tar)
+    expected = Dict{String, Tuple{Int64, Int64}}()
+    open(tar) do io
+        while !eof(io)
+            hdr = Tar.read_header(io)
+            hdr === nothing && break
+            off = Int64(position(io))
+            expected[hdr.path] = (off, Int64(hdr.size))
+            seek(io, off + Tar.round_up(hdr.size))
+        end
+    end
+    @test all(p -> haskey(expected, p), (long, "link", "empty", "s0", "s513", "s70000"))
+    tgz = tar * ".gz"
+    run(pipeline(`gzip -n -c $tar`; stdout = tgz))
+    dir = mktempdir()
+    h = Base.SHA1(open(Tar.tree_hash, tar))
+    idx = R.write_registry_cache(dir, h, R.registry_cache_source(tgz), tgz)
+    @test idx.entries == expected
+    close(idx.io::IOStream)
+    rm(src; recursive = true); rm(dir; recursive = true); rm(tar); rm(tgz)
+end

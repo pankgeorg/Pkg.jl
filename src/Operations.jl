@@ -3088,6 +3088,10 @@ function print_status(
 end
 
 function git_head_env(env, project_dir)
+    # PkgWasm (D4/D14, G3 clean compile): comparing with the git HEAD (`status --diff`) needs
+    # git, which is not supported. Raised before the stock `try`, which would turn a PkgError
+    # into "not a git repository"; the LibGit2 code below is unreachable.
+    GitTools.git_unsupported("status --diff against the git HEAD of $(project_dir)")
     new_env = EnvCache()
     try
         LibGit2.with(LibGit2.GitRepo(project_dir)) do repo

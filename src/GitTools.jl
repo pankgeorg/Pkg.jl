@@ -16,8 +16,12 @@ using Printf
 use_cli_git() = true
 const RESOLVING_DELTAS_HEADER = "Resolving Deltas:"
 
-const GIT_REGEX =
-    r"^(?:(?<proto>git|ssh|https)://)?(?:[\w\.\+\-:]+@)?(?<hostname>.+?)(?(<proto>)/|:)(?<path>.+?)(?:\.git)?$"
+# Stock's GIT_REGEX, r"^(?:(?<proto>git|ssh|https)://)?(?:[\w\.\+\-:]+@)?(?<hostname>.+?)(?(<proto>)/|:)(?<path>.+?)(?:\.git)?$",
+# as its two branches tried in PCRE's order (PkgWasm, D14: the Wasm regex translator has no
+# conditional groups): with a protocol, `/` after the host; without, `:` (scp-like)
+const GIT_REGEX_PROTO = r"^(?:(?<proto>git|ssh|https)://)(?:[\w\.\+\-:]+@)?(?<hostname>.+?)/(?<path>.+?)(?:\.git)?$"
+const GIT_REGEX_SCP = r"^(?:[\w\.\+\-:]+@)?(?<hostname>.+?):(?<path>.+?)(?:\.git)?$"
+git_url_match(url::AbstractString) = (m = match(GIT_REGEX_PROTO, url); m === nothing ? match(GIT_REGEX_SCP, url) : m)
 const GIT_PROTOCOLS = Dict{String, Union{Nothing, String}}()
 const GIT_USERS = Dict{String, Union{Nothing, String}}()
 
@@ -37,7 +41,7 @@ end
 function normalize_url(url::AbstractString)
     # LibGit2 is fussy about trailing slash. Make sure there is none.
     url = rstrip(url, '/')
-    m = match(GIT_REGEX, url)
+    m = git_url_match(url)
     m === nothing && return url
 
     host = m[:hostname]

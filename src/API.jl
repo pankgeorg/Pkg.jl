@@ -793,12 +793,11 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     continue
                 end
 
-                expanded_usage[k] = [
-                    Dict{String, Any}(
-                        "time" => v,
-                        "parent_projects" => collect(parents),
-                    ),
-                ]
+                # (PkgWasm, trim: filled by assignment; stock `Dict("time" => v, "parent_projects" => ...)`)
+                entry = Dict{String, Any}()
+                entry["time"] = v
+                entry["parent_projects"] = collect(parents)
+                expanded_usage[k] = [entry]
             end
             return expanded_usage
         end

@@ -9,6 +9,7 @@ using Test
 import Pkg
 import Pkg
 using UUIDs
+import Tar, SHA
 
 const STOCK_PKG = Pkg
 const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
@@ -160,13 +161,21 @@ end
         @test Pkg.mkpidlock(() -> 42, "/nonexistent/x.pid"; stale_age = 3) == 42
         code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")
         src = code("Operations.jl")
-        # S2 (preference tasks = "jspi"): stock's download pool is back, only in download_source's
-        # `if CONCURRENT` branch; with the default (tasks = "none") that branch is not compiled
+        # S2 (preference tasks = "jspi"): stock's download pools are back, only in the
+        # `if CONCURRENT` branches of download_source and download_artifacts (with its progress
+        # printer and Timer); with the default (tasks = "none") those branches are not compiled
         @test !Pkg.CONCURRENT
-        @test count("    if CONCURRENT\n", src) == 1
-        pool = match(r"\n    if CONCURRENT\n(.*?)\n    else\n"s, src)
+        @test count(r"\n *if CONCURRENT\n", src) == 2
+        pool = match(r"\n    if CONCURRENT\n(.*?)\n    else\n"s, src)  # download_source
         @test pool !== nothing && occursin("@async", pool[1]) && occursin("Channel", pool[1])
         src = replace(src, pool.match => "\n")
+        pool = match(r"\n        if CONCURRENT\n(.*?)\n        else\n"s, src)  # download_artifacts
+        @test pool !== nothing && occursin("@async", pool[1]) && occursin("@sync", pool[1]) && occursin("Timer(", pool[1])
+        src = replace(src, pool.match => "\n")
+        @test !occursin("@sync", src) && !occursin(r"\bTimer\(", src)
+        # download_artifact's "in another process" notice (a Timer): only with tasks = "jspi"
+        art = code("Artifacts.jl")
+        @test count(r"\bTimer\(", art) == 1 && occursin(r"if CONCURRENT\n\s*Timer\(2\)", art)
         @test !occursin("Threads.@spawn", src) && !occursin("@async", src) && !occursin("Channel", src)
         @test !occursin("FileWatching.mkpidlock", src)
         @test !occursin(r"\bTimer\(", code(joinpath("Resolve", "maxsum.jl")))
@@ -179,7 +188,6 @@ end
             for (f, op) in (
                     (() -> Pkg.build(; io = devnull), "build"),
                     (() -> Pkg.test(; io = devnull), "test"),
-                    (() -> Pkg.gc(; io = devnull), "gc"),
                     (() -> Pkg.precompile(; io = devnull), "precompile"),
                     (() -> Pkg.Apps.add(Pkg.PackageSpec[]), "apps"),
                     (() -> Pkg.Apps.add(Pkg.PackageSpec(name = "Example")), "apps"),
@@ -349,22 +357,115 @@ end
         close(server)
     end
 
-    @testset "D4 artifacts: single warning, source-only instantiated" begin
+    @testset "D4 update: artifacts installed as stock Pkg installs them" begin
+        # an artifact served locally (gzip tarball), bound in the project's Artifacts.toml: not
+        # a package, so not Pkg-server eligible; it comes from its `download` URL
+        payload = mktempdir()
+        mkpath(joinpath(payload, "bin"))
+        write(joinpath(payload, "bin", "tool"), "#!/bin/sh\necho artifact\n")
+        chmod(joinpath(payload, "bin", "tool"), 0o755)
+        write(joinpath(payload, "README"), "PkgWasm artifact test\n")
+        tree = bytes2hex(Pkg.GitTools.tree_hash(payload))
+        tarball = joinpath(mktempdir(), "art.tar")
+        Tar.create(payload, tarball)
+        run(`gzip -n $tarball`)
+        bytes = read(tarball * ".gz")
+        sha = bytes2hex(SHA.sha256(bytes))
+        base, server = serve(path -> path == "/art.tar.gz" ? (200, String(copy(bytes))) : (404, ""))
+        function run_env(M, toml)
+            out = IOBuffer()
+            mktempdir() do root
+                env, depot = joinpath(root, "env"), joinpath(root, "depot")
+                mkpath(env); mkpath(depot)
+                write(joinpath(env, "Project.toml"), "[deps]\n")
+                write(joinpath(env, "Manifest.toml"), "julia_version = \"1.13.2\"\nmanifest_format = \"2.0\"\n\n[deps]\n")
+                write(joinpath(env, "Artifacts.toml"), toml)
+                old = copy(DEPOT_PATH)
+                copy!(DEPOT_PATH, [depot])
+                try
+                    withenv("JULIA_PKG_SERVER" => "") do
+                        M.activate(env; io = devnull)
+                        ctx = M.Types.Context(; io = out)
+                        # (instantiate's artifact step, without its registry installation)
+                        before = M.Operations.is_instantiated(ctx.env)
+                        err = capture_error(() -> M.Operations.download_artifacts(ctx))
+                        after = M.Operations.is_instantiated(M.Types.Context(; io = devnull).env)
+                        again = IOBuffer()
+                        err === nothing && M.Operations.download_artifacts(M.Types.Context(; io = again)) # all installed: nothing to do
+                        adir = joinpath(depot, "artifacts", tree)
+                        th = isdir(adir) ? bytes2hex(Pkg.GitTools.tree_hash(adir)) : ""
+                        usage = joinpath(depot, "logs", "artifact_usage.toml")
+                        logged = isfile(usage) ? collect(keys(Pkg.TOML.parsefile(usage))) : String[]
+                        M.activate(; io = devnull)
+                        text = replace(String(take!(out)), root => "<ROOT>")
+                        return (; before, after, err = err === nothing ? "" : replace(sprint(showerror, err), root => "<ROOT>"),
+                                  text, again = String(take!(again)), th, logged = replace.(logged, root => "<ROOT>"))
+                    end
+                finally
+                    copy!(DEPOT_PATH, old)
+                end
+            end
+        end
+        good = """
+        [tool]
+        git-tree-sha1 = "$tree"
+
+            [[tool.download]]
+            url = "$base/art.tar.gz"
+            sha256 = "$sha"
+        """
+        f, s = run_env(Pkg, good), run_env(Pkg, good)
+        @test f == s
+        @test !f.before && f.after && f.err == "" && f.th == tree && isempty(f.again)
+        @test occursin("Installing 1 artifacts", f.text) && occursin("Installed artifact tool", f.text)
+        @test f.logged == ["<ROOT>/env/Artifacts.toml"]
+        # a failed download: the same error text as stock (all sources attempted)
+        bad = replace(good, "/art.tar.gz" => "/missing.tar.gz")
+        f, s = run_env(Pkg, bad), run_env(Pkg, bad)
+        @test f == s
+        @test occursin("Failed to install some artifacts", f.err) && !f.after && f.th == ""
+        # a platform-specific binding: the host platform's entry is selected, as by stock
+        plat = """
+        [[tool]]
+        arch = "$(Sys.ARCH)"
+        os = "$(Sys.islinux() ? "linux" : Sys.isapple() ? "macos" : "windows")"
+        git-tree-sha1 = "$tree"
+
+            [[tool.download]]
+            url = "$base/art.tar.gz"
+            sha256 = "$sha"
+
+        [[tool]]
+        arch = "$(Sys.ARCH == :x86_64 ? "aarch64" : "x86_64")"
+        os = "linux"
+        git-tree-sha1 = "0000000000000000000000000000000000000001"
+
+            [[tool.download]]
+            url = "$base/missing.tar.gz"
+            sha256 = "$sha"
+        """
+        f, s = run_env(Pkg, plat), run_env(Pkg, plat)
+        @test f == s
+        @test f.err == "" && f.th == tree
+        close(server)
+    end
+
+    @testset "D4 update: artifact selection hooks are rejected" begin
         mktempdir() do dir
             write(joinpath(dir, "Project.toml"), "[deps]\n")
-            write(joinpath(dir, "Artifacts.toml"), "[foo]\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\n")
-            out = IOBuffer()
-            Pkg.activate(dir; io = out)
-            ctx = Pkg.Types.Context(; io = out)
-            Pkg.Operations.download_artifacts(ctx)
-            s = String(take!(out))
-            @test count("artifacts of 1 package(s) were not downloaded", s) == 1
-            @test Pkg.Operations.is_instantiated(ctx.env)
-            # public instantiate on an already-instantiated env still says so (review-2 #7)
-            write(joinpath(dir, "Manifest.toml"), "julia_version = \"1.13.2\"\nmanifest_format = \"2.0\"\n\n[deps]\n")
-            out = IOBuffer()
-            Pkg.instantiate(; io = out)
-            @test count("artifacts of 1 package(s) were not downloaded", String(take!(out))) == 1
+            write(joinpath(dir, "Artifacts.toml"), "[foo]\ngit-tree-sha1 = \"0000000000000000000000000000000000000001\"\n\n    [[foo.download]]\n    url = \"http://127.0.0.1:1/foo.tar.gz\"\n    sha256 = \"$("0"^64)\"\n")
+            mkpath(joinpath(dir, ".pkg"))
+            write(joinpath(dir, ".pkg", "select_artifacts.jl"), "error(\"must not run\")\n")
+            Pkg.activate(dir; io = devnull)
+            ctx = Pkg.Types.Context(; io = devnull)
+            for f in (() -> Pkg.Operations.download_artifacts(ctx), () -> Pkg.Operations.is_instantiated(ctx.env))
+                err = capture_error(f)
+                @test err isa Pkg.Types.PkgError
+                @test sprint(showerror, err) == "artifact selection hook $(repr(joinpath(dir, ".pkg", "select_artifacts.jl"))) is not supported in PkgWasm (it runs a Julia subprocess)"
+            end
+            # without the hook: the standard selection
+            rm(joinpath(dir, ".pkg"); recursive = true)
+            @test !Pkg.Operations.is_instantiated(ctx.env)
             Pkg.activate(; io = devnull)
         end
     end

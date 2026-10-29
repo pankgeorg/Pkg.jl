@@ -1077,11 +1077,37 @@ end
 # AUTO GC #
 ###########
 
-# PkgWasm (PLAN.md D4): automatic hooks inside supported operations are removed, not thrown.
-# Neither the depot-orphanage GC after `rm`/`up`/... nor auto-precompilation after
-# `add`/`instantiate` runs. `_auto_gc_enabled` is kept because the public toggle sets it.
+const DEPOT_ORPHANAGE_TIMESTAMPS = Dict{String, Float64}()
 const _auto_gc_enabled = Ref{Bool}(true)
-_auto_gc(ctx::Types.Context) = nothing
+function _auto_gc(ctx::Types.Context)
+    if !_auto_gc_enabled[]
+        return
+    end
+
+    # If we don't know the last time this depot was GC'ed (because this is the
+    # first time we've looked this session), or it looks like we might want to
+    # collect; let's go ahead and hit the filesystem to find the mtime of the
+    # `orphaned.toml` file, which should tell us how long since the last time
+    # we GC'ed.
+    orphanage_path = joinpath(logdir(depots1()), "orphaned.toml")
+    delay_secs = Second(Day(7)).value  # Run auto-GC at most once every 7 days
+    curr_time = time()
+    if curr_time - get(DEPOT_ORPHANAGE_TIMESTAMPS, depots1(), 0.0) >= delay_secs
+        DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = mtime(orphanage_path)
+    end
+
+    return if curr_time - DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] > delay_secs
+        printpkgstyle(ctx.io, :Info, "We haven't cleaned this depot up for a bit, running Pkg.gc()...", color = Base.info_color())
+        try
+            Pkg.gc(ctx)
+            DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = curr_time
+        catch ex
+            @pkg_error("GC failed", exception = ex)
+        end
+    end
+end
+
+# PkgWasm (PLAN.md D4): auto-precompilation after `add`/`instantiate` is removed, not thrown.
 
 ##################
 # Precompilation #

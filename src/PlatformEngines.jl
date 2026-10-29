@@ -322,15 +322,30 @@ function download(
     end
 
     # PkgWasm (PLAN.md D2, D3): the transfer goes through the Host seam: one request, no
-    # Downloads.jl tasks, no progress callbacks or cancellation events (`progress` is accepted
-    # and ignored). As in stock Pkg, a non-2xx final status is an error and `dest` is not left
-    # behind; it is reported like the `Downloads.RequestError` stock Pkg throws.
+    # Downloads.jl tasks, no cancellation events. As in stock Pkg, a non-2xx final status is an
+    # error and `dest` is not left behind; it is reported like the `Downloads.RequestError`
+    # stock Pkg throws.
     response = Host.download(String(url), String(dest), headers)
     if !(200 <= response.status < 300)
         Base.rm(dest; force = true)
         throw(HTTPStatusError(String(url), response.status))
     end
+    # Downloads.jl calls `progress(total, now)` as the body arrives, `total` being the
+    # response's Content-Length (0 without one). The Host seam has no progress callbacks, so it
+    # is called once, with the complete transfer: what stock's last call reports (artifact
+    # downloads print their size from it).
+    progress === nothing || progress(content_length(response.headers), Int(filesize(dest)))
     return dest
+end
+
+function content_length(headers::Vector{Pair{String, String}})
+    for (k, v) in headers
+        if lowercase(k) == "content-length"
+            n = tryparse(Int, strip(v))
+            return n === nothing ? 0 : n
+        end
+    end
+    return 0
 end
 
 """

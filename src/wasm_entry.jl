@@ -8,7 +8,7 @@
 #   pkgwasm_main()        -> Int32   exit code: 0 = ok, 1 = reported error
 #
 # Command line (WASI args, argv[0] stripped into ARGS): `pkgwasm <cmd> [pkgs...]` with
-# <cmd> one of add, rm, resolve, instantiate, status, or (PLAN.md D15)
+# <cmd> one of add, rm, resolve, instantiate, status, `gc [-v|--verbose] [--all]`, or (PLAN.md D15)
 # `pkgwasm registry <sub> [registries...]` with <sub> one of
 #   add [reg...]       (no argument: the default registries, i.e. General)
 #   rm|remove reg...   (at least one)
@@ -41,6 +41,7 @@ function sanitize_globals!()
     RESPECT_SYSIMAGE_VERSIONS[] = true
     PREV_ENV_PATH[] = ""
     _auto_gc_enabled[] = true
+    empty!(DEPOT_ORPHANAGE_TIMESTAMPS)
     Types.STDLIB[] = nothing # rebuilt lazily from the embedded STDLIB_DATA (D10) ...
     empty!(Types.UPGRADABLE_STDLIBS_UUIDS) # ... which also refills this set
     for cache in (Types.TOML_CACHE, Registry.TOML_CACHE)
@@ -95,7 +96,7 @@ end
 
 pkgwasm_main()::Int32 = pkgwasm_main(ARGS)
 
-const SUPPORTED_COMMANDS = ("add", "develop", "rm", "resolve", "instantiate", "status", "registry")
+const SUPPORTED_COMMANDS = ("add", "develop", "rm", "resolve", "instantiate", "status", "gc", "registry")
 const SUPPORTED_COMMANDS_LIST = join(SUPPORTED_COMMANDS, ", ") # computed at load time: no runtime join
 
 function pkgwasm_main(args::Vector{String})::Int32
@@ -115,6 +116,7 @@ function run_command(args::Vector{String})
     cmd = args[1]
     cmd == "registry" && return run_registry_command(args[2:end])
     cmd == "request" && return run_request(args[2:end]) # wasm_request.jl
+    cmd == "gc" && return run_gc_command(args[2:end])
     # add/develop: the REPL's package syntax (`url#rev`, `name@version`, `path:subdir`, ...;
     # PLAN D14), so they take what `pkg> add ...` takes; the other commands take names
     words = args[2:end]
@@ -141,6 +143,22 @@ function run_command(args::Vector{String})
     else
         Types.pkgerror("unknown command `", cmd, "`; supported: ", SUPPORTED_COMMANDS_LIST)
     end
+    return nothing
+end
+
+# `gc [-v|--verbose] [--all]`: the REPL `gc` command's options and API call (`--all` sets
+# `collect_delay = nothing`, the default: since Pkg 1.13 unreachable packages and artifacts
+# are deleted at once, with no collect delay)
+function run_gc_command(args::Vector{String})
+    verbose = false
+    for w in args
+        if w == "-v" || w == "--verbose"
+            verbose = true
+        elseif w != "--all"
+            Types.pkgerror("pkgwasm gc: unknown option `", w, "`; usage: pkgwasm gc [-v|--verbose] [--all]")
+        end
+    end
+    API.gc(; verbose)
     return nothing
 end
 

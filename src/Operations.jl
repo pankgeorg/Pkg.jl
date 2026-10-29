@@ -13,7 +13,7 @@ import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command lin
 using ..Types, ..Resolve, ..PlatformEngines, ..GitTools, ..MiniProgressBars
 import ..depots, ..depots1, ..devdir, ..set_readonly, ..Types.PackageEntry
 import ..Artifacts: ensure_artifact_installed, artifact_names, extract_all_hashes,
-    artifact_exists, select_downloadable_artifacts, mv_temp_dir_retries
+    artifact_exists, select_downloadable_artifacts, mv_temp_dir_retries, try_artifact_download_sources
 using Base.BinaryPlatforms
 import ...Pkg
 import ...Pkg: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
@@ -1392,18 +1392,13 @@ function collect_artifacts(pkg_root::String; platform::AbstractPlatform = Pkg.ho
 
             # If there is a dynamic artifact selector, run that in an appropriate sandbox to select artifacts
             if isfile(selector_path)
-                # Despite the fact that we inherit the project, since the in-memory manifest
-                # has not been updated yet, if we try to load any dependencies, it may fail.
-                # Therefore, this project inheritance is really only for Preferences, not dependencies.
-                select_cmd = Cmd(`$(gen_build_code(selector_path; inherit_project=true)) --compile=min -t1 --startup-file=no $(triplet(platform))`)
-                meta_toml = String(read(select_cmd))
-                res = TOML.tryparse(meta_toml)
-                if res isa TOML.ParserError
-                    errstr = sprint(showerror, res; context = stderr)
-                    pkgerror("failed to parse TOML output from running $(repr(selector_path)), got: \n$errstr")
-                else
-                    push!(artifacts_tomls, (artifacts_toml, TOML.parse(meta_toml)))
-                end
+                # PkgWasm (PLAN.md D4): stock Pkg runs the selector in a Julia subprocess
+                # (`gen_build_code(selector_path; inherit_project = true)`), which PkgWasm cannot
+                # start, so a package with an artifact selection hook is rejected
+                pkgerror(
+                    "artifact selection hook ", repr(selector_path),
+                    " is not supported in PkgWasm (it runs a Julia subprocess)"
+                )
             else
                 # Otherwise, use the standard selector from `Artifacts`
                 artifacts = select_downloadable_artifacts(artifacts_toml; platform, include_lazy)
@@ -1423,6 +1418,27 @@ mutable struct DownloadState
     const bar::MiniProgressBar
 end
 
+# PkgWasm (for trim): a pending artifact download. Stock Pkg keeps a `Dict{SHA1, Function}` of
+# closures around the one `ensure_artifact_installed` returns; this is what they capture.
+struct ArtifactDownloadJob
+    name::String
+    rname::String
+    hash::SHA1
+    meta::Dict{String, Any}
+    artifacts_toml::String
+    pkg_server_eligible::Bool
+    dstate::DownloadState
+end
+
+# The text of an artifact download error, as stock Pkg's `Base.showerror(iostr, e)` prints it
+# when it reports all of them (built for Wasm, `showerror_known`).
+function artifact_error_text(@nospecialize(err))
+    WASM_TARGET || return sprint(Base.showerror, err)
+    buf = IOBuffer()
+    Pkg.showerror_known(buf, err)
+    return String(take!(buf))
+end
+
 function download_artifacts(
         ctx::Context, pkgs;
         platform::AbstractPlatform = Pkg.host_platform(),
@@ -1431,28 +1447,219 @@ function download_artifacts(
         io::IO = stderr_f(),
         include_lazy::Bool = false
     )
-    # PkgWasm (PLAN.md D4): source-only installation. Artifact payloads are never downloaded
-    # (no platform probing, selector scripts, threads or timers). If the project or any of the
-    # given packages has an (Julia)Artifacts.toml, a single warning says so.
     env = ctx.env
+    io = ctx.io
+    # PkgWasm (PLAN.md D3): the live progress display needs a printer task and a Timer, so it
+    # runs only with `tasks = "jspi"`; with `tasks = "none"` the output is stock's non-fancy one
+    fancyprint = CONCURRENT && can_fancyprint(io)
+    pkg_info = Tuple{String, Union{Base.UUID, Nothing}}[]
     pkg_uuids = Set(pkg.uuid for pkg in pkgs)
-    n = has_artifacts_toml(dirname(env.project_file)) ? 1 : 0
-    for (uuid, _) in env.manifest
+    for (uuid, pkg) in env.manifest
         uuid in pkg_uuids || continue
-        entry = manifest_info(env.manifest, uuid)
-        # D10: a stdlib (of the requested julia_version, current or historical) is never
-        # looked up in the Julia install
-        entry.tree_hash === nothing && entry.path === nothing && is_or_was_stdlib(uuid, julia_version) && continue
-        pkg_root = source_path(env.manifest_file, entry, julia_version)
-        pkg_root !== nothing && has_artifacts_toml(pkg_root) && (n += 1)
+        pkg = manifest_info(env.manifest, uuid)
+        # PkgWasm (PLAN.md D10): a stdlib (of the requested julia_version, current or historical)
+        # is never looked up in the Julia install. Stock looks in its source dir, where 1.13's
+        # stdlibs have no (Julia)Artifacts.toml (only StdlibArtifacts.toml), so nothing is skipped.
+        pkg.tree_hash === nothing && pkg.path === nothing && is_or_was_stdlib(uuid, julia_version) && continue
+        pkg_root = source_path(env.manifest_file, pkg, julia_version)
+        pkg_root === nothing || push!(pkg_info, (pkg_root, uuid))
     end
-    if n > 0
-        printpkgstyle(
-            ctx.io, :Warning, "PkgWasm installs package sources only: artifacts of $n package(s) were not downloaded",
-            color = Base.warn_color()
-        )
+    push!(pkg_info, (dirname(env.project_file), env.pkg !== nothing ? env.pkg.uuid : nothing))
+    download_jobs = Dict{SHA1, ArtifactDownloadJob}()
+
+    print_lock = Base.ReentrantLock() # for non-fancyprint printing
+
+    download_states = Dict{SHA1, DownloadState}()
+
+    errors = String[] # PkgWasm: each error's text (stock: a Channel{Any} of the errors)
+    is_done = Ref{Bool}(false)
+    ansi_moveup(n::Int) = string("\e[", n, "A")
+    ansi_movecol1 = "\e[1G"
+    ansi_cleartoend = "\e[0J"
+    ansi_cleartoendofline = "\e[0K"
+    ansi_enablecursor = "\e[?25h"
+    ansi_disablecursor = "\e[?25l"
+
+    all_collected_artifacts = Tuple{String, Base.TOML.TOMLDict, Union{Base.UUID, Nothing}}[]
+    for (pkg_root, pkg_uuid) in pkg_info, ca in collect_artifacts(pkg_root; platform, include_lazy)
+        push!(all_collected_artifacts, (ca[1], ca[2], pkg_uuid))
     end
-    return nothing
+    used_artifact_tomls = Set{String}(map(ca -> ca[1], all_collected_artifacts))
+
+    # Check what registries the current pkg server tracks
+    # Disable if precompiling to not access internet, and don't ask when there is nothing that could be served
+    server_registry_info = if Base.JLOptions().incremental == 0 && !isempty(all_collected_artifacts)
+        Registry.pkg_server_registry_info()
+    else
+        nothing
+    end
+    longest_name_length = maximum(all_collected_artifacts; init = 0) do (artifacts_toml, artifacts, pkg_uuid)
+        maximum(textwidth, keys(artifacts); init = 0)
+    end
+    for (artifacts_toml, artifacts, pkg_uuid) in all_collected_artifacts
+        # For each Artifacts.toml, install each artifact we've collected from it
+        for name in keys(artifacts)
+            local rname = rpad(name, longest_name_length)
+            local meta = artifacts[name]::Dict{String, Any}
+            local hash = SHA1(meta["git-tree-sha1"]::String)
+            local bar = MiniProgressBar(; header = rname, main = false, indent = 2, color = Base.info_color()::Symbol, mode = :data, always_reprint = true)
+            local dstate = DownloadState(:ready, "", time_ns(), Base.ReentrantLock(), bar)
+            # Check if the current package is eligible for PkgServer artifact downloads
+            local pkg_server_eligible = pkg_uuid !== nothing && Registry.is_pkg_in_pkgserver_registry(pkg_uuid, server_registry_info, ctx.registries)
+
+            # Stock: `ensure_artifact_installed(name, meta, artifacts_toml; pkg_server_eligible,
+            # verbose, quiet_download = !(usable_io(io)), io, progress)`, which returns the
+            # artifact's path if it exists, downloads it right away if `verbose`, and otherwise
+            # returns the download as a closure (a job, run below)
+            artifact_exists(hash) && continue
+            if verbose
+                try_artifact_download_sources(name, hash, meta, artifacts_toml; pkg_server_eligible, verbose, quiet_download = !(usable_io(io)), io)
+                continue
+            end
+            download_states[hash] = dstate
+            download_jobs[hash] = ArtifactDownloadJob(name, rname, hash, meta, artifacts_toml, pkg_server_eligible, dstate)
+        end
+    end
+
+    # a job: the closure stock builds around `ensure_artifact_installed`'s download
+    function run_job(job::ArtifactDownloadJob)
+        dstate = job.dstate
+        function progress(total, current; status = "")
+            local t = time_ns()
+            if isempty(status)
+                dstate.bar.max = total
+                dstate.bar.current = current
+            end
+            return lock(dstate.status_lock) do
+                dstate.status = status
+                dstate.status_update_time = t
+            end
+        end
+        try
+            dstate.state = :running
+            try_artifact_download_sources(job.name, job.hash, job.meta, job.artifacts_toml; job.pkg_server_eligible, quiet_download = true, io, progress)
+            if !fancyprint && dstate.bar.max > 1 # if another process downloaded, then max is never set greater than 1
+                @lock print_lock printpkgstyle(io, :Installed, "artifact $(job.rname) $(MiniProgressBars.pkg_format_bytes(dstate.bar.max; sigdigits = 1))")
+            end
+        catch
+            dstate.state = :failed
+            rethrow()
+        else
+            dstate.state = :done
+        end
+        return
+    end
+
+    if !isempty(download_jobs)
+        if CONCURRENT
+            # S2 (preference `tasks = "jspi"`): stock Pkg's pool and progress printer, with
+            # `@async` for `Threads.@spawn` (one thread) and the errors collected as text.
+            # PkgWasm downloads have no cancellation scope (PLAN.md D3, PlatformEngines):
+            # an interrupt stops new downloads, the ones in flight finish.
+            local t_print
+            if fancyprint
+                t_print = @async begin
+                    try
+                        print(io, ansi_disablecursor)
+                        first = Ref(true)
+                        timer = Timer(0, interval = 1 / 10)
+                        # TODO: Implement as a new MiniMultiProgressBar
+                        main_bar = MiniProgressBar(; indent = 2, header = "Installing artifacts", color = :green, mode = :int, always_reprint = true)
+                        main_bar.max = length(download_states)
+                        while !is_done[]
+                            main_bar.current = count(x -> x.state == :done, values(download_states))
+                            local str = sprint(context = io) do iostr
+                                first[] || print(iostr, ansi_cleartoend)
+                                n_printed = 1
+                                show_progress(iostr, main_bar; carriagereturn = false)
+                                println(iostr)
+                                for dstate in sort!(collect(values(download_states)), by = v -> v.bar.max, rev = true)
+                                    local status, status_update_time = lock(() -> (dstate.status, dstate.status_update_time), dstate.status_lock)
+                                    # only update the bar's status message if it is stalled for at least 0.5 s.
+                                    # If the new status message is empty, go back to showing the bar without waiting.
+                                    if isempty(status) || time_ns() - status_update_time > UInt64(500_000_000)
+                                        dstate.bar.status = status
+                                    end
+                                    dstate.state == :running && (dstate.bar.max > 1000 || !isempty(dstate.bar.status)) || continue
+                                    show_progress(iostr, dstate.bar; carriagereturn = false)
+                                    println(iostr)
+                                    n_printed += 1
+                                end
+                                is_done[] || print(iostr, ansi_moveup(n_printed), ansi_movecol1)
+                                first[] = false
+                            end
+                            print(io, str)
+                            wait(timer)
+                        end
+                        print(io, ansi_cleartoend)
+                        main_bar.current = count(x -> x[2].state == :done, download_states)
+                        show_progress(io, main_bar; carriagereturn = false)
+                        println(io)
+                    catch e
+                        e isa InterruptException || rethrow()
+                    finally
+                        print(io, ansi_enablecursor)
+                    end
+                end
+                Base.errormonitor(t_print)
+            else
+                printpkgstyle(io, :Installing, "$(length(download_jobs)) artifacts")
+            end
+            sema = Base.Semaphore(ctx.num_concurrent_downloads)
+            interrupted = Ref{Bool}(false)
+            try
+                @sync for job in values(download_jobs)
+                    interrupted[] && break
+                    Base.acquire(sema)
+                    @async try
+                        run_job(job)
+                    catch e
+                        e isa InterruptException && (interrupted[] = true)
+                        push!(errors, artifact_error_text(e))
+                    finally
+                        Base.release(sema)
+                    end
+                end
+            finally
+                # `t_print` loops until `is_done[]`, so if we leave via an interrupt or an
+                # error it would otherwise keep drawing the progress bar over the prompt
+                # forever, and never restore the cursor it hid.
+                is_done[] = true
+                if fancyprint
+                    try
+                        wait(t_print)
+                    catch
+                        # already reported by the `errormonitor` above
+                    end
+                end
+            end
+        else
+            # PkgWasm (PLAN.md D3, preference `tasks = "none"`): the same jobs, one at a time;
+            # as in the pool, every job runs (until an interrupt) and all errors are reported
+            printpkgstyle(io, :Installing, "$(length(download_jobs)) artifacts")
+            for job in values(download_jobs)
+                try
+                    run_job(job)
+                catch e
+                    push!(errors, artifact_error_text(e))
+                    e isa InterruptException && break
+                end
+            end
+        end
+
+        if !isempty(errors)
+            local str = sprint(context = io) do iostr
+                for e in errors
+                    print(iostr, e)
+                    length(errors) > 1 && println(iostr)
+                end
+            end
+            pkgerror("Failed to install some artifacts:\n\n$(strip(str, '\n'))")
+        end
+    end
+
+
+    return write_env_usage(used_artifact_tomls, "artifact_usage.toml")
 end
 
 function download_artifacts(
@@ -1466,11 +1673,17 @@ function download_artifacts(
     return download_artifacts(ctx, values(ctx.env.manifest); platform, julia_version, verbose, io, include_lazy)
 end
 
-has_artifacts_toml(pkg_root::String) = any(f -> isfile(joinpath(pkg_root, f)), artifact_names)
-
-# PkgWasm (PLAN.md D4): source-only predicate. Artifacts are never installed, so they never
-# make an environment "not instantiated"; a repeated `instantiate` is therefore a no-op.
-check_artifacts_downloaded(pkg_root::String; platform = nothing) = true
+function check_artifacts_downloaded(pkg_root::String; platform::AbstractPlatform = Pkg.host_platform())
+    for (artifacts_toml, artifacts) in collect_artifacts(pkg_root; platform)
+        for name in keys(artifacts)
+            if !artifact_exists(Base.SHA1((artifacts[name]::Dict{String, Any})["git-tree-sha1"]::String))
+                return false
+            end
+            break
+        end
+    end
+    return true
+end
 
 
 function find_urls(registries::Vector{Registry.RegistryInstance}, uuid::UUID)
@@ -2409,9 +2622,8 @@ function add(
         record_project_hash(ctx.env)
         write_env(ctx.env)
         show_update(ctx.env, ctx.registries; io = ctx.io)
-        # PkgWasm (PLAN.md D4): same source-only artifact report and build-script rejection
-        # as the resolving path, so retrying an add cannot turn its failure into success
-        download_artifacts(ctx, platform = platform, julia_version = ctx.julia_version)
+        # PkgWasm (PLAN.md D4): same build-script rejection as the resolving path, so
+        # retrying an add cannot turn its failure into success
         build_versions(ctx, Set{UUID}())
 
         return

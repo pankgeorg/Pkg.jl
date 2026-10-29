@@ -631,7 +631,6 @@ admin privileges depending on the setup).
 Use verbose mode (`verbose=true`) for detailed output.
 """
 function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = nothing, verbose = false, force = false, kwargs...)
-    unsupported("gc")
     Context!(ctx; kwargs...)
     if collect_delay !== nothing
         @pkg_warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
@@ -1342,9 +1341,8 @@ function instantiate(
     end
     # check if all source code and artifacts are downloaded to exit early
     if Operations.is_instantiated(ctx.env, workspace; platform)
-        # PkgWasm (PLAN.md D4): with nothing to install, still report the source-only artifact
-        # omission and reject build scripts, as the full path below does
-        Operations.download_artifacts(ctx; platform, julia_version = ctx.julia_version)
+        # PkgWasm (PLAN.md D4): with nothing to install, still reject build scripts, as the
+        # full path below does
         allow_build && Operations.build_versions(ctx, Set{UUID}(); verbose)
         allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
         return

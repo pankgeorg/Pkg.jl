@@ -6,7 +6,7 @@ using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 using FileWatching: FileWatching
 
-import ..set_readonly, ..mkpidlock, ..host_platform, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..mkpidlock, ..host_platform, ..CONCURRENT, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle, ..mv_temp_dir_retries, ..atomic_toml_write, ..create_cachedir_tag
 
 import Base: get, SHA1
@@ -332,15 +332,22 @@ function download_artifact(
     _artifact_paths = artifact_paths(tree_hash)
     pidfile = _artifact_paths[1] * ".pid"
     mkpath(dirname(pidfile))
-    t_wait_msg = Timer(2) do t
-        if progress === nothing
-            @pkg_info "downloading $tarball_url ($hex) in another process"
-        else
-            progress(0, 0; status = "downloading in another process")
+    # PkgWasm (PLAN.md D3): the notice needs a Timer task, so only with `tasks = "jspi"`. With
+    # `tasks = "none"` there is none; `mkpidlock` never waits there, and stock closes the
+    # timer as soon as it holds the lock.
+    t_wait_msg = if CONCURRENT
+        Timer(2) do t
+            if progress === nothing
+                @pkg_info "downloading $tarball_url ($hex) in another process"
+            else
+                progress(0, 0; status = "downloading in another process")
+            end
         end
+    else
+        nothing
     end
     ret = mkpidlock(pidfile, stale_age = 20) do
-        close(t_wait_msg)
+        t_wait_msg === nothing || close(t_wait_msg)
         if artifact_exists(tree_hash)
             return true
         end

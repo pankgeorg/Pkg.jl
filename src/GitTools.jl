@@ -135,6 +135,7 @@ geturl(repo) = LibGit2.remote_url(repo, "origin")
 # `string(err)` of what `run` throws, typed (PkgWasm, G3): the same text as Base's default
 # `show` of ProcessFailedException and IOError; any other error as its message
 function error_string(@nospecialize(err))
+    Pkg.WASM_TARGET || return string(err)   # (natively stock's interpolation)
     if err isa ProcessFailedException
         return string("ProcessFailedException(Base.Process[", join([sprint(show, p) for p in err.procs], ", "), "])")
     elseif err isa Base.IOError

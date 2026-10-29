@@ -80,7 +80,7 @@ end
     @test length(se(nat[2])) == 9 && se(nat[2]) == se(wasm[2])
     @test occursin("OVERRIDE=PkgWasm built for Wasm: DEFAULT_IO[] is not supported", wasm[2])
     norm(s) = replace(join(filter(l -> !startswith(l, "TARGET=") && !startswith(l, "IO=") && !startswith(l, "OVERRIDE="), split(s, '\n')), '\n'),
-                      r"/tmp/jl_\w+" => "TMP", r"/tmp/claude[^\s`]*" => "TMP")
+                      r"[^\s`]*jl_\w+" => "TMP", r"/tmp/claude[^\s`]*" => "TMP")   # (any TMPDIR)
     @test norm(nat[2]) == norm(wasm[2])
     @test norm(nat[3]) == norm(wasm[3])
     @test occursin("NoSuchPackage", nat[3])

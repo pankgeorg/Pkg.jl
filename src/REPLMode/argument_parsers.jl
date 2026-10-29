@@ -17,9 +17,12 @@ struct Subdir
     dir::String
 end
 
-# Base's default `show` of the tokens, typed (PkgWasm, G3: shown in the parser's error messages)
-for T in (:PackageIdentifier, :VersionToken, :Rev, :Subdir)
-    @eval Base.show(io::IO, x::$T) = (show(io, $T); print(io, '('); show(io, getfield(x, 1)); print(io, ')'))
+# built for Wasm (G3): Base's default `show` of the tokens, typed (shown in the parser's error
+# messages); natively Base's own
+if WASM_TARGET
+    for T in (:PackageIdentifier, :VersionToken, :Rev, :Subdir)
+        @eval Base.show(io::IO, x::$T) = (show(io, $T); print(io, '('); show(io, getfield(x, 1)); print(io, ')'))
+    end
 end
 
 const PackageToken = Union{
@@ -32,7 +35,8 @@ const PackageToken = Union{
 # `"$args"` of a token vector, typed (PkgWasm, G3): Base's text, its element type prefix computed
 # when the module is loaded
 const TOKENS_ELTYPE = string(PackageToken)
-tokens_text(args::Vector{PackageToken}) = string(TOKENS_ELTYPE, "[", join([sprint(show, t) for t in args], ", "), "]")
+tokens_text(args::Vector{PackageToken}) = WASM_TARGET ?
+    string(TOKENS_ELTYPE, "[", join([sprint(show, t) for t in args], ", "), "]") : string(args)
 
 # Check if a string is a valid UUID
 function is_valid_uuid(str::String)

@@ -7,7 +7,7 @@ import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.
 
 using Markdown, UUIDs, Dates
 
-import ..OFFLINE_MODE, ..linewrap, ..pathrepr, ..IN_REPL_MODE
+import ..OFFLINE_MODE, ..linewrap, ..pathrepr, ..IN_REPL_MODE, ..WASM_TARGET
 using ..Types, ..Operations, ..API, ..Registry, ..Resolve, ..Apps
 import ..stdout_f, ..stderr_f
 

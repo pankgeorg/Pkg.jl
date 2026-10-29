@@ -167,7 +167,7 @@ function run_registry_command(args::Vector{String})
 end
 
 # Errors are reported like the Pkg REPL mode does: `ERROR: ` plus the message, no backtrace.
-function report_error(e)
+function report_error(@nospecialize(e)) # (G3 V1: called with the caught exception)
     io = stderr_f()
     # (the color, a Symbol or an Int, told apart by type: M4.2)
     c = Base.error_color()

@@ -15,7 +15,12 @@
 const LOG_MAXLOG_COUNTS = Dict{String, Int}()
 
 # a message's lines: (indent, text)
-log_lines(@nospecialize(msg)) = Tuple{Int, String}[(0, String(l)) for l in split(chomp(string(msg)), '\n')]
+# (G3 V19-V23: the message as a String without a dynamic `string`: messages are Strings; built
+# for Wasm any other value prints a fixed text, natively `string(msg)` as before)
+log_lines(@nospecialize(msg)) = Tuple{Int, String}[(0, String(l)) for l in split(chomp(log_message_string(msg)), '\n')]
+log_message_string(@nospecialize(msg)) = msg isa String ? msg :
+    msg isa SubString{String} ? String(msg) :
+    WASM_TARGET ? "(a message this build of PkgWasm cannot print)" : string(msg)
 
 # `key = value` lines, as ConsoleLogger's `showvalue`: a value shown as `text/plain` (the
 # call specialized on the value's type at each call site: static where that type is known),
@@ -26,6 +31,32 @@ function log_kv!(lines::Vector{Tuple{Int, String}}, key::String, val)
     show(buf, MIME"text/plain"(), val)
     return log_kv_lines!(lines, key, String(take!(buf)))
 end
+# (G3 row 2) a caught value logged as `key = value` (`err = log_value(err)`): natively the value
+# itself, so the stock logging macros see exactly what they saw; built for Wasm a typed holder,
+# so the untyped catch variable does not make the `log_kv!` call dynamic
+struct LoggedValue
+    val::Any
+end
+log_value(@nospecialize(x)) = WASM_TARGET ? LoggedValue(x) : x
+function log_kv!(lines::Vector{Tuple{Int, String}}, key::String, v::LoggedValue)
+    val = v.val
+    val isa Exception && return log_kv_exception!(lines, key, val)
+    buf = IOBuffer()
+    WASM_TARGET ? print(buf, "(a value this build of PkgWasm cannot show)") : show(buf, MIME"text/plain"(), val)
+    return log_kv_lines!(lines, key, String(take!(buf)))
+end
+# (G3 rows 40, 41, 50-52) a parsed TOML table logged as `key = value` (`auth = log_table(d)`):
+# natively the table itself (stock output); built for Wasm its size and sorted keys, typed (the
+# values, e.g. auth tokens, are `Any` and are not printed)
+struct LoggedTable
+    n::Int
+    keys::Vector{String}
+end
+log_table(@nospecialize(d)) = !WASM_TARGET ? d :
+    d isa Dict{String, Any} ? LoggedTable(length(d), sort!(collect(keys(d)))) : LoggedValue(d)
+log_kv!(lines::Vector{Tuple{Int, String}}, key::String, v::LoggedTable) =
+    log_kv_lines!(lines, key, string("Dict{String, Any} with ", v.n, v.n == 1 ? " entry" : " entries", isempty(v.keys) ? "" : string("; keys: ", join(v.keys, ", "))))
+
 function log_kv_exception!(lines::Vector{Tuple{Int, String}}, key::String, @nospecialize(val))
     buf = IOBuffer()
     if val isa Exception
@@ -161,6 +192,19 @@ function showerror_known(io::IO, @nospecialize(e))
     end
     return nothing
 end
+"""
+    error_text(err)
+
+`sprint(showerror, err)` for a caught error (natively exactly that text), through the typed
+`showerror_known` and an IOBuffer: `sprint` with an untyped argument packs a `Tuple{Any}`,
+which the Wasm build does not support.
+"""
+function error_text(@nospecialize(err))
+    io = IOBuffer()
+    showerror_known(io, err)
+    return String(take!(io))
+end
+
 # a message field (an AbstractString): a String as it is
 typed_msg(@nospecialize(m)) = m isa String ? m : m isa SubString{String} ? String(m) :
     "(a message this build of PkgWasm cannot print)"

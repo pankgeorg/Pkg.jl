@@ -7,7 +7,8 @@ using Base: CacheFlags
 using FileWatching: FileWatching
 using UUIDs
 using Random: randstring
-import LibGit2, Dates, TOML
+import Dates, TOML
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 
 using ..Types, ..Resolve, ..PlatformEngines, ..GitTools, ..MiniProgressBars
 import ..depots, ..depots1, ..devdir, ..set_readonly, ..Types.PackageEntry
@@ -1338,11 +1339,6 @@ function install_git(
                 "Please check that the package name is correct and that your registries are up to date."
         )
     end
-    # PkgWasm (PLAN.md D4): no git. Stock Pkg clones here when no tarball could be installed.
-    pkgerror(
-        "Package $name [$uuid] could not be installed from a tarball, and installing from git ",
-        "($(join(sort!(collect(urls)), ", "))) is not supported in PkgWasm"
-    )
 
     repo = nothing
     tree = nothing
@@ -3810,10 +3806,6 @@ function print_status(
 end
 
 function git_head_env(env, project_dir)
-    # PkgWasm (D4/D14, G3 clean compile): comparing with the git HEAD (`status --diff`) needs
-    # git, which is not supported. Raised before the stock `try`, which would turn a PkgError
-    # into "not a git repository"; the LibGit2 code below is unreachable.
-    GitTools.git_unsupported("status --diff against the git HEAD of $(project_dir)")
     new_env = EnvCache()
     try
         LibGit2.with(LibGit2.GitRepo(project_dir)) do repo

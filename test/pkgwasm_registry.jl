@@ -146,20 +146,24 @@ else
                     end
                 end
 
-                @testset "git URL and local path are rejected" begin
-                    depot = mktempdir()
-                    regsrc = mktempdir()
-                    write(joinpath(regsrc, "Registry.toml"), "name = \"Mini\"\nuuid = \"$(uuid4())\"\n[packages]\n")
-                    for w in ("https://github.com/JuliaRegistries/General.git", regsrc)
-                        local err, rc
-                        out = in_depot(Pkg, depot) do
-                            err = capture_error(() -> Pkg.run_command(["registry", "add", w]))
-                            rc = Pkg.pkgwasm_main(["registry", "add", w])
+                @testset "a local path and a git registry (D14)" begin
+                    for git in (false, true)
+                        depot = mktempdir()
+                        regsrc = mktempdir()
+                        write(joinpath(regsrc, "Registry.toml"), "name = \"Mini\"\nuuid = \"$(uuid4())\"\n[packages]\n")
+                        if git
+                            env = ("GIT_AUTHOR_NAME" => "t", "GIT_AUTHOR_EMAIL" => "t@t", "GIT_COMMITTER_NAME" => "t", "GIT_COMMITTER_EMAIL" => "t@t")
+                            for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "r"])
+                                run(addenv(Cmd(["git", "-C", regsrc, a...]), env...))
+                            end
                         end
-                        @test err isa Pkg.Types.PkgError
-                        @test occursin("PkgWasm supports only Pkg-server registries", err.msg)
-                        @test rc == 1
-                        @test !isdir(joinpath(depot, "registries")) || isempty(filter(!=("CACHEDIR.TAG"), readdir(joinpath(depot, "registries"))))
+                        local rc
+                        in_depot(Pkg, depot) do
+                            rc = Pkg.pkgwasm_main(["registry", "add", regsrc])
+                        end
+                        @test rc == 0
+                        @test isfile(joinpath(depot, "registries", "Mini", "Registry.toml"))
+                        @test isdir(joinpath(depot, "registries", "Mini", ".git")) == git
                     end
                     @test Pkg.pkgwasm_main(["registry"]) == 1
                     @test Pkg.pkgwasm_main(["registry", "frobnicate"]) == 1

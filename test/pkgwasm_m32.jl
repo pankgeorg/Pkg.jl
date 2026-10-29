@@ -7,7 +7,7 @@
 
 using Test
 import Pkg
-import Pkg
+import PkgWasm
 using UUIDs
 
 const STOCK_PKG = Pkg
@@ -18,14 +18,14 @@ const GENERAL_UUID = UUID("23338594-aafe-5451-b93e-139f81909106")
 # implementation; `using Pkg.X` would always mean the stock root package, so make it relative.
 const RU_SRC = replace(read(joinpath(@__DIR__, "resolve_utils.jl"), String), "using Pkg." => "using ..Pkg.")
 module RUFork
-const Pkg = Main.Pkg
+const Pkg = Main.PkgWasm
 include_string(@__MODULE__, Main.RU_SRC, "resolve_utils.jl (PkgWasm)")
 end
 module RUStock
 const Pkg = Main.STOCK_PKG
 include_string(@__MODULE__, Main.RU_SRC, "resolve_utils.jl (stock Pkg)")
 end
-@assert parentmodule(typeof(RUFork.ResolveUtils.graph_from_data([["A", v"1"]]))) === Pkg.Resolve
+@assert parentmodule(typeof(RUFork.ResolveUtils.graph_from_data([["A", v"1"]]))) === PkgWasm.Resolve
 
 function solve(RU, M, deps_data, reqs_data; validate_versions = true)
     graph = RU.ResolveUtils.graph_from_data(deps_data)
@@ -72,7 +72,7 @@ function serve(routes)
 end
 
 resolvedata = mktempdir()
-Pkg.PlatformEngines.unpack(joinpath(@__DIR__, "resolvedata.tar.gz"), resolvedata)
+PkgWasm.PlatformEngines.unpack(joinpath(@__DIR__, "resolvedata.tar.gz"), resolvedata)
 for i in 1:4
     include(joinpath(resolvedata, "resolvedata$i.jl"))
 end
@@ -81,7 +81,7 @@ end
     @testset "D3 maxsum: forced maxsum, same solutions as stock" begin
         used = Bool[]
         for D in (ResolveData, ResolveData2, ResolveData3)
-            sol_f, maxsum_f = solve(RUFork, Pkg, D.deps_data, D.reqs_data)
+            sol_f, maxsum_f = solve(RUFork, PkgWasm, D.deps_data, D.reqs_data)
             sol_s, maxsum_s = solve(RUStock, Pkg, D.deps_data, D.reqs_data)
             @test maxsum_f == maxsum_s
             push!(used, maxsum_f)
@@ -95,23 +95,23 @@ end
     @testset "D3 maxsum: bounded timeout, same errors as stock" begin
         D = ResolveData4
         # tiny budget: times out with the stock error text
-        errs = map(((RUFork, Pkg), (RUStock, Pkg))) do (RU, M)
+        errs = map(((RUFork, PkgWasm), (RUStock, Pkg))) do (RU, M)
             withenv("JULIA_PKG_RESOLVE_MAX_TIME" => "1.0e-5") do
                 capture_error(() -> solve(RU, M, D.deps_data, D.reqs_data; validate_versions = false))
             end
         end
-        @test errs[1] isa Pkg.Resolve.ResolverTimeoutError
+        @test errs[1] isa PkgWasm.Resolve.ResolverTimeoutError
         @test errs[2] isa Pkg.Resolve.ResolverTimeoutError
         @test errs[1].msg == errs[2].msg
         # the deadline is honoured: a 2 s budget ends in about 2 s, not minutes
         t = @elapsed err = withenv("JULIA_PKG_RESOLVE_MAX_TIME" => "2") do
-            capture_error(() -> solve(RUFork, Pkg, D.deps_data, D.reqs_data; validate_versions = false))
+            capture_error(() -> solve(RUFork, PkgWasm, D.deps_data, D.reqs_data; validate_versions = false))
         end
-        @test err isa Pkg.Resolve.ResolverTimeoutError
+        @test err isa PkgWasm.Resolve.ResolverTimeoutError
         @test 2 <= t < 30
         # invalid budgets fail like `Timer(max_time)` does in stock
         for bad in ("-1", "NaN", "1e300")
-            ef, es = map(((RUFork, Pkg), (RUStock, Pkg))) do (RU, M)
+            ef, es = map(((RUFork, PkgWasm), (RUStock, Pkg))) do (RU, M)
                 withenv("JULIA_PKG_RESOLVE_MAX_TIME" => bad) do
                     capture_error(() -> solve(RU, M, D.deps_data, D.reqs_data; validate_versions = false))
                 end
@@ -120,50 +120,50 @@ end
             @test sprint(showerror, ef) == sprint(showerror, es)
         end
         # Deadline unit behaviour
-        Deadline = Pkg.Resolve.Deadline
-        @test Pkg.Resolve.expired(Deadline(0))
+        Deadline = PkgWasm.Resolve.Deadline
+        @test PkgWasm.Resolve.expired(Deadline(0))
         d = Deadline(0.05)
-        @test !Pkg.Resolve.expired(d)
+        @test !PkgWasm.Resolve.expired(d)
         sleep(0.07)
-        @test Pkg.Resolve.expired(d)
+        @test PkgWasm.Resolve.expired(d)
     end
 
     @testset "D13 host platform from the runtime seam" begin
         BP = Base.BinaryPlatforms
-        @test Pkg.Host.platform() isa BP.Platform
-        @test BP.triplet(Pkg.Host.platform()) == BP.triplet(BP.HostPlatform())
+        @test PkgWasm.Host.platform() isa BP.Platform
+        @test BP.triplet(PkgWasm.Host.platform()) == BP.triplet(BP.HostPlatform())
         # natively, loading the module initialised it (__init__)
-        @test BP.triplet(Pkg.host_platform()) == BP.triplet(BP.HostPlatform())
-        hdrs = Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
+        @test BP.triplet(PkgWasm.host_platform()) == BP.triplet(BP.HostPlatform())
+        hdrs = Dict(PkgWasm.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
         @test hdrs["Julia-System"] == BP.triplet(BP.HostPlatform())
         @test hdrs == Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
-        @test Pkg.BinaryPlatforms.platform_key_abi() === Pkg.HOST_PLATFORM[] # (Pkg 1.12: module BinaryPlatforms)
+        @test PkgWasm.BinaryPlatforms.platform_key_abi() === PkgWasm.HOST_PLATFORM[] # (Pkg 1.12: module BinaryPlatforms)
         frozen_file = joinpath(@__DIR__, "..", "..", "..", "fixtures", "frozen.toml") # wt/<lane>/test -> wasm-pkg/fixtures
         # (the native baselines are Julia 1.13.2's: compared when the frozen triplet is this Julia's)
-        if isfile(frozen_file) && endswith(Pkg.TOML.parsefile(frozen_file)["platform_triplet"], "julia_version+$(VERSION)")
-            @test BP.triplet(Pkg.host_platform()) == Pkg.TOML.parsefile(frozen_file)["platform_triplet"]
+        if isfile(frozen_file) && endswith(PkgWasm.TOML.parsefile(frozen_file)["platform_triplet"], "julia_version+$(VERSION)")
+            @test BP.triplet(PkgWasm.host_platform()) == PkgWasm.TOML.parsefile(frozen_file)["platform_triplet"]
         end
         # sanitised (image state): placeholder, and use fails loudly; init answers it again
-        Pkg.sanitize_globals!()
-        @test Pkg.HOST_PLATFORM[] === Pkg.HOST_PLATFORM_PLACEHOLDER
-        @test_throws ErrorException Pkg.host_platform()
-        @test_throws ErrorException Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries")
-        @test Pkg.pkgwasm_init() == 0
-        @test BP.triplet(Pkg.host_platform()) == BP.triplet(BP.HostPlatform())
-        code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")
+        PkgWasm.sanitize_globals!()
+        @test PkgWasm.HOST_PLATFORM[] === PkgWasm.HOST_PLATFORM_PLACEHOLDER
+        @test_throws ErrorException PkgWasm.host_platform()
+        @test_throws ErrorException PkgWasm.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries")
+        @test PkgWasm.pkgwasm_init() == 0
+        @test BP.triplet(PkgWasm.host_platform()) == BP.triplet(BP.HostPlatform())
+        code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(PkgWasm), "src", file))), "\n")
         for file in ("API.jl", "Operations.jl", "PlatformEngines.jl", "Artifacts.jl")
             @test !occursin("HostPlatform()", code(file))
         end
-        @test !isdefined(Pkg, :PKGWASM_PLATFORM)
+        @test !isdefined(PkgWasm, :PKGWASM_PLATFORM)
     end
 
     @testset "D3 no tasks on supported paths" begin
-        @test Pkg.mkpidlock(() -> 42, "/nonexistent/x.pid"; stale_age = 3) == 42
-        code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(Pkg), "src", file))), "\n")
+        @test PkgWasm.mkpidlock(() -> 42, "/nonexistent/x.pid"; stale_age = 3) == 42
+        code(file) = join(filter(l -> !startswith(lstrip(l), "#"), readlines(joinpath(pkgdir(PkgWasm), "src", file))), "\n")
         src = code("Operations.jl")
         # S2 (preference tasks = "jspi"): stock's download pool is back, only in download_source's
         # `if CONCURRENT` branch; with the default (tasks = "none") that branch is not compiled
-        @test !Pkg.CONCURRENT
+        @test !PkgWasm.CONCURRENT
         @test count("    if CONCURRENT\n", src) == 1
         pool = match(r"\n    if CONCURRENT\n(.*?)\n    else\n"s, src)
         @test pool !== nothing && occursin("@async", pool[1]) && occursin("Channel", pool[1])
@@ -176,89 +176,89 @@ end
 
     @testset "D4 unsupported operations" begin
         mktempdir() do dir
-            Pkg.activate(dir; io = devnull)
+            PkgWasm.activate(dir; io = devnull)
             for (f, op) in (
-                    (() -> Pkg.build(; io = devnull), "build"),
-                    (() -> Pkg.test(; io = devnull), "test"),
-                    (() -> Pkg.gc(; io = devnull), "gc"),
-                    (() -> Pkg.precompile(; io = devnull), "precompile"),
-                    (() -> Pkg.Apps.add(Pkg.PackageSpec[]), "apps"),
-                    (() -> Pkg.Apps.add(Pkg.PackageSpec(name = "Example")), "apps"),
-                    (() -> Pkg.Apps.develop(Pkg.PackageSpec(path = joinpath(dir, "missing"))), "apps"),
-                    (() -> Pkg.Apps.update(), "apps"),
-                    (() -> Pkg.Apps.update("Example"), "apps"),
-                    (() -> Pkg.Apps.rm(Pkg.PackageSpec(name = "Absent")), "apps"),
-                    (() -> Pkg.Apps.rm("Absent"), "apps"),
-                    (() -> Pkg.Apps.status(), "apps"),
-                    (() -> Pkg.Apps.precompile(), "apps"),
+                    (() -> PkgWasm.build(; io = devnull), "build"),
+                    (() -> PkgWasm.test(; io = devnull), "test"),
+                    (() -> PkgWasm.gc(; io = devnull), "gc"),
+                    (() -> PkgWasm.precompile(; io = devnull), "precompile"),
+                    (() -> PkgWasm.Apps.add(PkgWasm.PackageSpec[]), "apps"),
+                    (() -> PkgWasm.Apps.add(PkgWasm.PackageSpec(name = "Example")), "apps"),
+                    (() -> PkgWasm.Apps.develop(PkgWasm.PackageSpec(path = joinpath(dir, "missing"))), "apps"),
+                    (() -> PkgWasm.Apps.update(), "apps"),
+                    (() -> PkgWasm.Apps.update("Example"), "apps"),
+                    (() -> PkgWasm.Apps.rm(PkgWasm.PackageSpec(name = "Absent")), "apps"),
+                    (() -> PkgWasm.Apps.rm("Absent"), "apps"),
+                    (() -> PkgWasm.Apps.status(), "apps"),
+                    (() -> PkgWasm.Apps.precompile(), "apps"),
                 )
                 err = capture_error(f)
-                @test err isa Pkg.Types.PkgError
+                @test err isa PkgWasm.Types.PkgError
                 @test sprint(showerror, err) == "$op is not supported in PkgWasm"
             end
-            @test !ispath(Pkg.Apps.app_env_folder()) || isempty(readdir(Pkg.Apps.app_env_folder()))
-            Pkg.activate(; io = devnull)
+            @test !ispath(PkgWasm.Apps.app_env_folder()) || isempty(readdir(PkgWasm.Apps.app_env_folder()))
+            PkgWasm.activate(; io = devnull)
         end
     end
 
     @testset "D4/D11 add, idempotent instantiate, rm" begin
         mktempdir() do dir
             out = IOBuffer()
-            Pkg.activate(dir; io = out)
-            Pkg.add(["Example", "Dates"]; io = out)
+            PkgWasm.activate(dir; io = out)
+            PkgWasm.add(["Example", "Dates"]; io = out)
             manifest = read(joinpath(dir, "Manifest.toml"), String)
             # instantiate again: nothing to install, files unchanged
             out2 = IOBuffer()
-            Pkg.instantiate(; io = out2)
+            PkgWasm.instantiate(; io = out2)
             @test !occursin("Installed", String(take!(out2)))
             @test read(joinpath(dir, "Manifest.toml"), String) == manifest
-            Pkg.instantiate(; io = out2)
+            PkgWasm.instantiate(; io = out2)
             @test read(joinpath(dir, "Manifest.toml"), String) == manifest
-            src = Pkg.Operations.source_path(joinpath(dir, "Manifest.toml"), Pkg.Types.EnvCache().manifest[EXAMPLE_UUID])
+            src = PkgWasm.Operations.source_path(joinpath(dir, "Manifest.toml"), PkgWasm.Types.EnvCache().manifest[EXAMPLE_UUID])
             # stock Pkg agrees the environment is instantiated and reads it identically
             Pkg.activate(dir; io = devnull)
             @test Pkg.Operations.is_instantiated(Pkg.Types.EnvCache())
-            @test keys(Pkg.dependencies()) == keys(Pkg.dependencies())
+            @test keys(Pkg.dependencies()) == keys(PkgWasm.dependencies())
             # rm keeps the package files (no auto-gc)
-            Pkg.rm("Example"; io = out)
+            PkgWasm.rm("Example"; io = out)
             @test isdir(src)
-            @test !haskey(Pkg.TOML.parsefile(joinpath(dir, "Project.toml"))["deps"], "Example")
+            @test !haskey(PkgWasm.TOML.parsefile(joinpath(dir, "Project.toml"))["deps"], "Example")
             Pkg.activate(; io = devnull)
-            Pkg.activate(; io = devnull)
+            PkgWasm.activate(; io = devnull)
         end
     end
 
     @testset "D4 build scripts: retry and prepopulated depot still fail (review-2 #1)" begin
         mktempdir() do dir
-            Pkg.activate(dir; io = devnull)
-            Pkg.add("Example"; io = devnull)
-            src = Pkg.Operations.source_path(joinpath(dir, "Manifest.toml"), Pkg.Types.EnvCache().manifest[EXAMPLE_UUID])
+            PkgWasm.activate(dir; io = devnull)
+            PkgWasm.add("Example"; io = devnull)
+            src = PkgWasm.Operations.source_path(joinpath(dir, "Manifest.toml"), PkgWasm.Types.EnvCache().manifest[EXAMPLE_UUID])
             # simulate an installed package with a build script (as left by another process)
             chmod(src, 0o755)
             mkpath(joinpath(src, "deps"))
             build = joinpath(src, "deps", "build.jl")
             write(build, "error(\"must not run\")\n")
             try
-                is_build_error(e) = e isa Pkg.Types.PkgError && occursin("building packages is not supported in PkgWasm", e.msg) && occursin("Example", e.msg)
-                @test Pkg.Operations.is_instantiated(Pkg.Types.EnvCache()) # sources present
-                @test is_build_error(capture_error(() -> Pkg.instantiate(; io = devnull)))
-                @test is_build_error(capture_error(() -> Pkg.instantiate(; io = devnull))) # retry
-                @test is_build_error(capture_error(() -> Pkg.add("Dates"; io = devnull)))
-                @test is_build_error(capture_error(() -> Pkg.add("Dates"; io = devnull))) # retry
-                @test Pkg.pkgwasm_main(["instantiate"]) == 1
+                is_build_error(e) = e isa PkgWasm.Types.PkgError && occursin("building packages is not supported in PkgWasm", e.msg) && occursin("Example", e.msg)
+                @test PkgWasm.Operations.is_instantiated(PkgWasm.Types.EnvCache()) # sources present
+                @test is_build_error(capture_error(() -> PkgWasm.instantiate(; io = devnull)))
+                @test is_build_error(capture_error(() -> PkgWasm.instantiate(; io = devnull))) # retry
+                @test is_build_error(capture_error(() -> PkgWasm.add("Dates"; io = devnull)))
+                @test is_build_error(capture_error(() -> PkgWasm.add("Dates"; io = devnull))) # retry
+                @test PkgWasm.pkgwasm_main(["instantiate"]) == 1
             finally
                 rm(joinpath(src, "deps"); recursive = true)
-                Pkg.set_readonly(src)
+                PkgWasm.set_readonly(src)
             end
-            @test Pkg.instantiate(; io = devnull) === nothing
-            Pkg.activate(; io = devnull)
+            @test PkgWasm.instantiate(; io = devnull) === nothing
+            PkgWasm.activate(; io = devnull)
         end
     end
 
     @testset "D14 git through the git command line (the stock paths; see pkgwasm_git.jl)" begin
         # a clone that fails: stock's JULIA_PKG_USE_CLI_GIT error
-        err = capture_error(() -> Pkg.GitTools.clone(devnull, joinpath(mktempdir(), "no-such-repo"), mktempdir()))
-        @test err isa Pkg.Types.PkgError && startswith(err.msg, "The command `git clone")
+        err = capture_error(() -> PkgWasm.GitTools.clone(devnull, joinpath(mktempdir(), "no-such-repo"), mktempdir()))
+        @test err isa PkgWasm.Types.PkgError && startswith(err.msg, "The command `git clone")
         # status --diff: not a git repository gives stock's warning; a broken `.git` is a GitError
         # from opening the repository, as stock's LibGit2.GitError. Repository discovery
         # (discover_repo) walks up to the home directory; HOME is the test's own temp root.
@@ -268,13 +268,13 @@ end
             write(joinpath(dir, "Project.toml"), "[deps]\n")
             withenv("HOME" => root, "GIT_CEILING_DIRECTORIES" => root) do
                 @test homedir() == root
-                Pkg.activate(dir; io = devnull)
-                @test Pkg.discover_repo(dir) === nothing
-                @test_logs (:warn, r"diff option only available") match_mode = :any Pkg.status(; diff = true, io = IOBuffer())
+                PkgWasm.activate(dir; io = devnull)
+                @test PkgWasm.discover_repo(dir) === nothing
+                @test_logs (:warn, r"diff option only available") match_mode = :any PkgWasm.status(; diff = true, io = IOBuffer())
                 mkpath(joinpath(dir, ".git"))
-                @test Pkg.discover_repo(dir) == dir
-                @test capture_error(() -> Pkg.status(; diff = true, io = IOBuffer())) isa Pkg.GitCLI.GitError
-                Pkg.activate(; io = devnull)
+                @test PkgWasm.discover_repo(dir) == dir
+                @test capture_error(() -> PkgWasm.status(; diff = true, io = IOBuffer())) isa PkgWasm.GitCLI.GitError
+                PkgWasm.activate(; io = devnull)
             end
         end
     end
@@ -290,9 +290,9 @@ end
                     regdir = joinpath(depot, "registries")
                     mkpath(regdir)
                     write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
-                    @test isempty(Pkg.Registry.reachable_registries())
-                    Pkg.Registry.add("General"; io = devnull)
-                    regs = Pkg.Registry.reachable_registries()
+                    @test isempty(PkgWasm.Registry.reachable_registries())
+                    PkgWasm.Registry.add("General"; io = devnull)
+                    regs = PkgWasm.Registry.reachable_registries()
                     @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
                     @test isdir(joinpath(regdir, "General")) && !ispath(joinpath(regdir, "General.toml"))
                     # review-3: a damaged descriptor naming another file next to the installed
@@ -301,17 +301,17 @@ end
                     # no archive is deleted
                     write(joinpath(regdir, "Other.tar.gz"), "not ours")
                     write(joinpath(regdir, "General.toml"), "uuid = \"$GENERAL_UUID\"\npath = \"Other.tar.gz\"\n")
-                    regs = Pkg.Registry.reachable_registries()
+                    regs = PkgWasm.Registry.reachable_registries()
                     @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID && isdir(only(regs).path)
-                    Pkg.Registry.add("General"; io = devnull)
-                    regs = Pkg.Registry.reachable_registries()
+                    PkgWasm.Registry.add("General"; io = devnull)
+                    regs = PkgWasm.Registry.reachable_registries()
                     @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
                     @test read(joinpath(regdir, "Other.tar.gz"), String) == "not ours"
                     # a descriptor for a different registry with the same name is a conflict
                     rm(joinpath(regdir, "General"); recursive = true)
                     write(joinpath(regdir, "General.toml"), "uuid = \"$(uuid4())\"\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\npath = \"General.tar.gz\"\n")
-                    err = capture_error(() -> Pkg.Registry.add("General"; io = devnull))
-                    @test err isa Pkg.Types.PkgError && occursin("conflicts with the existing compressed registry descriptor", err.msg)
+                    err = capture_error(() -> PkgWasm.Registry.add("General"; io = devnull))
+                    @test err isa PkgWasm.Types.PkgError && occursin("conflicts with the existing compressed registry descriptor", err.msg)
                 finally
                     copy!(DEPOT_PATH, old)
                 end
@@ -322,7 +322,7 @@ end
     @testset "HTTP failure text equals stock (review-2 #4)" begin
         base, server = serve(path -> (404, ""))
         mktempdir() do dir
-            ef = capture_error(() -> Pkg.PlatformEngines.download("$base/missing", joinpath(dir, "f")))
+            ef = capture_error(() -> PkgWasm.PlatformEngines.download("$base/missing", joinpath(dir, "f")))
             es = capture_error(() -> Pkg.PlatformEngines.download("$base/missing", joinpath(dir, "s")))
             @test sprint(showerror, ef) == sprint(showerror, es)
             @test sprint(showerror, ef) == "RequestError: HTTP/1.1 404 Not Found while requesting $base/missing"
@@ -331,7 +331,7 @@ end
         close(server)
         # through a supported operation: the registry tarball is listed but missing
         base, server = serve(path -> path == "/registries" ? (200, "/registry/$GENERAL_UUID/0000000000000000000000000000000000000002\n") : (404, ""))
-        msgs = map((Pkg, Pkg)) do M
+        msgs = map((PkgWasm, Pkg)) do M
             mktempdir() do depot
                 old = copy(DEPOT_PATH)
                 copy!(DEPOT_PATH, [depot])
@@ -355,18 +355,18 @@ end
             write(joinpath(dir, "Project.toml"), "[deps]\n")
             write(joinpath(dir, "Artifacts.toml"), "[foo]\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\n")
             out = IOBuffer()
-            Pkg.activate(dir; io = out)
-            ctx = Pkg.Types.Context(; io = out)
-            Pkg.Operations.download_artifacts(ctx)
+            PkgWasm.activate(dir; io = out)
+            ctx = PkgWasm.Types.Context(; io = out)
+            PkgWasm.Operations.download_artifacts(ctx)
             s = String(take!(out))
             @test count("artifacts of 1 package(s) were not downloaded", s) == 1
-            @test Pkg.Operations.is_instantiated(ctx.env)
+            @test PkgWasm.Operations.is_instantiated(ctx.env)
             # public instantiate on an already-instantiated env still says so (review-2 #7)
             write(joinpath(dir, "Manifest.toml"), "julia_version = \"1.13.2\"\nmanifest_format = \"2.0\"\n\n[deps]\n")
             out = IOBuffer()
-            Pkg.instantiate(; io = out)
+            PkgWasm.instantiate(; io = out)
             @test count("artifacts of 1 package(s) were not downloaded", String(take!(out))) == 1
-            Pkg.activate(; io = devnull)
+            PkgWasm.activate(; io = devnull)
         end
     end
 
@@ -376,41 +376,41 @@ end
             write(joinpath(dir, "Project.toml"), "name = \"HasBuild\"\nuuid = \"$uuid\"\nversion = \"0.1.0\"\n")
             mkpath(joinpath(dir, "deps"))
             write(joinpath(dir, "deps", "build.jl"), "error(\"must not run\")\n")
-            Pkg.activate(dir; io = devnull)
-            ctx = Pkg.Types.Context(; io = devnull)
-            err = capture_error(() -> Pkg.Operations.build_versions(ctx, Set([uuid])))
-            @test err isa Pkg.Types.PkgError
+            PkgWasm.activate(dir; io = devnull)
+            ctx = PkgWasm.Types.Context(; io = devnull)
+            err = capture_error(() -> PkgWasm.Operations.build_versions(ctx, Set([uuid])))
+            @test err isa PkgWasm.Types.PkgError
             @test occursin("building packages is not supported in PkgWasm", sprint(showerror, err))
             @test occursin("HasBuild", sprint(showerror, err))
             # the whole environment is checked, not only the newly installed set (review-2 #1)
-            @test capture_error(() -> Pkg.Operations.build_versions(ctx, Set{UUID}())) isa Pkg.Types.PkgError
+            @test capture_error(() -> PkgWasm.Operations.build_versions(ctx, Set{UUID}())) isa PkgWasm.Types.PkgError
             rm(joinpath(dir, "deps"); recursive = true)
-            @test Pkg.Operations.build_versions(ctx, Set([uuid])) === nothing
-            Pkg.activate(; io = devnull)
+            @test PkgWasm.Operations.build_versions(ctx, Set([uuid])) === nothing
+            PkgWasm.activate(; io = devnull)
         end
     end
 
     @testset "D10 embedded stdlib data matches the install" begin
-        @test Pkg.STDLIB_DATA_JULIA_VERSION == VERSION
+        @test PkgWasm.STDLIB_DATA_JULIA_VERSION == VERSION
         # the stock reader (stdlib project files) and the embedded data agree
         stock = Pkg.Types.load_stdlib()
-        fork = Pkg.Types.load_stdlib()
+        fork = PkgWasm.Types.load_stdlib()
         @test keys(stock) == keys(fork)
         for (uuid, s) in stock
             f = fork[uuid]
             @test (f.name, f.version, Set(f.deps), Set(f.weakdeps)) == (s.name, s.version, Set(s.deps), Set(s.weakdeps))
         end
-        @test Pkg.Types.UPGRADABLE_STDLIBS_UUIDS == Pkg.Types.UPGRADABLE_STDLIBS_UUIDS
-        for e in Pkg.SYSIMAGE_PKGS
+        @test PkgWasm.Types.UPGRADABLE_STDLIBS_UUIDS == Pkg.Types.UPGRADABLE_STDLIBS_UUIDS
+        for e in PkgWasm.SYSIMAGE_PKGS
             id = Base.PkgId(UUID(e.uuid), e.name)
             @test Base.in_sysimage(id)
-            @test Pkg.Types.in_sysimage(id)
+            @test PkgWasm.Types.in_sysimage(id)
             @test string(Base.pkgorigins[id].version) == e.version
         end
-        @test !Pkg.Types.in_sysimage(Base.PkgId(EXAMPLE_UUID, "Example"))
+        @test !PkgWasm.Types.in_sysimage(Base.PkgId(EXAMPLE_UUID, "Example"))
         # regenerating gives the checked-in file
-        gen = read(`$(Base.julia_cmd()) --startup-file=no $(joinpath(pkgdir(Pkg), "contrib", "generate_stdlib_data.jl"))`, String)
-        @test gen == read(joinpath(pkgdir(Pkg), "src", "stdlib_data.jl"), String)
+        gen = read(`$(Base.julia_cmd()) --startup-file=no $(joinpath(pkgdir(PkgWasm), "contrib", "generate_stdlib_data.jl"))`, String)
+        @test gen == read(joinpath(pkgdir(PkgWasm), "src", "stdlib_data.jl"), String)
     end
 
     @testset "D10 no stdlib directory access (strace)" begin
@@ -421,29 +421,29 @@ end
             mktempdir() do dir
                 script = joinpath(dir, "probe.jl")
                 write(script, """
-                using Pkg
-                Pkg.activate($(repr(joinpath(dir, "env"))); io = devnull)
+                using PkgWasm
+                PkgWasm.activate($(repr(joinpath(dir, "env"))); io = devnull)
                 isfile("/pkgwasm-marker-begin")
-                Pkg.add(["Example", "Dates", "Pkg", "LinearAlgebra"]; io = devnull)
-                Pkg.status(; io = devnull)
-                Pkg.instantiate(; io = devnull)
-                Pkg.resolve(; io = devnull)
-                Pkg.rm("Dates"; io = devnull)
+                PkgWasm.add(["Example", "Dates", "Pkg", "LinearAlgebra"]; io = devnull)
+                PkgWasm.status(; io = devnull)
+                PkgWasm.instantiate(; io = devnull)
+                PkgWasm.resolve(; io = devnull)
+                PkgWasm.rm("Dates"; io = devnull)
                 # historical julia_version (review-2 #8): artifact scan must not probe stdlibs
-                push!(Pkg.Types.STDLIBS_BY_VERSION, v"1.13.1" => Pkg.Types.stdlib_infos())
-                ctx = Pkg.Types.Context(; io = devnull)
+                push!(PkgWasm.Types.STDLIBS_BY_VERSION, v"1.13.1" => PkgWasm.Types.stdlib_infos())
+                ctx = PkgWasm.Types.Context(; io = devnull)
                 ctx.julia_version = v"1.13.1"
-                Pkg.Operations.download_artifacts(ctx; julia_version = ctx.julia_version)
+                PkgWasm.Operations.download_artifacts(ctx; julia_version = ctx.julia_version)
                 isfile("/pkgwasm-marker-end")
                 """)
                 log = joinpath(dir, "strace.txt")
-                cmd = `$strace -f -qq -e trace=%file -o $log $(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(Pkg)) $script`
+                cmd = `$strace -f -qq -e trace=%file -o $log $(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(PkgWasm)) $script`
                 @test success(pipeline(cmd; stdout = devnull, stderr = devnull))
                 lines = readlines(log)
                 b = findfirst(l -> occursin("pkgwasm-marker-begin", l), lines)
                 e = findfirst(l -> occursin("pkgwasm-marker-end", l), lines)
                 @test b !== nothing && e !== nothing
-                stdlib = Pkg.stdlib_dir()
+                stdlib = PkgWasm.stdlib_dir()
                 hits = filter(l -> occursin(stdlib, l), lines[b:e])
                 @test isempty(hits)
                 isempty(hits) || foreach(println, first(hits, 10))
@@ -453,36 +453,36 @@ end
 
     @testset "D8 globals: sanitize and init" begin
         mktempdir() do dir
-            Pkg.activate(dir; io = devnull)
-            Pkg.status(; io = devnull) # fills registry/TOML/stdlib caches
-            @test !isempty(Pkg.Registry.REGISTRY_CACHE) || !isempty(Pkg.Registry.TOML_CACHE.d) || Pkg.Types.STDLIB[] !== nothing
-            Pkg.DEFAULT_IO[] = devnull
-            Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
+            PkgWasm.activate(dir; io = devnull)
+            PkgWasm.status(; io = devnull) # fills registry/TOML/stdlib caches
+            @test !isempty(PkgWasm.Registry.REGISTRY_CACHE) || !isempty(PkgWasm.Registry.TOML_CACHE.d) || PkgWasm.Types.STDLIB[] !== nothing
+            PkgWasm.DEFAULT_IO[] = devnull
+            PkgWasm.UPDATED_REGISTRY_THIS_SESSION[] = true
             sentinel = joinpath(dir, "sentinel.toml")
             write(sentinel, "secret = \"build-host\"\n")
-            Pkg.Types.parse_toml(sentinel)
-            Pkg.Registry._parsefile(sentinel)
+            PkgWasm.Types.parse_toml(sentinel)
+            PkgWasm.Registry._parsefile(sentinel)
             handler = (url, svr, err) -> error("must not run")
-            Pkg.PlatformEngines.register_auth_error_handler("https://", handler)
-            Pkg.sanitize_globals!()
-            for cache in (Pkg.Types.TOML_CACHE, Pkg.Registry.TOML_CACHE)
+            PkgWasm.PlatformEngines.register_auth_error_handler("https://", handler)
+            PkgWasm.sanitize_globals!()
+            for cache in (PkgWasm.Types.TOML_CACHE, PkgWasm.Registry.TOML_CACHE)
                 @test cache.p.str == "" && cache.p.filepath === nothing && isempty(cache.p.root)
             end
-            @test isempty(Pkg.PlatformEngines.AUTH_ERROR_HANDLERS)
-            @test Pkg.DEFAULT_IO[] === nothing
-            @test !Pkg.UPDATED_REGISTRY_THIS_SESSION[]
-            @test isempty(Pkg.Registry.REGISTRY_CACHE) && isempty(Pkg.Registry.TOML_CACHE.d) && isempty(Pkg.Types.TOML_CACHE.d)
-            @test Pkg.Types.STDLIB[] === nothing && isempty(Pkg.Types.UPGRADABLE_STDLIBS_UUIDS)
+            @test isempty(PkgWasm.PlatformEngines.AUTH_ERROR_HANDLERS)
+            @test PkgWasm.DEFAULT_IO[] === nothing
+            @test !PkgWasm.UPDATED_REGISTRY_THIS_SESSION[]
+            @test isempty(PkgWasm.Registry.REGISTRY_CACHE) && isempty(PkgWasm.Registry.TOML_CACHE.d) && isempty(PkgWasm.Types.TOML_CACHE.d)
+            @test PkgWasm.Types.STDLIB[] === nothing && isempty(PkgWasm.Types.UPGRADABLE_STDLIBS_UUIDS)
             withenv("JULIA_PKG_OFFLINE" => "true") do
-                @test Pkg.pkgwasm_init() == 0
-                @test Pkg.OFFLINE_MODE[]
+                @test PkgWasm.pkgwasm_init() == 0
+                @test PkgWasm.OFFLINE_MODE[]
             end
-            @test Pkg.pkgwasm_init() == 0
-            @test !Pkg.OFFLINE_MODE[]
+            @test PkgWasm.pkgwasm_init() == 0
+            @test !PkgWasm.OFFLINE_MODE[]
             # caches rebuild transparently
-            @test Pkg.pkgwasm_main(["status"]) == 0
-            @test Pkg.Types.is_stdlib(UUID("ade2ca70-3891-5945-98fb-dc099432e06a"))
-            Pkg.activate(; io = devnull)
+            @test PkgWasm.pkgwasm_main(["status"]) == 0
+            @test PkgWasm.Types.is_stdlib(UUID("ade2ca70-3891-5945-98fb-dc099432e06a"))
+            PkgWasm.activate(; io = devnull)
         end
     end
 
@@ -505,19 +505,19 @@ end
             write(joinpath(r, "E", "Example", "Package.toml"), "name = \"Example\"\nuuid = \"$EXAMPLE_UUID\"\nrepo = \"https://pkgwasm-sentinel.invalid/Example.jl.git\"\n")
             write(joinpath(r, "E", "Example", "Versions.toml"), "[\"9.9.9\"]\ngit-tree-sha1 = \"0000000000000000000000000000000000000000\"\n")
             write(joinpath(r, ".tree_info.toml"), "git-tree-sha1 = \"bf156f1d33580ac1fadbb60976e2a8577a66ed42\"\n")
-            regs = Pkg.Registry.reachable_registries(; depots = [depot])
+            regs = PkgWasm.Registry.reachable_registries(; depots = [depot])
             for reg in regs, (uuid, pkg) in reg
-                Pkg.Registry.registry_info(pkg) # (Pkg 1.12: registry_info(pkg))
+                PkgWasm.Registry.registry_info(pkg) # (Pkg 1.12: registry_info(pkg))
             end
-            @test !isempty(Pkg.Registry.REGISTRY_CACHE)
-            Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
-            Pkg.OFFLINE_MODE[] = true
-            Pkg.DEFAULT_IO[] = IOBuffer("pkgwasm-sentinel-io")
-            Pkg.PREV_ENV_PATH[] = joinpath(root, "pkgwasm-sentinel-prev")
-            Pkg.PlatformEngines.EXE7Z[] = joinpath(root, "pkgwasm-sentinel-7z")
-            Pkg.PlatformEngines.register_auth_error_handler("https://pkgwasm-sentinel", (u, s, e) -> nothing)
-            Pkg.Types.parse_toml(joinpath(r, "Registry.toml"))
-            Pkg.GitTools.GIT_USERS["pkgwasm-sentinel"] = "x"
+            @test !isempty(PkgWasm.Registry.REGISTRY_CACHE)
+            PkgWasm.UPDATED_REGISTRY_THIS_SESSION[] = true
+            PkgWasm.OFFLINE_MODE[] = true
+            PkgWasm.DEFAULT_IO[] = IOBuffer("pkgwasm-sentinel-io")
+            PkgWasm.PREV_ENV_PATH[] = joinpath(root, "pkgwasm-sentinel-prev")
+            PkgWasm.PlatformEngines.EXE7Z[] = joinpath(root, "pkgwasm-sentinel-7z")
+            PkgWasm.PlatformEngines.register_auth_error_handler("https://pkgwasm-sentinel", (u, s, e) -> nothing)
+            PkgWasm.Types.parse_toml(joinpath(r, "Registry.toml"))
+            PkgWasm.GitTools.GIT_USERS["pkgwasm-sentinel"] = "x"
             markers = ["DECOY registry from the build host", "decoy-General.git", "pkgwasm-sentinel", root]
 
             function reachable_markers(roots)
@@ -557,7 +557,7 @@ end
             end
             function pkgwasm_global_values()
                 vals = Any[]
-                mods = Module[Pkg]
+                mods = Module[PkgWasm]
                 while !isempty(mods)
                     m = pop!(mods)
                     for n in names(m; all = true, imported = false)
@@ -574,15 +574,15 @@ end
                 return vals
             end
             @test !isempty(reachable_markers(pkgwasm_global_values())) # the walker sees the poison
-            Pkg.sanitize_globals!()
+            PkgWasm.sanitize_globals!()
             @test isempty(reachable_markers(pkgwasm_global_values()))
-            @test !Pkg.UPDATED_REGISTRY_THIS_SESSION[] && !Pkg.OFFLINE_MODE[]
-            @test Pkg.HOST_PLATFORM[] === Pkg.HOST_PLATFORM_PLACEHOLDER
+            @test !PkgWasm.UPDATED_REGISTRY_THIS_SESSION[] && !PkgWasm.OFFLINE_MODE[]
+            @test PkgWasm.HOST_PLATFORM[] === PkgWasm.HOST_PLATFORM_PLACEHOLDER
             # idempotent, and init restores a usable session
-            Pkg.sanitize_globals!()
+            PkgWasm.sanitize_globals!()
             @test isempty(reachable_markers(pkgwasm_global_values()))
-            @test Pkg.pkgwasm_init() == 0
-            @test Pkg.host_platform() isa Base.BinaryPlatforms.Platform
+            @test PkgWasm.pkgwasm_init() == 0
+            @test PkgWasm.host_platform() isa Base.BinaryPlatforms.Platform
         end
     end
 
@@ -621,12 +621,12 @@ end
             mkpath(regdir)
             tar = Pkg.Registry.Tar.create(src)
             hash = Pkg.Registry.Tar.tree_hash(tar)
-            run(pipeline(`$(Pkg.PlatformEngines.exe7z()) a -tgzip $(joinpath(regdir, "Mini.tar.gz")) $tar`; stdout = devnull))
+            run(pipeline(`$(PkgWasm.PlatformEngines.exe7z()) a -tgzip $(joinpath(regdir, "Mini.tar.gz")) $tar`; stdout = devnull))
             desc = joinpath(regdir, "Mini.toml")
             write(desc, "git-tree-sha1 = \"$hash\"\npath = \"Mini.tar.gz\"\nuuid = \"$mini_uuid\"\n")
             before = Dict(f => read(joinpath(regdir, f)) for f in readdir(regdir))
             stock = only(Pkg.Registry.reachable_registries(; depots = [depot]))
-            ours = only(Pkg.Registry.reachable_registries(; depots = [depot]))
+            ours = only(PkgWasm.Registry.reachable_registries(; depots = [depot]))
             @test ours.path == stock.path == desc
             @test ours.tree_info == stock.tree_info == Base.SHA1(hash)
             @test ours.in_memory_registry isa Dict{String, String} # (Pkg 1.12 keeps no compressed_file field)
@@ -634,7 +634,7 @@ end
             @test ours.in_memory_registry == stock.in_memory_registry  # (before package info frees entries)
             @test sort!(collect(keys(ours))) == sort!(collect(keys(stock))) == sort!([foo_uuid, bar_uuid])
             si = Pkg.Registry.registry_info(stock[foo_uuid])
-            oi = Pkg.Registry.registry_info(ours[foo_uuid])
+            oi = PkgWasm.Registry.registry_info(ours[foo_uuid])
             @test oi.repo == si.repo
             @test Dict(k => (v.git_tree_sha1, v.yanked) for (k, v) in oi.version_info) ==
                 Dict(k => (v.git_tree_sha1, v.yanked) for (k, v) in si.version_info)
@@ -658,19 +658,19 @@ end
                         P.Operations.resolve_versions!(e, P.Registry.reachable_registries(; depots = [depot]), pkgs, VERSION, false)
                         return Dict(p.uuid => (p.version, p.tree_hash) for p in pkgs)
                     end
-                    @test resolved(Pkg) == resolved(Pkg) == Dict(foo_uuid => (v"0.1.0", Base.SHA1(repeat("1", 40))))
-                    Pkg.activate(env; io = devnull)
-                    @test Pkg.pkgwasm_main(["status"]) == 0
+                    @test resolved(PkgWasm) == resolved(Pkg) == Dict(foo_uuid => (v"0.1.0", Base.SHA1(repeat("1", 40))))
+                    PkgWasm.activate(env; io = devnull)
+                    @test PkgWasm.pkgwasm_main(["status"]) == 0
                 end
             finally
                 copy!(DEPOT_PATH, old)
-                Pkg.activate(; io = devnull)
+                PkgWasm.activate(; io = devnull)
             end
             # the depot is left as stock wrote it: descriptor and tarball unchanged, nothing added
             @test Dict(f => read(joinpath(regdir, f)) for f in readdir(regdir)) == before
             # without a Pkg server, stock ignores descriptors and so does PkgWasm
             withenv("JULIA_PKG_SERVER" => "") do
-                @test isempty(Pkg.Registry.reachable_registries(; depots = [depot]))
+                @test isempty(PkgWasm.Registry.reachable_registries(; depots = [depot]))
             end
         end
     end
@@ -681,13 +681,13 @@ end
             copy!(DEPOT_PATH, [depot])
             try
                 withenv("JULIA_PKG_UNPACK_REGISTRY" => nothing) do
-                    Pkg.Registry.add("General"; io = devnull)
+                    PkgWasm.Registry.add("General"; io = devnull)
                     regdir = joinpath(depot, "registries")
-                    desc = Pkg.TOML.parsefile(joinpath(regdir, "General.toml"))
+                    desc = PkgWasm.TOML.parsefile(joinpath(regdir, "General.toml"))
                     @test desc["uuid"] == string(GENERAL_UUID)
                     @test isfile(joinpath(regdir, desc["path"]))
                     @test !isdir(joinpath(regdir, "General"))
-                    regs = Pkg.Registry.reachable_registries()
+                    regs = PkgWasm.Registry.reachable_registries()
                     @test length(regs) == 1 && only(regs).uuid == GENERAL_UUID
                     @test string(only(regs).tree_info) == desc["git-tree-sha1"]
                     @test haskey(only(regs).pkgs, EXAMPLE_UUID) # read in memory
@@ -711,11 +711,11 @@ end
                 f = joinpath(dir, "Project$i.toml")
                 write(f, "name = \"X\"\nuuid = \"$(uuid4())\"\n\n[extensions]\n$exts\n")
                 s = capture_error(() -> Pkg.Types.read_project(f).exts)
-                w = capture_error(() -> Pkg.Types.read_project(f).exts)
+                w = capture_error(() -> PkgWasm.Types.read_project(f).exts)
                 @test typeof(s) == typeof(w)
                 @test (s === nothing) == (w === nothing)
                 if s === nothing
-                    ps, pw = Pkg.Types.read_project(f), Pkg.Types.read_project(f)
+                    ps, pw = Pkg.Types.read_project(f), PkgWasm.Types.read_project(f)
                     @test ps.exts == pw.exts && typeof(ps.exts) == typeof(pw.exts)
                 else
                     @test sprint(showerror, s) == sprint(showerror, w)
@@ -733,12 +733,12 @@ end
                 withenv("JULIA_DEPOT_PATH" => depot * ":") do
                     copy!(DEPOT_PATH, [depot])
                     try
-                        Pkg.Registry.add("General"; io = devnull)
+                        PkgWasm.Registry.add("General"; io = devnull)
                         regdir = joinpath(depot, "registries", "General")
                         @test isfile(joinpath(regdir, "Registry.toml"))
                         @test !ispath(joinpath(depot, "registries", "General.toml"))
-                        info = Pkg.TOML.parsefile(joinpath(regdir, ".tree_info.toml"))
-                        regs = Pkg.Registry.reachable_registries()
+                        info = PkgWasm.TOML.parsefile(joinpath(regdir, ".tree_info.toml"))
+                        regs = PkgWasm.Registry.reachable_registries()
                         @test length(regs) == 1
                         reg = only(regs)
                         @test reg.uuid == GENERAL_UUID
@@ -746,14 +746,14 @@ end
                         @test string(reg.tree_info) == info["git-tree-sha1"]
                         # the extracted tree hashes to the recorded identity
                         rm(joinpath(regdir, ".tree_info.toml"))
-                        @test Pkg.GitTools.tree_hash(regdir) == hex2bytes(info["git-tree-sha1"])
+                        @test PkgWasm.GitTools.tree_hash(regdir) == hex2bytes(info["git-tree-sha1"])
                         # a tree-hash mismatch is rejected and nothing is extracted
-                        server = Pkg.pkg_server()
+                        server = PkgWasm.pkg_server()
                         url = "$server/registry/$GENERAL_UUID/$(info["git-tree-sha1"])"
                         bad = Base.SHA1("0000000000000000000000000000000000000000")
                         target = mktempdir()
-                        err = capture_error(() -> Pkg.Registry.download_registry_dir(url, bad, target))
-                        @test err isa Pkg.Types.PkgError
+                        err = capture_error(() -> PkgWasm.Registry.download_registry_dir(url, bad, target))
+                        @test err isa PkgWasm.Types.PkgError
                         @test occursin("expected $bad", sprint(showerror, err))
                         @test isempty(readdir(target))
                     finally

@@ -243,7 +243,7 @@ function version_info_entry(@nospecialize(v))
     if v isa Dict{String, Any}
         return VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)
     end
-    Pkg.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
+    PkgWasm.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
     return Base.inferencebarrier(v -> VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool))(v)::VersionInfo
 end
 
@@ -394,9 +394,9 @@ end
 # (`RegistryTarIndex`: at the top of this file)
 const REGISTRY_CACHE_MAGIC = "pkgwasm-registry-cache-v2"
 
-registry_cache_enabled() = Base.get_bool_env("JULIA_PKG_REGISTRY_CACHE", Pkg.WASM_TARGET) === true
+registry_cache_enabled() = Base.get_bool_env("JULIA_PKG_REGISTRY_CACHE", PkgWasm.WASM_TARGET) === true
 
-registry_cache_dir() = joinpath(Pkg.depots1(), "scratchspaces", "44cfe95a-1eb2-52ea-b672-e2afdf69b78f", "registry_cache")
+registry_cache_dir() = joinpath(PkgWasm.depots1(), "scratchspaces", "44cfe95a-1eb2-52ea-b672-e2afdf69b78f", "registry_cache")
 
 # The identity of the compressed tarball, as recorded in (and checked against) the index
 # header; the path is the last field.
@@ -482,7 +482,7 @@ function write_registry_cache(dir::String, tree_info::Base.SHA1, source::String,
     tmp_idx = joinpath(dir, string(gen, ".idx.partial"))
     published = false
     try
-        Pkg.Host.decompress(compressed_tar, tar)
+        PkgWasm.Host.decompress(compressed_tar, tar)
         entries = Dict{String, Tuple{Int64, Int64}}()
         buf = Vector{UInt8}(undef, Tar.DEFAULT_BUFFER_SIZE)
         open(tar) do io

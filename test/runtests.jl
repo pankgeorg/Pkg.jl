@@ -10,7 +10,7 @@ using Test
 # The test files activate temporary environments; each starts from the project this was run with.
 const TEST_PROJECT = Base.ACTIVE_PROJECT[]
 
-@testset "Pkg" begin
+@testset "PkgWasm" begin
     for file in ("pkgwasm_m31.jl", "pkgwasm_m32.jl", "pkgwasm_registry.jl", "pkgwasm_resolve.jl", "toml_writer.jl", "typed_copies.jl", "typed_equality.jl", "wasm_paths.jl", "status_order.jl", "d9_target.jl", "pkgwasm_request.jl", "pkgwasm_git.jl", "s2_tasks.jl", "stock_runner.jl")
         @testset "$file" begin
             Base.ACTIVE_PROJECT[] = TEST_PROJECT

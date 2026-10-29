@@ -3,11 +3,11 @@
 module TOMLWriterTests
 using Test, Random, Dates, UUIDs
 import TOML
-const PKGWASM_ID = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
-const Pkg = let m = Base.maybe_root_module(PKGWASM_ID)
+const PKGWASM_ID = Base.PkgId(Base.UUID("d562cdc0-5c7a-524d-b497-bb1ca2727331"), "PkgWasm")
+const PkgWasm = let m = Base.maybe_root_module(PKGWASM_ID)
     m === nothing ? Base.require(PKGWASM_ID) : m
 end
-const W = Pkg.TOMLWriter
+const W = PkgWasm.TOMLWriter
 
 outcome(f) = try
     (:ok, f())
@@ -79,22 +79,22 @@ end
         for file in TOML_FILES
             base = basename(file)
             if startswith(base, "Project") || startswith(base, "JuliaProject")
-                p = try Pkg.Types.read_project(file) catch; continue end
-                rawp = try Pkg.Types.destructure(p) catch; continue end  # (as stock: some fixtures are invalid)
-                ours = sprint(Pkg.Types.write_project, rawp)
+                p = try PkgWasm.Types.read_project(file) catch; continue end
+                rawp = try PkgWasm.Types.destructure(p) catch; continue end  # (as stock: some fixtures are invalid)
+                ours = sprint(PkgWasm.Types.write_project, rawp)
                 # stock's writer, with an IdSet of the inline tables
                 inline_tables = idset(haskey(rawp, "sources") ? collect(values(rawp["sources"])) : [])
                 theirs = sprint(io -> TOML.print(io, rawp; inline_tables, sorted = true,
-                                                 by = key -> (Pkg.Types.project_key_order(key), key)) do x
+                                                 by = key -> (PkgWasm.Types.project_key_order(key), key)) do x
                     x isa UUID || x isa VersionNumber || error("unhandled type `$(typeof(x))`")
                     string(x)
                 end)
                 @test ours == theirs
                 n += 1
             elseif startswith(base, "Manifest") || startswith(base, "JuliaManifest")
-                m = try Pkg.Types.read_manifest(file) catch; continue end
-                rawm = try Pkg.Types.destructure(m) catch; continue end  # (unknown manifest formats, as stock)
-                ours = sprint(Pkg.Types.write_manifest, rawm)
+                m = try PkgWasm.Types.read_manifest(file) catch; continue end
+                rawm = try PkgWasm.Types.destructure(m) catch; continue end  # (unknown manifest formats, as stock)
+                ours = sprint(PkgWasm.Types.write_manifest, rawm)
                 theirs = "# This file is machine-generated - editing it directly is not advised\n\n" *
                          sprint(io -> TOML.print(tostr, io, rawm; sorted = true))
                 @test ours == theirs
@@ -125,7 +125,7 @@ end
             inner = Dict{String, Any}("a" => 1)
             data = Dict{String, Any}("x" => inner, "y" => Dict{String, Any}("b" => 2))
             stock.atomic_toml_write(joinpath(dir, "stock.toml"), data; inline_tables = Base.IdSet{Dict}([inner]))
-            Pkg.atomic_toml_write(joinpath(dir, "fork.toml"), data; inline_tables = Base.IdSet{Dict}([inner]))
+            PkgWasm.atomic_toml_write(joinpath(dir, "fork.toml"), data; inline_tables = Base.IdSet{Dict}([inner]))
             @test read(joinpath(dir, "fork.toml"), String) == read(joinpath(dir, "stock.toml"), String)
             @test occursin("x = {a = 1}", read(joinpath(dir, "fork.toml"), String))
         end

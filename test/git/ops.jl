@@ -12,8 +12,8 @@ const P = if which == "stock"
     Pkg
 else
     push!(LOAD_PATH, pkgwasm_dir)
-    using Pkg
-    Pkg
+    using PkgWasm
+    PkgWasm
 end
 using SHA, TOML
 include(joinpath(@__DIR__, "fixture.jl"))

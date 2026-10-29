@@ -81,8 +81,8 @@ module PkgTestsInner
     original_wd = pwd()
 
     if TARGET == "pkgwasm"
-        import Pkg
-        const Pkg = Pkg
+        import PkgWasm
+        const Pkg = PkgWasm
     else
         import Pkg
     end
@@ -92,14 +92,14 @@ module PkgTestsInner
 
     # `Pkg` -> `PkgWasm` in import paths; nested `include`s get the same rewrite.
     rewrite_path(p) = (p isa Expr && p.head === :. && !isempty(p.args) && p.args[1] === :Pkg) ?
-        Expr(:., :Pkg, p.args[2:end]...) : p
+        Expr(:., :PkgWasm, p.args[2:end]...) : p
     function rewrite_import(ex::Expr)
         if ex.head === :using && !any(a -> a isa Expr && a.head === :(:), ex.args)
             # `using A, B, ...`: one statement per module, so the others stay `using`
             stmts = Any[]
             for a in ex.args
                 if a == Expr(:., :Pkg) # `using Pkg` binds `Pkg` and brings the exported names
-                    push!(stmts, Expr(:import, Expr(:as, Expr(:., :Pkg), :Pkg)), Expr(:using, Expr(:., :Pkg)))
+                    push!(stmts, Expr(:import, Expr(:as, Expr(:., :PkgWasm), :Pkg)), Expr(:using, Expr(:., :PkgWasm)))
                 elseif a isa Expr && a.head === :. && length(a.args) > 1 && a.args[1] === :. && a.args[end] === :Pkg
                     # `using ..Pkg` binds the module's own name (`PkgWasm`); bind `Pkg` as well
                     push!(stmts, Expr(:using, a), Expr(:import, a))
@@ -116,7 +116,7 @@ module PkgTestsInner
             elseif a isa Expr && a.head === :as
                 Expr(:as, rewrite_path(a.args[1]), a.args[2])
             elseif a == Expr(:., :Pkg) # bare `import Pkg` must still bind the name `Pkg`
-                Expr(:as, Expr(:., :Pkg), :Pkg)
+                Expr(:as, Expr(:., :PkgWasm), :Pkg)
             else
                 rewrite_path(a)
             end
@@ -126,7 +126,7 @@ module PkgTestsInner
     # HistoricalStdlibVersions fills in the tables of the module it loads as `Pkg` (stock Pkg);
     # its register!/unregister! are pointed at PkgWasm's tables instead.
     function retarget_hsv!(HSV::Module)
-        T = Pkg.Types
+        T = PkgWasm.Types
         conv(d) = T.DictStdLibs(u => T.StdlibInfo(i.name, i.uuid, i.version, i.deps, i.weakdeps) for (u, i) in d)
         Core.eval(HSV, :(unregister!() = (empty!($T.STDLIBS_BY_VERSION); empty!($T.UNREGISTERED_STDLIBS); nothing)))
         Core.eval(HSV, :(register!() = (unregister!();

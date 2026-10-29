@@ -7,25 +7,25 @@
 
 using Test
 import Pkg
-import Pkg
+import PkgWasm
 using UUIDs
 import Sockets
 
-const FORK_UUID = UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
+const FORK_UUID = UUID("d562cdc0-5c7a-524d-b497-bb1ca2727331")
 const STOCK_UUID = UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f")
 const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
 
 @testset "PkgWasm M3.1" begin
     @testset "loads next to stock Pkg" begin
-        @test Pkg !== Pkg
-        @test nameof(Pkg) === :Pkg
-        @test Base.PkgId(Pkg) == Base.PkgId(FORK_UUID, "Pkg")
+        @test PkgWasm !== Pkg
+        @test nameof(PkgWasm) === :PkgWasm
+        @test Base.PkgId(PkgWasm) == Base.PkgId(FORK_UUID, "PkgWasm")
         @test Base.PkgId(Pkg) == Base.PkgId(STOCK_UUID, "Pkg")
-        @test parentmodule(Pkg.Types) === Pkg
-        @test Pkg.Operations.PkgUUID == string(FORK_UUID)
+        @test parentmodule(PkgWasm.Types) === PkgWasm
+        @test PkgWasm.Operations.PkgUUID == string(FORK_UUID)
         # stdlib Pkg is still an ordinary stdlib to the fork
-        @test Pkg.Types.is_stdlib(STOCK_UUID)
-        @test Pkg.pkgwasm_abi_version() === Int32(3)
+        @test PkgWasm.Types.is_stdlib(STOCK_UUID)
+        @test PkgWasm.pkgwasm_abi_version() === Int32(3)
     end
 
     @testset "add Example" begin
@@ -33,34 +33,34 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
             proj = joinpath(dir, "env")
             mkpath(proj)
             out = IOBuffer()
-            Pkg.activate(proj; io = out)
-            Pkg.add("Example"; io = out)
-            m = Pkg.TOML.parsefile(joinpath(proj, "Manifest.toml"))
+            PkgWasm.activate(proj; io = out)
+            PkgWasm.add("Example"; io = out)
+            m = PkgWasm.TOML.parsefile(joinpath(proj, "Manifest.toml"))
             @test haskey(m["deps"], "Example")
             @test m["deps"]["Example"][1]["uuid"] == string(EXAMPLE_UUID)
-            @test Pkg.TOML.parsefile(joinpath(proj, "Project.toml"))["deps"] == Dict("Example" => string(EXAMPLE_UUID))
+            @test PkgWasm.TOML.parsefile(joinpath(proj, "Project.toml"))["deps"] == Dict("Example" => string(EXAMPLE_UUID))
             # a dependency on the stdlib Pkg is the real Pkg, not the fork
-            Pkg.add("Pkg"; io = out)
-            m = Pkg.TOML.parsefile(joinpath(proj, "Manifest.toml"))
+            PkgWasm.add("Pkg"; io = out)
+            m = PkgWasm.TOML.parsefile(joinpath(proj, "Manifest.toml"))
             @test m["deps"]["Pkg"][1]["uuid"] == string(STOCK_UUID)
-            @test !haskey(m["deps"], "Pkg")
-            Pkg.rm("Pkg"; io = out)
+            @test !haskey(m["deps"], "PkgWasm")
+            PkgWasm.rm("Pkg"; io = out)
             # and stock Pkg reads the result identically
             Pkg.activate(proj; io = devnull)
             @test haskey(Pkg.dependencies(), EXAMPLE_UUID)
             Pkg.activate(; io = devnull)
-            Pkg.activate(; io = devnull)
+            PkgWasm.activate(; io = devnull)
         end
     end
 
     @testset "Host seam (native)" begin
-        Host = Pkg.Host
+        Host = PkgWasm.Host
         mktempdir() do dir
             payload = repeat("PkgWasm host seam\n", 1000)
             raw = joinpath(dir, "raw")
             write(raw, payload)
             for (fmt, cmd) in (
-                    ("gz", `$(Pkg.PlatformEngines.exe7z()) a -tgzip $(raw).gz $raw`),
+                    ("gz", `$(PkgWasm.PlatformEngines.exe7z()) a -tgzip $(raw).gz $raw`),
                 )
                 run(pipeline(cmd; stdout = devnull))
                 out = joinpath(dir, "out-$fmt")
@@ -116,7 +116,7 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
                 end
             end
 
-            server = Pkg.pkg_server()
+            server = PkgWasm.pkg_server()
             dest = joinpath(dir, "registries")
             r = Host.download(server * "/registries", dest, Pair{String, String}[])
             @test r.status == 200
@@ -137,7 +137,7 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
     end
 
     @testset "Host.download redirect limit and cleanup (local server)" begin
-        Host = Pkg.Host
+        Host = PkgWasm.Host
         # minimal HTTP/1.1 server: /r/<n> redirects to /r/<n-1>, /r/0 is 200, /404 is 404
         server = Sockets.listen(Sockets.localhost, 0)
         port = Int(Sockets.getsockname(server)[2])
@@ -210,45 +210,45 @@ const EXAMPLE_UUID = UUID("7876af07-990d-54b4-ab0e-23690620f79a")
     end
 
     @testset "Host.init_runtime seam runs first in pkgwasm_init" begin
-        @test Pkg.Host.init_runtime() === nothing
+        @test PkgWasm.Host.init_runtime() === nothing
         # stand-in for the Wasm patch: init_runtime sets up the environment the PkgWasm globals
         # are then read from, so init_globals! must see what it did
-        @eval Pkg.Host init_runtime() = (ENV["JULIA_PKG_OFFLINE"] = "true"; nothing)
+        @eval PkgWasm.Host init_runtime() = (ENV["JULIA_PKG_OFFLINE"] = "true"; nothing)
         try
             withenv("JULIA_PKG_OFFLINE" => nothing) do
-                @test Pkg.pkgwasm_init() == 0
-                @test Pkg.OFFLINE_MODE[]
+                @test PkgWasm.pkgwasm_init() == 0
+                @test PkgWasm.OFFLINE_MODE[]
             end
         finally
-            @eval Pkg.Host init_runtime() = nothing
-            Pkg.pkgwasm_init()
+            @eval PkgWasm.Host init_runtime() = nothing
+            PkgWasm.pkgwasm_init()
         end
-        @test !Pkg.OFFLINE_MODE[]
+        @test !PkgWasm.OFFLINE_MODE[]
         # a failing init_runtime is reported as an init error (exit status 1)
-        @eval Pkg.Host init_runtime() = error("runtime init failed")
+        @eval PkgWasm.Host init_runtime() = error("runtime init failed")
         try
-            @test Pkg.pkgwasm_init() == 1
+            @test PkgWasm.pkgwasm_init() == 1
         finally
-            @eval Pkg.Host init_runtime() = nothing
-            Pkg.pkgwasm_init()
+            @eval PkgWasm.Host init_runtime() = nothing
+            PkgWasm.pkgwasm_init()
         end
     end
 
     @testset "entry point driver" begin
         mktempdir() do dir
             withenv("JULIA_PROJECT" => nothing) do
-                Pkg.activate(dir; io = devnull)
-                @test Pkg.pkgwasm_init() == 0
-                @test Pkg.pkgwasm_main(["add", "Example"]) == 0
-                @test Pkg.pkgwasm_main(["status"]) == 0
-                @test Pkg.pkgwasm_main(["rm", "Example"]) == 0
-                @test Pkg.pkgwasm_main(["frobnicate"]) == 1
-                @test Pkg.pkgwasm_main(String[]) == 1
+                PkgWasm.activate(dir; io = devnull)
+                @test PkgWasm.pkgwasm_init() == 0
+                @test PkgWasm.pkgwasm_main(["add", "Example"]) == 0
+                @test PkgWasm.pkgwasm_main(["status"]) == 0
+                @test PkgWasm.pkgwasm_main(["rm", "Example"]) == 0
+                @test PkgWasm.pkgwasm_main(["frobnicate"]) == 1
+                @test PkgWasm.pkgwasm_main(String[]) == 1
                 # the failures above must be reported PkgErrors, not incidental exceptions
-                @test_throws Pkg.Types.PkgError Pkg.run_command(["frobnicate"])
-                @test_throws Pkg.Types.PkgError Pkg.run_command(String[])
-                @test_throws Pkg.Types.PkgError Pkg.run_command(["add"])
-                Pkg.activate(; io = devnull)
+                @test_throws PkgWasm.Types.PkgError PkgWasm.run_command(["frobnicate"])
+                @test_throws PkgWasm.Types.PkgError PkgWasm.run_command(String[])
+                @test_throws PkgWasm.Types.PkgError PkgWasm.run_command(["add"])
+                PkgWasm.activate(; io = devnull)
             end
         end
     end

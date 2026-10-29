@@ -4,11 +4,11 @@
 module TypedCopiesTests
 using Test, Dates
 import TOML
-const PKGWASM_ID = Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg")
-const Pkg = let m = Base.maybe_root_module(PKGWASM_ID)
+const PKGWASM_ID = Base.PkgId(Base.UUID("d562cdc0-5c7a-524d-b497-bb1ca2727331"), "PkgWasm")
+const PkgWasm = let m = Base.maybe_root_module(PKGWASM_ID)
     m === nothing ? Base.require(PKGWASM_ID) : m
 end
-const T = Pkg.Types
+const T = PkgWasm.Types
 
 # every mutable object reachable from x (through fields and elements)
 function mutables!(seen::Base.IdSet{Any}, x)
@@ -89,8 +89,8 @@ end
     @test nm > 20
     # copy_packagespecs (API's deepcopy(pkgs)): equal fields, nothing mutable shared with the
     # input, and what is shared in the input shared in the copy
-    PS = Pkg.Types.PackageSpec
-    a = PS(name = "A", version = Pkg.Versions.VersionSpec("1.2")); b = PS(name = "B", url = "u", rev = "r")
+    PS = PkgWasm.Types.PackageSpec
+    a = PS(name = "A", version = PkgWasm.Versions.VersionSpec("1.2")); b = PS(name = "B", url = "u", rev = "r")
     b.repo = a.repo
     pkgs = [a, b, a]
     c, d = T.copy_packagespecs(pkgs), deepcopy(pkgs)

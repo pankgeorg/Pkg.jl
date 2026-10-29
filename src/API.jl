@@ -1,7 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module API
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Printf
@@ -14,7 +14,7 @@ import FileWatching
 import Base: StaleCacheKey
 
 import ..depots, ..depots1, ..logdir, ..devdir, ..printpkgstyle, ..manifest_rel_path
-import ..Operations, ..GitTools, ..Pkg, ..Registry
+import ..Operations, ..GitTools, ..PkgWasm, ..Registry
 
 # PkgWasm (PLAN.md D4): public operations outside the supported set throw this.
 unsupported(op::String) = pkgerror(op, " is not supported in PkgWasm")
@@ -171,8 +171,8 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
             pkgs = Types.copy_packagespecs(pkgs) # don't mutate input (deepcopy's, typed: M4.2)
             foreach(handle_package_input!, pkgs)
             ret = $f(ctx, pkgs; kwargs...)
-            $(f in (:up, :pin, :free, :build)) && Pkg._auto_precompile(ctx)
-            $(f in (:up, :pin, :free, :rm)) && Pkg._auto_gc(ctx)
+            $(f in (:up, :pin, :free, :build)) && PkgWasm._auto_precompile(ctx)
+            $(f in (:up, :pin, :free, :rm)) && PkgWasm._auto_gc(ctx)
             return ret
         end
         $f(ctx::Context; kwargs...) = $f(ctx, PackageSpec[]; kwargs...)
@@ -248,7 +248,7 @@ end
 
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool = true,
-        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = Pkg.host_platform(), kwargs...
+        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = PkgWasm.host_platform(), kwargs...
     )
     require_not_empty(pkgs, :develop)
     Context!(ctx; kwargs...)
@@ -301,7 +301,7 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}; preserve::PreserveLevel = Operations.default_preserve(),
-        platform::AbstractPlatform = Pkg.host_platform(), target::Symbol = :deps, allow_autoprecomp::Bool = true, kwargs...
+        platform::AbstractPlatform = PkgWasm.host_platform(), target::Symbol = :deps, allow_autoprecomp::Bool = true, kwargs...
     )
     require_not_empty(pkgs, :add)
     Context!(ctx; kwargs...)
@@ -687,10 +687,10 @@ function gc(ctx::Context = Context(); collect_delay::Period = Day(7), verbose = 
         end
     end
 
-    all_manifest_tomls = Set(filter(Pkg.isfile_nothrow, all_manifest_tomls))
-    all_artifact_tomls = Set(filter(Pkg.isfile_nothrow, all_artifact_tomls))
-    all_scratch_dirs = Set(filter(Pkg.isdir_nothrow, all_scratch_dirs))
-    all_scratch_parents = Set(filter(Pkg.isfile_nothrow, all_scratch_parents))
+    all_manifest_tomls = Set(filter(PkgWasm.isfile_nothrow, all_manifest_tomls))
+    all_artifact_tomls = Set(filter(PkgWasm.isfile_nothrow, all_artifact_tomls))
+    all_scratch_dirs = Set(filter(PkgWasm.isdir_nothrow, all_scratch_dirs))
+    all_scratch_parents = Set(filter(PkgWasm.isfile_nothrow, all_scratch_parents))
 
     # Immediately write these back as condensed toml files
     function write_condensed_toml(f::Function, usage_by_depot, fname)
@@ -1293,7 +1293,7 @@ instantiate(; kwargs...) = instantiate(Context(); kwargs...)
 function instantiate(
         ctx::Context; manifest::Union{Bool, Nothing} = nothing,
         update_registry::Bool = true, verbose::Bool = false,
-        platform::AbstractPlatform = Pkg.host_platform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
+        platform::AbstractPlatform = PkgWasm.host_platform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
         workspace::Bool = false, julia_version_strict::Bool = false, kwargs...
     )
     Context!(ctx; kwargs...)
@@ -1301,7 +1301,7 @@ function instantiate(
         copy!(ctx.registries, Registry.reachable_registries())
     end
     if !isfile(ctx.env.project_file) && isfile(ctx.env.manifest_file)
-        _manifest = Pkg.Types.read_manifest(ctx.env.manifest_file)
+        _manifest = PkgWasm.Types.read_manifest(ctx.env.manifest_file)
         Types.check_manifest_julia_version_compat(_manifest, ctx.env.manifest_file; julia_version_strict)
         deps = Dict{String, String}()
         for (uuid, pkg) in _manifest
@@ -1318,7 +1318,7 @@ function instantiate(
         # given no manifest exists, only allow invoking a registry update if there are project deps
         allow_registry_update = isfile(ctx.env.project_file) && !isempty(ctx.env.project.deps)
         up(ctx; update_registry = update_registry && allow_registry_update)
-        allow_autoprecomp && Pkg._auto_precompile(ctx, already_instantiated = true)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx, already_instantiated = true)
         return
     end
     if !isfile(ctx.env.manifest_file) && manifest == true
@@ -1347,7 +1347,7 @@ function instantiate(
         # omission and reject build scripts, as the full path below does
         Operations.download_artifacts(ctx; platform, julia_version = ctx.julia_version)
         allow_build && Operations.build_versions(ctx, Set{UUID}(); verbose)
-        allow_autoprecomp && Pkg._auto_precompile(ctx, already_instantiated = true)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx, already_instantiated = true)
         return
     end
 
@@ -1407,7 +1407,7 @@ function instantiate(
     # Run build scripts
     allow_build && Operations.build_versions(ctx, union(new_apply, new_git); verbose = verbose)
 
-    allow_autoprecomp && Pkg._auto_precompile(ctx, already_instantiated = true)
+    allow_autoprecomp && PkgWasm._auto_precompile(ctx, already_instantiated = true)
     return
 end
 
@@ -1471,7 +1471,7 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         # 1. if path exists, activate that
         # 2. if path exists in deps, and the dep is deved, activate that path (`devpath` above)
         # 3. activate the non-existing directory (e.g. as in `pkg> activate .` for initing a new env)
-        if Pkg.isdir_nothrow(path)
+        if PkgWasm.isdir_nothrow(path)
             fullpath = abspath(path)
         else
             fullpath = _activate_dep(path)
@@ -1483,8 +1483,8 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         # initialize `fullpath` in case of empty `Pkg.depots()`
         fullpath = ""
         # loop over all depots to check if the shared environment already exists
-        for depot in Pkg.depots()
-            fullpath = joinpath(Pkg.envdir(depot), path)
+        for depot in PkgWasm.depots()
+            fullpath = joinpath(PkgWasm.envdir(depot), path)
             isdir(fullpath) && break
         end
         # this disallows names such as "Foo/bar", ".", "..", etc
@@ -1493,7 +1493,7 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         end
         # unless the shared environment already exists, place it in the first depots
         if !isdir(fullpath)
-            fullpath = joinpath(Pkg.envdir(Pkg.depots1()), path)
+            fullpath = joinpath(PkgWasm.envdir(PkgWasm.depots1()), path)
         end
     end
     if !isnothing(Base.active_project())
@@ -1719,8 +1719,8 @@ end
 function upgrade_manifest(man_path::String)
     dir = mktempdir()
     cp(man_path, joinpath(dir, "Manifest.toml"))
-    Pkg.activate(dir) do
-        Pkg.upgrade_manifest()
+    PkgWasm.activate(dir) do
+        PkgWasm.upgrade_manifest()
     end
     mv(joinpath(dir, "Manifest.toml"), man_path, force = true)
     return

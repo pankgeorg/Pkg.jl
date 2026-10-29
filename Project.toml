@@ -1,8 +1,8 @@
-name = "Pkg"
-uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+name = "PkgWasm"
+uuid = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
 keywords = ["package management"]
 license = "MIT"
-desc = "The next-generation Julia package manager."
+desc = "Trimmed fork of Pkg 1.12 (release-1.12) for compilation to Wasm with WasmCodegen.jl."
 version = "1.12.1"
 
 [workspace]
@@ -25,12 +25,6 @@ Tar = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
 p7zip_jll = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 
-[weakdeps]
-REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
-
-[extensions]
-REPLExt = "REPL"
-
 [compat]
 Artifacts = "1.11"
 Dates = "1.11"
@@ -42,7 +36,6 @@ Logging = "1.11"
 Markdown = "1.11"
 Printf = "1.11"
 Random = "1.11"
-REPL = "1.11"
 SHA = "0.7, 1"
 TOML = "1"
 Tar = "1.10"

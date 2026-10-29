@@ -9,7 +9,7 @@
 module Host
 
 import Downloads
-import ..Pkg # PlatformEngines is included after Host; its helpers are looked up at call time
+import ..PkgWasm # PlatformEngines is included after Host; its helpers are looked up at call time
 
 """
     Host.Response(status, url, headers)
@@ -49,7 +49,7 @@ partial_path(dest::String) = dest * ".partial"
 # EIO with the original message.
 # (`err` not specialized on, its message by showerror_known: static built for Wasm, M4.2 G3)
 as_host_error(@nospecialize(err), what::String) =
-    err isa HostError ? err : HostError(WASI_EIO, string(what, ": ", sprint(Pkg.showerror_known, err)))
+    err isa HostError ? err : HostError(WASI_EIO, string(what, ": ", sprint(PkgWasm.showerror_known, err)))
 
 # Remove a temporary file on an error path. A failure here is reported (as a HostError)
 # rather than silently leaving the file behind.
@@ -58,7 +58,7 @@ function cleanup!(path::String, @nospecialize(err), what::String)
         rm(path; force = true)
     catch rm_err
         throw(HostError(WASI_EIO, string(what, ": ", sprint(showerror, as_host_error(err, what)),
-            "; additionally failed to remove ", path, ": ", sprint(Pkg.showerror_known, rm_err))))
+            "; additionally failed to remove ", path, ": ", sprint(PkgWasm.showerror_known, rm_err))))
     end
     throw(as_host_error(err, what))
 end
@@ -154,7 +154,7 @@ function decompress(src::String, dst::String)::Nothing
         rm(tmp; force = true)
         magic = open(io -> read(io, 4), src)
         cmd = if length(magic) >= 2 && magic[1] == 0x1f && magic[2] == 0x8b
-            `$(Pkg.PlatformEngines.exe7z()) x -tgzip -so $src`
+            `$(PkgWasm.PlatformEngines.exe7z()) x -tgzip -so $src`
         else
             # Pkg 1.12 has no zstd decompressor among its dependencies (no Zstd_jll), so
             # natively only gzip is accepted, as Pkg 1.12 itself does.

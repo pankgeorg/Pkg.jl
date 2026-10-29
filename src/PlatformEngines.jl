@@ -3,10 +3,10 @@
 # Content in this file is extracted from BinaryProvider.jl, see LICENSE.method
 
 module PlatformEngines
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using SHA, Downloads, Tar
-import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, toml_float, WASM_TARGET
+import ...PkgWasm: PkgWasm, TOML, pkg_server, depots1, can_fancyprint, stderr_f, toml_float, WASM_TARGET
 import ..Host
 using ..MiniProgressBars
 using Base.BinaryPlatforms, p7zip_jll
@@ -70,7 +70,7 @@ function handle_auth_error(url, err; verbose::Bool = false)
     handled, should_retry = false, false
     # (built for Wasm no handlers can be registered, the table is empty: G3 #29)
     if WASM_TARGET
-        isempty(AUTH_ERROR_HANDLERS) || Pkg.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
+        isempty(AUTH_ERROR_HANDLERS) || PkgWasm.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
         return nothing
     end
     for (scheme, handler) in AUTH_ERROR_HANDLERS
@@ -102,7 +102,7 @@ is `true`.
 `register_auth_error_handler` returns a zero-arg function that can be called to deregister the handler.
 """
 function register_auth_error_handler(urlscheme::Union{AbstractString, Regex}, @nospecialize(f))
-    WASM_TARGET && Pkg.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
+    WASM_TARGET && PkgWasm.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
     unique!(pushfirst!(AUTH_ERROR_HANDLERS, urlscheme => f))
     return () -> deregister_auth_error_handler(urlscheme, f)
 end
@@ -131,7 +131,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     auth_info = try
         TOML.parsefile(auth_file)
     catch err
-        @pkg_error "malformed auth file" file = auth_file err = Pkg.log_value(err)
+        @pkg_error "malformed auth file" file = auth_file err = PkgWasm.log_value(err)
         return handle_auth_error(url, "malformed-file"; verbose = verbose)
     end
     # check for an auth token
@@ -173,14 +173,14 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     try
         download(refresh_url, tmp, auth_header = refresh_auth, verbose = verbose)
     catch err
-        @pkg_warn "token refresh failure" file = auth_file url = refresh_url err = Pkg.log_value(err)
+        @pkg_warn "token refresh failure" file = auth_file url = refresh_url err = PkgWasm.log_value(err)
         rm(tmp, force = true)
         return handle_auth_error(url, "token-refresh-failed"; verbose = verbose)
     end
     auth_info = try
         TOML.parsefile(tmp)
     catch err
-        @pkg_warn "discarding malformed auth file" url = refresh_url err = Pkg.log_value(err)
+        @pkg_warn "discarding malformed auth file" url = refresh_url err = PkgWasm.log_value(err)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "malformed-file"; verbose = verbose), auth_header)
     end
@@ -188,7 +188,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
         if haskey(auth_info, "refresh_token")
             auth_info["refresh_token"] = "*"^64
         end
-        @pkg_warn "discarding auth file without access token" auth = Pkg.log_table(auth_info)
+        @pkg_warn "discarding auth file without access token" auth = PkgWasm.log_table(auth_info)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "no-access-token"; verbose = verbose), auth_header)
     end
@@ -202,7 +202,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     end
     let auth_info = auth_info
         open(tmp, write = true) do io
-            Pkg.TOMLWriter.print(io, auth_info, sorted = true)
+            PkgWasm.TOMLWriter.print(io, auth_info, sorted = true)
         end
     end
     mv(tmp, auth_file, force = true)
@@ -235,7 +235,7 @@ function get_metadata_headers(url::AbstractString)
     push!(headers, "Julia-Pkg-Protocol" => "1.0")
     push!(headers, "Julia-Pkg-Server" => server)
     push!(headers, "Julia-Version" => string(VERSION))
-    system = triplet(Pkg.host_platform())
+    system = triplet(PkgWasm.host_platform())
     push!(headers, "Julia-System" => system)
     ci_info = String[]
     for var in CI_VARIABLES

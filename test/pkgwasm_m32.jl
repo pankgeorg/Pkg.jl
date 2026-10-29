@@ -295,15 +295,25 @@ end
             write(joinpath(reg, "Registry.toml"), "name = \"Foo\"\nuuid = \"$(uuid4())\"\nrepo = \"https://example.invalid/Foo.git\"\n\n[packages]\n")
             @test_logs (:error, r"updating a git registry is not supported in PkgWasm") match_mode = :any Pkg.Registry.update(; depots = [depot], io = devnull)
         end
-        # status --diff against git HEAD (G3 clean compile: LibGit2 unreachable)
-        mktempdir() do dir
+        # status --diff against git HEAD (G3 clean compile: LibGit2 unreachable). Repository
+        # discovery (discover_repo, as stock) walks up from the project directory to the home
+        # directory; HOME is the test's own temp root, so a stray `.git` above it (e.g. /tmp/.git
+        # from another process) cannot be found.
+        mktempdir() do root
+            dir = joinpath(root, "proj")
+            mkpath(dir)
             write(joinpath(dir, "Project.toml"), "[deps]\n")
-            Pkg.activate(dir; io = devnull)
-            # not a git repository: stock's warning, as before
-            @test_logs (:warn, r"diff option only available") match_mode = :any Pkg.status(; diff = true, io = IOBuffer())
-            mkpath(joinpath(dir, ".git"))
-            @test is_git_error(capture_error(() -> Pkg.status(; diff = true, io = IOBuffer())))
-            Pkg.activate(; io = devnull)
+            withenv("HOME" => root) do
+                @test homedir() == root
+                Pkg.activate(dir; io = devnull)
+                @test Pkg.discover_repo(dir) === nothing
+                # not a git repository: stock's warning, as before
+                @test_logs (:warn, r"diff option only available") match_mode = :any Pkg.status(; diff = true, io = IOBuffer())
+                mkpath(joinpath(dir, ".git"))
+                @test Pkg.discover_repo(dir) == dir
+                @test is_git_error(capture_error(() -> Pkg.status(; diff = true, io = IOBuffer())))
+                Pkg.activate(; io = devnull)
+            end
         end
         # explicit repo tracking through the Types entry points
         ctx = Pkg.Types.Context(; io = devnull)

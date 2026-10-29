@@ -740,6 +740,32 @@ end
         end
     end
 
+    @testset "read_project [extensions] as stock (G3 exts row)" begin
+        mktempdir() do dir
+            for (i, exts) in enumerate((
+                    "A = \"B\"",
+                    "A = [\"B\", \"C\"]",
+                    "A = \"B\"\nC = [\"D\"]",
+                    "A = []",
+                    "A = 1",
+                    "A = [\"B\", 1]",
+                ))
+                f = joinpath(dir, "Project$i.toml")
+                write(f, "name = \"X\"\nuuid = \"$(uuid4())\"\n\n[extensions]\n$exts\n")
+                s = capture_error(() -> Pkg.Types.read_project(f).exts)
+                w = capture_error(() -> Pkg.Types.read_project(f).exts)
+                @test typeof(s) == typeof(w)
+                @test (s === nothing) == (w === nothing)
+                if s === nothing
+                    ps, pw = Pkg.Types.read_project(f), Pkg.Types.read_project(f)
+                    @test ps.exts == pw.exts && typeof(ps.exts) == typeof(pw.exts)
+                else
+                    @test sprint(showerror, s) == sprint(showerror, w)
+                end
+            end
+        end
+    end
+
     @testset "D11 registry installed unpacked with verified tree hash" begin
         # PkgWasm installs registries as stock does (D11 update 2); this tests the unpacked
         # install path, i.e. JULIA_PKG_UNPACK_REGISTRY=true

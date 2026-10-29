@@ -152,6 +152,25 @@ function read_project_sources(raw::Dict{String, Any}, project::Project)
     return sources
 end
 
+# `[extensions]`: natively stock's conversion to the field type (including its MethodError for an
+# invalid value); built for Wasm each value checked as a String or a list of Strings (G3, wcg-event
+# 04:14), a PkgError otherwise (stock accepts exactly String and Vector{String} values)
+function read_project_exts(x)
+    WASM_TARGET || return convert(Dict{String, Union{Vector{String}, String}}, x)
+    x isa AbstractDict || pkgerror("Expected `extensions` section to be a table")
+    exts = Dict{String, Union{Vector{String}, String}}()
+    for (name, v) in x::Dict{String, Any}
+        if v isa String
+            exts[name] = v
+        elseif v isa Vector{String}
+            exts[name] = v
+        else # (as stock's conversion: a Vector{Any}, even of Strings or empty, is rejected)
+            pkgerror("Expected the value of `$name` in the `extensions` section to be a string or a list of strings")
+        end
+    end
+    return exts
+end
+
 read_project_workspace(::Nothing, project::Project) = Dict{String, Any}()
 function read_project_workspace(raw::Dict, project::Project)
     workspace_table = Dict{String, Any}()
@@ -239,7 +258,7 @@ function Project(raw::Dict; file = nothing)
     project.weakdeps = with_toml_type(x -> read_project_deps(x, "weakdeps"), get(raw, "weakdeps", nothing))
     # (as `get(Dict{String, String}, raw, "extensions")`, converted to the field's type)
     project.exts = !haskey(raw, "extensions") ? Dict{String, String}() :
-        with_toml_type(x -> convert(Dict{String, Union{Vector{String}, String}}, x), raw["extensions"])
+        with_toml_type(read_project_exts, raw["extensions"])
     project.sources = with_toml_type(x -> read_project_sources(x, project), get(raw, "sources", nothing))
     project.extras = with_toml_type(x -> read_project_deps(x, "extras"), get(raw, "extras", nothing))
     project.compat = with_toml_type(x -> read_project_compat(x, project), get(raw, "compat", nothing))

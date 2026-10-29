@@ -78,7 +78,24 @@ function resolve(graph::Graph)
     return compute_output_dict(sol, graph)
 end
 
+# PkgWasm (G2 B23): stock `_resolve` recurses into itself with the improved lower bound; the
+# recursion made inference widen the arguments to `Array` (dynamic calls in the Wasm build).
+# The same steps run in a loop here: `_resolve_step` is the stock body with the recursive call
+# replaced by returning the next lower bound.
 function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previous_sol::Union{Vector{Int}, Nothing})
+    # The first step with the caller's arguments (`nothing, nothing` from `resolve`), then each
+    # improvement step with two Vector{Int}s, as stock's recursive calls. Every call has concrete
+    # argument types (the Wasm build's inference does not split a call on two Union arguments).
+    sol, next_lower_bound = _resolve_step(graph, lower_bound, previous_sol)
+    while next_lower_bound !== nothing
+        sol, next_lower_bound = _resolve_step(graph, next_lower_bound::Vector{Int}, sol::Vector{Int})
+    end
+    return sol::Vector{Int}
+end
+
+# returns (sol, nothing) when done, or (sol, new_lower_bound) to run again from there
+function _resolve_step(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previous_sol::Union{Vector{Int}, Nothing})
+    local sol::Vector{Int} # the solver's and maxsum's solutions are Vector{Int}; typed for the Wasm build
     np = graph.np
     spp = graph.spp
     gconstr = graph.gconstr
@@ -134,7 +151,7 @@ function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previo
     @assert verify_solution(sol, graph)
     if greedy_ok
         log_event_global!(graph, "the solver found an optimal configuration")
-        return sol
+        return sol, nothing
     else
         enforce_optimality!(sol, graph)
         if lower_bound ≢ nothing
@@ -151,10 +168,10 @@ function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previo
                 new_lower_bound[lb_mask] = lower_bound[lb_mask]
                 @assert all(new_lower_bound .≥ lower_bound)
             end
-            return _resolve(graph, new_lower_bound, sol)
+            return sol, new_lower_bound
         else
             log_event_global!(graph, "the solver found a feasible configuration and can't improve it")
-            return sol
+            return sol, nothing
         end
     end
 end

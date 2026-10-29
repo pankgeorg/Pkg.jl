@@ -11,7 +11,7 @@ using Test
 const TEST_PROJECT = Base.ACTIVE_PROJECT[]
 
 @testset "Pkg" begin
-    for file in ("pkgwasm_m31.jl", "pkgwasm_m32.jl", "pkgwasm_registry.jl", "toml_writer.jl", "typed_copies.jl", "typed_equality.jl", "wasm_paths.jl", "status_order.jl", "d9_target.jl")
+    for file in ("pkgwasm_m31.jl", "pkgwasm_m32.jl", "pkgwasm_registry.jl", "pkgwasm_resolve.jl", "toml_writer.jl", "typed_copies.jl", "typed_equality.jl", "wasm_paths.jl", "status_order.jl", "d9_target.jl")
         @testset "$file" begin
             Base.ACTIVE_PROJECT[] = TEST_PROJECT
             include(joinpath(@__DIR__, file))

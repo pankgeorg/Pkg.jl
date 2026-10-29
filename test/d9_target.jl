@@ -10,13 +10,13 @@ const JULIA = joinpath(Sys.BINDIR, Base.julia_exename())
 
 function run_in_env(target::Union{Nothing, String}, code::String)
     mktempdir() do env
-        prefs = target === nothing ? "" : "\n[preferences.Pkg]\ntarget = \"$target\"\n"
+        prefs = target === nothing ? "" : "\n[preferences.PkgWasm]\ntarget = \"$target\"\n"
         write(joinpath(env, "Project.toml"), """
             [deps]
-            Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+            PkgWasm = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
 
             [sources]
-            Pkg = {path = "$(escape_string(FORK))"}
+            PkgWasm = {path = "$(escape_string(FORK))"}
             $prefs""")
         script = joinpath(env, "script.jl")
         write(script, code)
@@ -31,30 +31,30 @@ end
 # output of status and of an error, for a project of our own
 const CODE = raw"""
 import Pkg; Pkg.instantiate(; io = devnull)
-using Pkg
+using PkgWasm
 # (an empty depot of our own once loaded: no registries of the build host)
 empty!(DEPOT_PATH); push!(DEPOT_PATH, mktempdir())
-println("TARGET=", Pkg.TARGET)
-println("IO=", typeof(Pkg.Types.Context().io))
+println("TARGET=", PkgWasm.TARGET)
+println("IO=", typeof(PkgWasm.Types.Context().io))
 proj = mktempdir()
 write(joinpath(proj, "Project.toml"), "name = " * repr("P") * "\nuuid = " * repr("8c9a2bd0-6b1e-4ac1-9d36-1d2f8a3b0c11") * "\n")
-Pkg.activate(proj; io = devnull)
-Pkg.status()
+PkgWasm.activate(proj; io = devnull)
+PkgWasm.status()
 # showerror_known: stock showerror natively, typed copies built for Wasm, the same text
-for e in Any[Pkg.Types.PkgError("pkg message"), ErrorException("plain"), ArgumentError("bad arg"),
+for e in Any[PkgWasm.Types.PkgError("pkg message"), ErrorException("plain"), ArgumentError("bad arg"),
              Base.IOError("could not open ~/x", Base.UV_ENOENT), Base.IOError("other", -5),
              SystemError("opening", 2), SystemError("opening", 2, "info"),
-             Pkg.Host.HostError(Int32(29), "boom"),
+             PkgWasm.Host.HostError(Int32(29), "boom"),
              Base.TOML.tryparse(Base.TOML.Parser{Nothing}("a = = 1"))]
-    println("SE=", repr(sprint(Pkg.showerror_known, e)))
+    println("SE=", repr(sprint(PkgWasm.showerror_known, e)))
 end
 # a DEFAULT_IO override: honoured natively, an error built for Wasm
-Base.ScopedValues.@with Pkg.DEFAULT_IO => IOBuffer() begin
-    println("OVERRIDE=", try Pkg.stderr_f() === something(Base.ScopedValues.get(Pkg.DEFAULT_IO)) catch e; sprint(showerror, e) end)
+Base.ScopedValues.@with PkgWasm.DEFAULT_IO => IOBuffer() begin
+    println("OVERRIDE=", try PkgWasm.stderr_f() === something(Base.ScopedValues.get(PkgWasm.DEFAULT_IO)) catch e; sprint(showerror, e) end)
 end
 # logging: the stock logger natively, the direct print built for Wasm, the same text
 module LogProbe
-    import Main.Pkg: @pkg_warn, @pkg_info, @pkg_debug
+    import Main.PkgWasm: @pkg_warn, @pkg_info, @pkg_debug
     f(x) = (@pkg_warn "single line"; @pkg_warn "two\nlines" x; @pkg_info "an info"; @pkg_info "info with" key = x;
             @pkg_debug "never"; for _ in 1:3; @pkg_warn "once" maxlog = 1; end; nothing)
 end
@@ -62,9 +62,9 @@ redirect_stdout(stderr) do
     LogProbe.f([1, 2])
 end
 try
-    Pkg.rm("NoSuchPackage")
+    PkgWasm.rm("NoSuchPackage")
 catch e
-    Pkg.report_error(e)
+    PkgWasm.report_error(e)
 end
 """
 
@@ -73,7 +73,7 @@ end
     wasm = run_in_env("wasm", CODE)
     @test nat[1] == 0 && wasm[1] == 0
     @test occursin("TARGET=native", nat[2]) && occursin("IO=IOContext{IO}", nat[2])
-    @test occursin("TARGET=wasm", wasm[2]) && occursin("IO=IOContext{Pkg.StdStream}", wasm[2])
+    @test occursin("TARGET=wasm", wasm[2]) && occursin("IO=IOContext{PkgWasm.StdStream}", wasm[2])
     # the same status and error output but for those two lines (and the temp project's path)
     @test occursin("OVERRIDE=true", nat[2])
     se(s) = filter(l -> startswith(l, "SE="), split(s, '\n'))

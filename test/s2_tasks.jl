@@ -10,13 +10,13 @@ const JULIA = joinpath(Sys.BINDIR, Base.julia_exename())
 
 function run_in_env(tasks::Union{Nothing, String}, code::String)
     mktempdir() do env
-        prefs = tasks === nothing ? "" : "\n[preferences.Pkg]\ntasks = \"$tasks\"\n"
+        prefs = tasks === nothing ? "" : "\n[preferences.PkgWasm]\ntasks = \"$tasks\"\n"
         write(joinpath(env, "Project.toml"), """
             [deps]
-            Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+            PkgWasm = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
 
             [sources]
-            Pkg = {path = "$(escape_string(FORK))"}
+            PkgWasm = {path = "$(escape_string(FORK))"}
             $prefs""")
         script = joinpath(env, "script.jl")
         write(script, code)
@@ -29,12 +29,12 @@ end
 
 const CODE = raw"""
 import Pkg; Pkg.instantiate(; io = devnull)
-using Pkg
-println("TASKS=", Pkg.TASKS, " CONCURRENT=", Pkg.CONCURRENT)
+using PkgWasm
+println("TASKS=", PkgWasm.TASKS, " CONCURRENT=", PkgWasm.CONCURRENT)
 # the text the pool's consumer reports for an install error: stock's `sprint(showerror, err, bt)`
 err = try error("boom") catch e; e end
 bt = catch_backtrace()
-println("TEXT=", Pkg.Operations.install_error_text(err, bt) == sprint(showerror, err, bt))
+println("TEXT=", PkgWasm.Operations.install_error_text(err, bt) == sprint(showerror, err, bt))
 """
 
 @testset "S2: the tasks preference" begin

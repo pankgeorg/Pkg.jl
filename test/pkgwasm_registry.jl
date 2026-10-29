@@ -10,7 +10,7 @@
 
 using Test
 import Pkg
-import Pkg
+import PkgWasm
 using UUIDs
 
 const WASM_PKG = normpath(joinpath(@__DIR__, "..", "..", ".."))
@@ -59,8 +59,8 @@ end
 # through the export; a failure is printed as `ERROR: <message>` (report_error) and returns 1
 function fork_step(depot, words)
     rc = Int32(-1)
-    out = in_depot(Pkg, depot) do
-        rc = Pkg.pkgwasm_main(["registry"; words])
+    out = in_depot(PkgWasm, depot) do
+        rc = PkgWasm.pkgwasm_main(["registry"; words])
     end
     return out, rc
 end
@@ -77,7 +77,7 @@ function registry_state(depot)
     for f in readdir(dir)
         p = joinpath(dir, f)
         st[f] = isdir(p) ? ("dir", isfile(joinpath(p, ".tree_info.toml")) ? read(joinpath(p, ".tree_info.toml"), String) : nothing) :
-            endswith(f, ".toml") ? ("toml", Pkg.TOML.parsefile(p)) :
+            endswith(f, ".toml") ? ("toml", PkgWasm.TOML.parsefile(p)) :
             f == "CACHEDIR.TAG" ? ("file", read(p, String)) : ("file", filesize(p))
     end
     return st
@@ -157,15 +157,15 @@ else
                             end
                         end
                         local rc
-                        in_depot(Pkg, depot) do
-                            rc = Pkg.pkgwasm_main(["registry", "add", regsrc])
+                        in_depot(PkgWasm, depot) do
+                            rc = PkgWasm.pkgwasm_main(["registry", "add", regsrc])
                         end
                         @test rc == 0
                         @test isfile(joinpath(depot, "registries", "Mini", "Registry.toml"))
                         @test isdir(joinpath(depot, "registries", "Mini", ".git")) == git
                     end
-                    @test Pkg.pkgwasm_main(["registry"]) == 1
-                    @test Pkg.pkgwasm_main(["registry", "frobnicate"]) == 1
+                    @test PkgWasm.pkgwasm_main(["registry"]) == 1
+                    @test PkgWasm.pkgwasm_main(["registry", "frobnicate"]) == 1
                 end
             end
         end

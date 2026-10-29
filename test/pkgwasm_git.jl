@@ -8,8 +8,8 @@
 #     status --diff) run by stock Pkg with JULIA_PKG_USE_CLI_GIT=true and by PkgWasm, each in a
 #     fresh process: output, manifests and depot files must be identical (test/git/ops.jl).
 
-using Test, LibGit2, Pkg, Pkg
-const GitCLI = Pkg.GitCLI
+using Test, LibGit2, Pkg, PkgWasm
+const GitCLI = PkgWasm.GitCLI
 include(joinpath(@__DIR__, "git", "fixture.jl"))
 
 class(e) = e isa GitCLI.GitError ? Symbol(e.code) : e isa LibGit2.GitError ? Symbol(e.code) : rethrow(e)
@@ -63,7 +63,7 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
             lg = cli_or(() -> string(LibGit2.GitHash(LibGit2.GitObject(lr, rev))))
             @test cli == lg
             # Pkg's DWIM lookup (cache/heads/, remotes/origin/, heads/ first)
-            pw = cli_or(() -> (x = Pkg.Types.get_object_or_branch(r, rev); x === nothing ? nothing : (string(GitCLI.GitHash(x[1])), x[2])))
+            pw = cli_or(() -> (x = PkgWasm.Types.get_object_or_branch(r, rev); x === nothing ? nothing : (string(GitCLI.GitHash(x[1])), x[2])))
             st = cli_or(() -> (x = Pkg.Types.get_object_or_branch(lr, rev); x === nothing ? nothing : (string(LibGit2.GitHash(x[1])), x[2])))
             @test pw == st
             cli isa String || continue
@@ -85,7 +85,7 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
                 @test a == b
             end
             for spec in ("v0.1.0:Project.toml", "dev:src/Foo.jl", "v0.1.0:nope")
-                @test read(Pkg.GitTools.git_file_stream(r, spec; fakeit = true), String) ==
+                @test read(PkgWasm.GitTools.git_file_stream(r, spec; fakeit = true), String) ==
                       read(Pkg.GitTools.git_file_stream(lr, spec; fakeit = true), String)
             end
         end
@@ -100,11 +100,11 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
                         write(joinpath(d, "keep.txt"), "x")
                     end
                 end
-                Pkg.GitTools.checkout_tree_to_path(r, GitCLI.GitObject(r, tree_of(foo, rev)), a)
+                PkgWasm.GitTools.checkout_tree_to_path(r, GitCLI.GitObject(r, tree_of(foo, rev)), a)
                 Pkg.GitTools.checkout_tree_to_path(lr, LibGit2.GitObject(lr, tree_of(foo, rev)), b)
                 @test snapshot(a) == snapshot(b)
                 @test filemode(joinpath(a, "src")) & 0o777 == filemode(joinpath(b, "src")) & 0o777
-                pre || @test bytes2hex(Pkg.GitTools.tree_hash(a)) == tree_of(foo, rev)
+                pre || @test bytes2hex(PkgWasm.GitTools.tree_hash(a)) == tree_of(foo, rev)
             finally
                 ccall(:umask, Base.Cmode_t, (Base.Cmode_t,), old)
             end
@@ -116,7 +116,7 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
             fgit(foo, "add", "-A"); fgit(foo, "commit", "-qm", "filters")
             r2, lr2 = GitCLI.GitRepo(foo), LibGit2.GitRepo(foo)
             a, b = mktempdir(ROOT), mktempdir(ROOT)
-            Pkg.GitTools.checkout_tree_to_path(r2, GitCLI.GitObject(r2, tree_of(foo, "HEAD")), a)
+            PkgWasm.GitTools.checkout_tree_to_path(r2, GitCLI.GitObject(r2, tree_of(foo, "HEAD")), a)
             Pkg.GitTools.checkout_tree_to_path(lr2, LibGit2.GitObject(lr2, tree_of(foo, "HEAD")), b)
             @test read(joinpath(a, "f.txt"), String) == read(joinpath(b, "f.txt"), String) == "lower\n"
         end
@@ -136,7 +136,7 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
             fgit(c2, "add", ".gitattributes"); fgit(c2, "commit", "-qm", "enc")
             t = tree_of(c2, "HEAD")
             a, b = mktempdir(ROOT), mktempdir(ROOT)
-            Pkg.GitTools.checkout_tree_to_path(r2, GitCLI.GitObject(r2, t), a)
+            PkgWasm.GitTools.checkout_tree_to_path(r2, GitCLI.GitObject(r2, t), a)
             Pkg.GitTools.checkout_tree_to_path(lr2, LibGit2.GitObject(lr2, t), b)
             @test snapshot(a) == snapshot(b)
             # (review-9: an existing info/attributes without a final newline)
@@ -145,7 +145,7 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
             mkpath(joinpath(c3, "info")); write(joinpath(c3, "info", "attributes"), "*.txt text")
             r3, lr3 = GitCLI.GitRepo(c3), LibGit2.GitRepo(c3)
             a, b = mktempdir(ROOT), mktempdir(ROOT)
-            Pkg.GitTools.checkout_tree_to_path(r3, GitCLI.GitObject(r3, t), a)
+            PkgWasm.GitTools.checkout_tree_to_path(r3, GitCLI.GitObject(r3, t), a)
             Pkg.GitTools.checkout_tree_to_path(lr3, LibGit2.GitObject(lr3, t), b)
             @test snapshot(a) == snapshot(b)
             @test startswith(read(joinpath(c3, "info", "attributes"), String), "*.txt text\n")
@@ -209,13 +209,13 @@ end
     chmod(joinpath(root, "a", "b.txt"), 0o755)
     symlink("foo-bar", joinpath(root, "link"))
     symlink("a", joinpath(root, "dlink"))
-    for HashType in (Pkg.GitTools.SHA.SHA1_CTX, Pkg.GitTools.SHA.SHA256_CTX)
-        @test Pkg.GitTools.tree_hash(HashType, root) == Pkg.GitTools.tree_hash(HashType, root)
+    for HashType in (PkgWasm.GitTools.SHA.SHA1_CTX, PkgWasm.GitTools.SHA.SHA256_CTX)
+        @test PkgWasm.GitTools.tree_hash(HashType, root) == Pkg.GitTools.tree_hash(HashType, root)
         for sub in ("a", "foo", "z")
-            @test Pkg.GitTools.tree_hash(HashType, joinpath(root, sub)) == Pkg.GitTools.tree_hash(HashType, joinpath(root, sub))
+            @test PkgWasm.GitTools.tree_hash(HashType, joinpath(root, sub)) == Pkg.GitTools.tree_hash(HashType, joinpath(root, sub))
         end
     end
-    @test Pkg.GitTools.tree_hash(root) == Pkg.GitTools.tree_hash(root)
+    @test PkgWasm.GitTools.tree_hash(root) == Pkg.GitTools.tree_hash(root)
     # a root through a symbolic link and `..`: modes of the entries as named from the root
     for d in ("A/child", "B/child")
         mkpath(joinpath(root, d))
@@ -224,6 +224,6 @@ end
     chmod(joinpath(root, "B", "f"), 0o755)
     symlink(joinpath(root, "B", "child"), joinpath(root, "A", "link"))
     r = joinpath(root, "A", "link", "..")
-    @test Pkg.GitTools.tree_hash(r) == Pkg.GitTools.tree_hash(r)
+    @test PkgWasm.GitTools.tree_hash(r) == Pkg.GitTools.tree_hash(r)
     rm(root; recursive = true)
 end

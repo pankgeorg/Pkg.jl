@@ -634,7 +634,7 @@ function load_or_build_registry_cache(compressed_tar::AbstractString, tree_hash:
         cache_dir = dirname(cache_path)
         mkpath(cache_dir)
         lock_path = joinpath(cache_dir, ".$(registry_cache_name(compressed_tar)).pid")
-        cache = Pkg.mkpidlock(lock_path, stale_age = 10) do # PkgWasm (D3)
+        cache = PkgWasm.mkpidlock(lock_path, stale_age = 10) do # PkgWasm (D3)
             # Another process may have built the cache while we waited for the lock.
             locked_cache = load_registry_cache(cache_path, tree_hash)
             locked_cache === nothing || return locked_cache
@@ -711,7 +711,7 @@ function version_info_entry(@nospecialize(v))
     if v isa Dict{String, Any}
         return VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)
     end
-    Pkg.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
+    PkgWasm.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
     return Base.inferencebarrier(v -> VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool))(v)::VersionInfo
 end
 
@@ -816,7 +816,7 @@ registry_info(registry::RegistryInstance, pkg::PkgEntry) = init_package_info!(re
                 catch err
                     err isa InterruptException && rethrow()
                     reg_toml = getfield(r, :path)
-                    Pkg.Types.pkgerror(
+                    PkgWasm.Types.pkgerror(
                         "failed to read the registry tarball `$(compressed_tar)`, it may be corrupt: ",
                         sprint(showerror, err), ". Remove `$(compressed_tar)` and `$(reg_toml)` ",
                         "and add the registry again with `Pkg.Registry.add`."

@@ -4,8 +4,8 @@
 # PkgWasm: `import ..Pkg` binds the module below, and `using/import Pkg.X` become relative.
 
 module PkgWasmResolveTests
-import Pkg
-const Pkg = Pkg
+import PkgWasm
+const Pkg = PkgWasm
 relative(src) = replace(src, r"\b(using|import) Pkg\b" => s"\1 ..Pkg")
 load(name) = relative(read(joinpath(@__DIR__, name), String))
 # test/resolve.jl includes these two by file name; provide them as modules first

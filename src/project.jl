@@ -313,7 +313,7 @@ function read_project(f_or_io::Union{String, IO})
         # an IOBuffer of a git blob)
         what = !WASM_TARGET ? string(f_or_io) : f_or_io isa AbstractString ? String(f_or_io) :
             f_or_io isa Base.DevNull ? "Base.DevNull()" : f_or_io isa IOBuffer ? sprint(show, f_or_io::IOBuffer) : "(an IO)"
-        pkgerror("Errored when reading $what, got: ", Pkg.error_text(e))
+        pkgerror("Errored when reading $what, got: ", PkgWasm.error_text(e))
     end
     project = Project(raw; file = f_or_io isa IO ? nothing : f_or_io)
     project.comments = comments

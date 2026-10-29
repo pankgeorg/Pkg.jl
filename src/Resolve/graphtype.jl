@@ -667,7 +667,7 @@ function logstr(pkgID, args...)
     # workout the string with the color codes, check stderr to decide if color is enabled.
     # Use a fixed IO type to avoid recompiling this for every type of stderr.
     # PkgWasm (B23): built for Wasm the stream is the target's stderr
-    color = Pkg.WASM_TARGET ? get(stderr_f(), :color, false)::Bool : get(stderr, :color, false)::Bool
+    color = PkgWasm.WASM_TARGET ? get(stderr_f(), :color, false)::Bool : get(stderr, :color, false)::Bool
     io = IOContext(IOBuffer(), :color => color)
     printstyled(io, args...; color = pkgID_color(pkgID))
     return String(take!(io.io))

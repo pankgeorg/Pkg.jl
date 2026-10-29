@@ -1,5 +1,5 @@
 module PkgArtifacts
-import ..Pkg: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Artifacts, Base.BinaryPlatforms, SHA
 using ..MiniProgressBars, ..PlatformEngines

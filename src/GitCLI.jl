@@ -195,8 +195,14 @@ function GitObject(r::GitRepo, spec0::AbstractString)::GitObject
     valid_spec(spec) || throw(GitError(Error.Invalid, Error.EINVALIDSPEC, "invalid revision spec '$spec'"))
     spec == "@{0}" && (spec = "HEAD")             # (libgit2 reads position 0 without a reflog)
     endswith(spec, "@{0}") && (spec = spec[1:(end - 4)])
-    occursin(r"^[0-9a-fA-F]{1,3}$", spec) &&
-        throw(GitError(Error.Object, Error.EAMBIGUOUS, "the OID prefix '$spec' is too short"))
+    # a short hex string is an object id prefix (too short: EAMBIGUOUS) unless it names a reference,
+    # in libgit2's lookup order (spec, refs/, refs/tags/, refs/heads/, refs/remotes/, .../HEAD)
+    if occursin(r"^[0-9a-fA-F]{1,3}$", spec)
+        names = (spec, "refs/" * spec, "refs/tags/" * spec, "refs/heads/" * spec, "refs/remotes/" * spec,
+                 "refs/remotes/" * spec * "/HEAD")
+        any(n -> startswith(n, "refs/") && rgit(r, ["show-ref", "--verify", "-q", n])[1] == 0, names) ||
+            throw(GitError(Error.Object, Error.EAMBIGUOUS, "the OID prefix '$spec' is too short"))
+    end
     # `ref@{...}`: the ref must exist (else ENOTFOUND). `@{upstream}` is of a local branch only
     # (else EINVALIDSPEC), which git wants by its short name; a reflog entry (`@{n}`, `@{date}`)
     # needs the reflog of HEAD or a local branch, which git does not (it also reads other refs'
@@ -283,7 +289,13 @@ function head(r::GitRepo)
 end
 head_oid(r::GitRepo) = GitHash(head(r))
 isattached(r::GitRepo) = try_rgit(r, ["symbolic-ref", "-q", "HEAD"]) !== nothing
-branch(r::GitRepo) = something(try_rgit(r, ["symbolic-ref", "-q", "--short", "HEAD"]), "")
+# (the branch's own name: `--short` abbreviates only as far as unambiguous, e.g. `heads/main`
+# when a tag `main` exists)
+function branch(r::GitRepo)
+    ref = try_rgit(r, ["symbolic-ref", "-q", "HEAD"])
+    (ref === nothing || !startswith(ref, "refs/heads/")) && return ""
+    return ref[(length("refs/heads/") + 1):end]
+end
 function headname(r::GitRepo)
     h = head(r)
     isattached(r) && return branch(r)
@@ -303,7 +315,7 @@ end
 
 function reset!(r::GitRepo, id::GitHash, mode::Consts.GIT_RESET_TYPE)
     flag = mode == Consts.RESET_HARD ? "--hard" : mode == Consts.RESET_SOFT ? "--soft" : "--mixed"
-    code, _, err = rgit(r, ["reset", "-q", flag, string(id)])
+    code, _, err = wgit(r, ["reset", "-q", flag, string(id)])
     code == 0 || throw(GitError(Error.Repository, Error.ERROR, String(strip(err))))
     return nothing
 end
@@ -320,15 +332,15 @@ function merge!(r::GitRepo; branch::AbstractString, fastforward::Bool = true)
     target === nothing && throw(GitError(Error.Reference, Error.ENOTFOUND, "reference '$branch' not found"))
     rgit(r, ["merge-base", "--is-ancestor", target, "HEAD"])[1] == 0 && return true
     rgit(r, ["merge-base", "--is-ancestor", "HEAD", target])[1] == 0 || return false
-    code, _, err = rgit(r, ["merge", "-q", "--ff-only", target])
+    code, _, err = wgit(r, ["merge", "-q", "--ff-only", target])
     code == 0 || throw(GitError(Error.Merge, Error.ERROR, String(strip(err))))
     return true
 end
 
 function rebase!(r::GitRepo, upstream::AbstractString)
-    code, _, err = rgit(r, ["rebase", "-q", String(upstream)])
+    code, _, err = wgit(r, ["rebase", "-q", String(upstream)])
     if code != 0
-        rgit(r, ["rebase", "--abort"])
+        wgit(r, ["rebase", "--abort"])
         throw(GitError(Error.Rebase, Error.ERROR, String(strip(err))))
     end
     return nothing
@@ -352,6 +364,27 @@ end
 
 ## checkout
 
+# What git applies to work-tree files and LibGit2 1.9.7 does not: configured filter drivers
+# (neutralised per command by `libgit2_filters`) and the `working-tree-encoding` attribute (unset
+# for every path by a line in the repository's own info/attributes, the highest-precedence
+# attribute source; LibGit2 ignores that attribute, so this changes nothing for it)
+const NO_ENCODING = "* -working-tree-encoding"
+function libgit2_filters(r::GitRepo)
+    f = joinpath(r.gitdir, "info", "attributes")
+    lines = isfile(f) ? readlines(f) : String[]
+    if !(NO_ENCODING in lines)
+        mkpath(dirname(f))
+        open(io -> println(io, NO_ENCODING), f, "a")
+    end
+    over = String[]
+    for d in configured_drivers(r)
+        append!(over, ["-c", "filter.$d.smudge=", "-c", "filter.$d.process=", "-c", "filter.$d.required=false"])
+    end
+    return over
+end
+# a git command that writes the work tree, with LibGit2's filtering
+wgit(r::GitRepo, args::Vector{String}) = rgit(r, vcat(libgit2_filters(r), args))
+
 # filter drivers configured for the repository (git runs them, LibGit2 does not)
 function configured_drivers(r::GitRepo)
     out = try_rgit(r, ["config", "--name-only", "--get-regexp", "^filter[.].*[.](smudge|process|clean|required)\$"])
@@ -369,10 +402,7 @@ git-lfs are neutralised); files are 0644/0755 and directories 0755 minus the uma
 """
 function checkout_tree(r::GitRepo, tree::GitObject, path::AbstractString)
     p = String(path)
-    over = String[]
-    for d in configured_drivers(r)
-        append!(over, ["-c", "filter.$d.smudge=", "-c", "filter.$d.process=", "-c", "filter.$d.required=false"])
-    end
+    over = libgit2_filters(r)
     # the tree's entries (`<mode> <type> <oid>\t<raw path>`, NUL-terminated)
     code, out, err = rgit(r, ["ls-tree", "-r", "-t", "-z", string(tree.oid)])
     code == 0 || throw(GitError(Error.Tree, Error.ERROR, String(strip(err))))

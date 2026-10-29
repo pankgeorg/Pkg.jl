@@ -29,6 +29,11 @@ const PackageToken = Union{
     Subdir,
 }
 
+# `"$args"` of a token vector, typed (PkgWasm, G3): Base's text, its element type prefix computed
+# when the module is loaded
+const TOKENS_ELTYPE = string(PackageToken)
+tokens_text(args::Vector{PackageToken}) = string(TOKENS_ELTYPE, "[", join([sprint(show, t) for t in args], ", "), "]")
+
 # Check if a string is a valid UUID
 function is_valid_uuid(str::String)
     try
@@ -386,25 +391,25 @@ function parse_package_args(args::Vector{PackageToken}; add_or_dev = false)::Vec
                 return
             elseif modifier isa Subdir
                 if parsed_subdir
-                    pkgerror("Multiple subdir specifiers `$args` found.")
+                    pkgerror("Multiple subdir specifiers `$(tokens_text(args))` found.")
                 end
                 pkg.subdir = modifier.dir
                 parsed_subdir = true
                 (isempty(args) || args[1] isa PackageIdentifier) && return
             elseif modifier isa VersionToken
                 if parsed_version
-                    pkgerror("Multiple version specifiers `$args` found.")
+                    pkgerror("Multiple version specifiers `$(tokens_text(args))` found.")
                 end
                 pkg.version = modifier.version
                 parsed_version = true
             elseif modifier isa Rev
                 if parsed_rev
-                    pkgerror("Multiple revision specifiers `$args` found.")
+                    pkgerror("Multiple revision specifiers `$(tokens_text(args))` found.")
                 end
                 pkg.rev = modifier.rev
                 parsed_rev = true
             else
-                pkgerror("Package name/uuid must precede subdir specifier `$args`.")
+                pkgerror("Package name/uuid must precede subdir specifier `$(tokens_text(args))`.")
             end
         end
         return

@@ -18,7 +18,7 @@ using Base.BinaryPlatforms
 import ...Pkg
 import ...Pkg: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
 import ...Pkg: UPDATED_REGISTRY_THIS_SESSION, RESPECT_SYSIMAGE_VERSIONS, should_autoprecompile
-import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock, WASM_TARGET
+import ...Pkg: usable_io, discover_repo, create_cachedir_tag, manifest_rel_path, mkpidlock, WASM_TARGET, CONCURRENT
 
 #########
 # Utils #
@@ -1489,6 +1489,15 @@ end
 
 download_source(ctx::Context; readonly::Bool = true) = download_source(ctx, collect(values(ctx.env.manifest)); readonly)
 
+# The text of a package install error, as stock Pkg's download consumer prints it
+# (`sprint(showerror, err, bt)`); built for Wasm, `showerror_known` without the backtrace.
+function install_error_text(@nospecialize(err), bt)
+    WASM_TARGET || return sprint(Base.showerror, err, bt)
+    buf = IOBuffer()  # (`sprint(showerror_known, err)` without an Any-typed argument tuple)
+    Pkg.showerror_known(buf, err)
+    return String(take!(buf))
+end
+
 function download_source(ctx::Context, pkgs; readonly::Bool = true)
     pidfile_stale_age = 10 # recommended value is about 3-5x an estimated normal download time (i.e. 2-3s)
     pkgs_to_install = NamedTuple{(:pkg, :urls, :path), Tuple{eltype(pkgs), Set{String}, String}}[]
@@ -1532,9 +1541,10 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
     end
 
     # PkgWasm (PLAN.md D3): the stock version runs a producer task and
-    # `ctx.num_concurrent_downloads` worker tasks connected by Channels. Here the same per-package
-    # body runs in a serial loop, so no task is created. Results are handled exactly as the
-    # stock consumer handles them; the first error is reported with the same text.
+    # `ctx.num_concurrent_downloads` worker tasks connected by Channels. With the preference
+    # `tasks = "none"` (S1) the same per-package body runs in a serial loop, so no task is
+    # created. With `tasks = "jspi"` (S2) the stock pool runs (below). Results are handled exactly
+    # as the stock consumer handles them; the first error is reported with the same text.
     function install_one(pkg, urls, path)
         mkpath(dirname(path)) # the `packages/Package` dir needs to exist for the pidfile to be created
         return mkpidlock(path * ".pid", stale_age = pidfile_stale_age) do
@@ -1562,12 +1572,13 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                 end
                 return (pkg, success, (urls, path))
             catch err
+                # S2: the worker hands the consumer the error's text (the stock consumer prints
+                # `sprint(showerror, err, bt)`), so the results Channel has a concrete type
+                CONCURRENT && return (pkg, install_error_text(err, catch_backtrace()), (urls, path))
                 # (built for Wasm the install error is raised here, without a backtrace: no
                 # Any-typed error in the returned tuple, G3 #17-28; downloads are serial, D3)
                 if WASM_TARGET
-                    buf = IOBuffer()  # (`sprint(showerror_known, err)` without an Any-typed argument tuple)
-                    Pkg.showerror_known(buf, err)
-                    pkgerror("Error when installing package $(pkg.name):\n", String(take!(buf)))
+                    pkgerror("Error when installing package $(pkg.name):\n", install_error_text(err, nothing))
                 end
                 return (pkg, err, catch_backtrace())
             end
@@ -1580,37 +1591,85 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
     )
     bar.max = length(pkgs_to_install)
     fancyprint = can_fancyprint(ctx.io)
-    try
-        for (i, (pkg_i, urls_i, path_i)) in enumerate(pkgs_to_install)
-            pkg::eltype(pkgs), exc_or_success_or_nothing, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
-            if exc_or_success_or_nothing isa Exception
-                exc = exc_or_success_or_nothing
-                pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
-            end
-            if exc_or_success_or_nothing === nothing
-                continue # represents when another process did the install
-            end
-            success = exc_or_success_or_nothing::Bool
-            (urls, path) = bt_or_pathurls::Tuple{Set{String}, String}
-            success || push!(missed_packages, (; pkg, urls, path))
-            bar.current = i
-            str = sprint(; context = ctx.io) do io
-                if success
-                    fancyprint && print_progress_bottom(io)
-                    vstr = if pkg.version !== nothing
-                        "v$(pkg.version)"
-                    else
-                        short_treehash = string(pkg.tree_hash)[1:16]
-                        "[$short_treehash]"
-                    end
-                    printpkgstyle(io, :Installed, string(rpad(pkg.name * " ", max_name + 2, "─"), " ", vstr))
-                    fancyprint && show_progress(io, bar)
-                end
-            end
-            print(ctx.io, str)
+    # the stock consumer's handling of the i-th result
+    function handle_result(i, pkg, exc_or_success_or_nothing, bt_or_pathurls)
+        if exc_or_success_or_nothing isa String # (S2: the error's text)
+            pkgerror("Error when installing package $(pkg.name):\n", exc_or_success_or_nothing)
         end
-    finally
-        fancyprint && end_progress(ctx.io, bar)
+        if exc_or_success_or_nothing isa Exception
+            exc = exc_or_success_or_nothing
+            pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
+        end
+        if exc_or_success_or_nothing === nothing
+            return # represents when another process did the install
+        end
+        success = exc_or_success_or_nothing::Bool
+        (urls, path) = bt_or_pathurls::Tuple{Set{String}, String}
+        success || push!(missed_packages, (; pkg, urls, path))
+        bar.current = i
+        str = sprint(; context = ctx.io) do io
+            if success
+                fancyprint && print_progress_bottom(io)
+                vstr = if pkg.version !== nothing
+                    "v$(pkg.version)"
+                else
+                    short_treehash = string(pkg.tree_hash)[1:16]
+                    "[$short_treehash]"
+                end
+                printpkgstyle(io, :Installed, string(rpad(pkg.name * " ", max_name + 2, "─"), " ", vstr))
+                fancyprint && show_progress(io, bar)
+            end
+        end
+        print(ctx.io, str)
+        return
+    end
+
+    if CONCURRENT
+        # S2 (preference `tasks = "jspi"`): stock Pkg's pool. Two changes for trim (all types
+        # static): `results` is typed (an error travels as its text, see `install_one`), and
+        # the stock `Base.Experimental.@sync` (whose `sync_end` waits on `Any`-typed tasks) is
+        # a `Vector{Task}` waited on after the consumer, as `Experimental.sync_end` does after
+        # the block: the first failed task's `TaskFailedException` is thrown, and if the
+        # consumer throws, the tasks are not waited for.
+        jobs = Channel{eltype(pkgs_to_install)}(ctx.num_concurrent_downloads)
+        results = Channel{Tuple{eltype(pkgs), Union{Nothing, Bool, String}, Tuple{Set{String}, String}}}(ctx.num_concurrent_downloads)
+        tasks = Task[]
+
+        push!(tasks, @async begin
+            for pkg in pkgs_to_install
+                put!(jobs, pkg)
+            end
+        end)
+
+        for i in 1:ctx.num_concurrent_downloads # (default 8)
+            push!(tasks, @async begin
+                for (pkg, urls, path) in jobs
+                    put!(results, install_one(pkg, urls, path))
+                end
+            end)
+        end
+
+        try
+            for i in 1:length(pkgs_to_install)
+                pkg::eltype(pkgs), exc_or_success_or_nothing, bt_or_pathurls = take!(results)
+                handle_result(i, pkg, exc_or_success_or_nothing, bt_or_pathurls)
+            end
+        finally
+            fancyprint && end_progress(ctx.io, bar)
+            close(jobs)
+        end
+        for t in tasks
+            wait(t)
+        end
+    else
+        try
+            for (i, (pkg_i, urls_i, path_i)) in enumerate(pkgs_to_install)
+                pkg::eltype(pkgs), exc_or_success_or_nothing, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
+                handle_result(i, pkg, exc_or_success_or_nothing, bt_or_pathurls)
+            end
+        finally
+            fancyprint && end_progress(ctx.io, bar)
+        end
     end
 
     ##################################################

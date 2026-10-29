@@ -108,6 +108,19 @@ end
 "Whether PkgWasm is built for Wasm (see `TargetIO`)."
 const WASM_TARGET = TARGET == "wasm"
 
+# Tasks (S2, lane s2-pkg): the compile-time preference `tasks` of PkgWasm. "none" (the
+# default; S1, PLAN.md D3) runs the download pool as a serial loop, for hosts without task
+# switching (wasmtime) and for a Wasm build with `Config(tasks = :none)`. "jspi" runs stock
+# Pkg's concurrent download pool (worker tasks and Channels); a Wasm build then needs
+# `Config(tasks = :jspi)` (Node, JSPI). Natively "jspi" runs the same pool on Julia's tasks.
+Base.record_compiletime_preference(PKGWASM_UUID, "tasks")
+const TASKS = let t = get(Base.get_preferences(PKGWASM_UUID), "tasks", "none")
+    t in ("none", "jspi") || error("PkgWasm: invalid preference tasks = $(repr(t)) (\"none\" or \"jspi\")")
+    t::String
+end
+"Whether stock Pkg's concurrent code runs (preference `tasks = \"jspi\"`), else the serial D3 paths."
+const CONCURRENT = TASKS == "jspi"
+
 """
     StdStream(fd)
 

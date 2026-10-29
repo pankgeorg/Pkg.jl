@@ -15,11 +15,65 @@ function to_tar_path_format(file::AbstractString)
     return file
 end
 
+# The files of a compressed registry read from the unpack cache (see `load_compressed_registry`)
+mutable struct RegistryTarIndex
+    const compressed::String # the compressed tarball the cache was built from
+    const tar::String        # the cached decompressed tarball (an immutable generation)
+    const entries::Dict{String, Tuple{Int64, Int64}} # entry path => (data offset, size)
+    # opened when the index is read (so a later replacement or removal of the file cannot
+    # change what this index reads) and closed by `close_registry_cache_streams!`
+    io::Union{Nothing, IOStream}
+    # the stock in-memory files, if reading the cache failed after it was selected
+    fallback::Union{Nothing, Dict{String, String}}
+end
+Base.haskey(t::RegistryTarIndex, k::String) = haskey(t.entries, k)
+Base.delete!(t::RegistryTarIndex, k::String) = (delete!(t.entries, k); t)
+function Base.getindex(t::RegistryTarIndex, k::String)
+    off, size = t.entries[k]
+    fb = t.fallback
+    fb === nothing || return fb[k]
+    try
+        io = t.io
+        if io === nothing || !isopen(io)
+            io = t.io = open_registry_cache_stream(t.tar)
+        end
+        seek(io, off)
+        data = read(io, size)
+        length(data) == size || error("registry cache $(repr(t.tar)): entry $(repr(k)) is truncated")
+        return String(data)
+    catch e
+        # (the stock read of the compressed tarball, as if the cache had not been used)
+        @pkg_debug "registry cache read failed, reading $(t.compressed) in memory" exception = e
+        io = t.io
+        io === nothing || close(io)
+        t.io = nothing
+        fb = t.fallback = uncompress_registry(t.compressed)
+        return fb[k]
+    end
+end
+
+# Streams of cached registries opened in this session. Closed explicitly at the end of a
+# command (`pkgwasm_main`) and by `sanitize_globals!` (a Wasm build runs no finalizers); a
+# `RegistryTarIndex` used afterwards reopens its file.
+const REGISTRY_CACHE_STREAMS = IOStream[]
+function open_registry_cache_stream(tar::String)
+    io = open(tar)
+    push!(REGISTRY_CACHE_STREAMS, io)
+    return io
+end
+function close_registry_cache_streams!()
+    for io in REGISTRY_CACHE_STREAMS
+        close(io)
+    end
+    empty!(REGISTRY_CACHE_STREAMS)
+    return nothing
+end
+
 # See loading.jl
 const TOML_CACHE = Base.TOMLCache(Base.TOML.Parser{Dates}())
 const TOML_LOCK = ReentrantLock()
 _parsefile(toml_file::AbstractString) = Base.parsed_toml(toml_file, TOML_CACHE, TOML_LOCK)
-function parsefile(in_memory_registry::Union{Dict, Nothing}, folder::AbstractString, file::AbstractString)
+function parsefile(in_memory_registry::Union{Dict, RegistryTarIndex, Nothing}, folder::AbstractString, file::AbstractString)
     if in_memory_registry === nothing
         return _parsefile(joinpath(folder, file))
     else
@@ -29,7 +83,7 @@ function parsefile(in_memory_registry::Union{Dict, Nothing}, folder::AbstractStr
     end
 end
 
-custom_isfile(in_memory_registry::Union{Dict, Nothing}, folder::AbstractString, file::AbstractString) =
+custom_isfile(in_memory_registry::Union{Dict, RegistryTarIndex, Nothing}, folder::AbstractString, file::AbstractString) =
     in_memory_registry === nothing ? isfile(joinpath(folder, file)) : haskey(in_memory_registry, to_tar_path_format(file))
 
 # Info about each version of a package
@@ -174,7 +228,7 @@ mutable struct PkgEntry
     const name::String
     const uuid::UUID
 
-    const in_memory_registry::Union{Dict{String, String}, Nothing}
+    const in_memory_registry::Union{Dict{String, String}, RegistryTarIndex, Nothing}
     # Version.toml / (Compat.toml / Deps.toml):
     info::PkgInfo # lazily initialized
 
@@ -307,6 +361,163 @@ function uncompress_registry(tar_gz::AbstractString)
     return data
 end
 
+# PkgWasm registry unpack cache. Reading a compressed registry the stock way decompresses and
+# walks the whole tarball (about 88 MB and 77k entries for General) on every load: ~0.3 s
+# natively but ~3.4 s in Wasm, on every command. With the cache, the first load writes the
+# decompressed tarball and an index (entry path => data offset and size) to
+#     <DEPOT_PATH[1]>/scratchspaces/<Pkg UUID>/registry_cache/<git-tree-sha1>.idx
+#     <DEPOT_PATH[1]>/scratchspaces/<Pkg UUID>/registry_cache/<git-tree-sha1>-<generation>.tar
+# and later loads read only the index plus the entries they need (Registry.toml and the
+# packages a command touches), with seek + read. The registry itself is untouched: it is still
+# the stock compressed layout, reported as `:packed`, and `RegistryInstance` holds a
+# `RegistryTarIndex` where stock holds the `Dict` of all files (same `haskey`/`getindex`/
+# `delete!` use).
+#
+# Correctness when the registry changes: the index records the identity of the compressed
+# tarball it was built from (absolute path, size, mtime and ctime at full precision, inode),
+# taken before and checked again after the build, and it is used only while that identity
+# is unchanged, so `Registry.update` (a new tarball and tree hash), `rm` + `add`, or any other
+# rewrite or replacement of the tarball invalidates it. A tar generation is written once
+# under a fresh name and never modified; the index names it and is published last, by one
+# rename, so an index always describes the tar it names, including after a crash. A reader
+# opens that tar when it reads the index, so pruning does not affect it. The previous
+# generation for the same tree hash and entries built from earlier versions of the same
+# tarball are removed when a new one is published. Any failure to build or read the cache,
+# including a later read of an entry, falls back to the stock in-memory read.
+# Single writer, as for all PkgWasm depot writes (mkpidlock is a no-op): two processes that
+# build the cache for the same tarball at once each publish a complete, self-consistent
+# generation (the last rename wins), but one may remove the other's tar while it is still
+# needed, in which case that process falls back to the in-memory read.
+# `Pkg.gc` removes the cache directory like any unused scratch space; it is rebuilt on the
+# next load. On by default in Wasm, off natively; `JULIA_PKG_REGISTRY_CACHE=true|false`
+# overrides.
+# (`RegistryTarIndex`: at the top of this file)
+const REGISTRY_CACHE_MAGIC = "pkgwasm-registry-cache-v2"
+
+registry_cache_enabled() = Base.get_bool_env("JULIA_PKG_REGISTRY_CACHE", Pkg.WASM_TARGET) === true
+
+registry_cache_dir() = joinpath(Pkg.depots1(), "scratchspaces", "44cfe95a-1eb2-52ea-b672-e2afdf69b78f", "registry_cache")
+
+# The identity of the compressed tarball, as recorded in (and checked against) the index
+# header; the path is the last field.
+function registry_cache_source(compressed_tar::String)
+    st = stat(compressed_tar)
+    return string(REGISTRY_CACHE_MAGIC, '\t', st.size, '\t', st.mtime, '\t', st.ctime, '\t', st.inode, '\t', compressed_tar)
+end
+
+# The index header: source identity, tar generation file name, its size
+function parse_registry_cache_header(text::String)
+    lines = split(text, '\n'; limit = 4)
+    length(lines) == 4 || return nothing
+    return String(lines[1]), String(lines[2]), tryparse(Int64, lines[3]), lines[4]
+end
+
+# The cached index for `compressed_tar` (tree hash `tree_info`), or `nothing` if there is none
+# that matches the tarball as it is now. The tar is opened here (see `RegistryTarIndex`).
+function read_registry_cache(dir::String, tree_info::Base.SHA1, source::String, compressed_tar::String)
+    idx = joinpath(dir, string(tree_info, ".idx"))
+    isfile(idx) || return nothing
+    h = parse_registry_cache_header(read(idx, String))
+    h === nothing && return nothing
+    src, tarname, tarsize, body = h
+    (src == source && tarsize !== nothing && startswith(tarname, string(tree_info, '-'))) || return nothing
+    tar = joinpath(dir, tarname)
+    isfile(tar) || return nothing
+    io = open_registry_cache_stream(tar)
+    if filesize(io) != tarsize
+        close(io)
+        return nothing
+    end
+    entries = Dict{String, Tuple{Int64, Int64}}()
+    for line in eachsplit(body, '\n'; keepempty = false)
+        t1 = findfirst('\t', line)::Int
+        t2 = findnext('\t', line, t1 + 1)::Int
+        entries[String(SubString(line, t2 + 1))] =
+            (parse(Int64, SubString(line, 1, t1 - 1)), parse(Int64, SubString(line, t1 + 1, t2 - 1)))
+    end
+    return RegistryTarIndex(compressed_tar, tar, entries, io, nothing)
+end
+
+# Decompress `compressed_tar` into a new tar generation, index it and publish the index;
+# returns the index, or `nothing` if the tarball changed during the build.
+function write_registry_cache(dir::String, tree_info::Base.SHA1, source::String, compressed_tar::String)
+    mkpath(dir)
+    gen = basename(tempname(dir; cleanup = false))
+    tarname = string(tree_info, '-', gen, ".tar")
+    tar = joinpath(dir, tarname)
+    tmp_idx = joinpath(dir, string(gen, ".idx.partial"))
+    published = false
+    try
+        Pkg.Host.decompress(compressed_tar, tar)
+        entries = Dict{String, Tuple{Int64, Int64}}()
+        buf = Vector{UInt8}(undef, Tar.DEFAULT_BUFFER_SIZE)
+        open(tar) do io
+            globals = Dict{String, String}()
+            while !eof(io)
+                hdr = Tar.read_header(io, globals = globals, buf = buf)
+                hdr === nothing && break
+                Tar.check_header(hdr)
+                ('\n' in hdr.path || '\t' in hdr.path) && error("unsupported entry path $(repr(hdr.path))")
+                off = Int64(position(io))
+                entries[hdr.path] = (off, Int64(hdr.size))
+                seek(io, off + Tar.round_up(hdr.size))
+            end
+        end
+        # the tarball must not have changed while it was read
+        registry_cache_source(compressed_tar) == source || return nothing
+        out = IOBuffer()
+        print(out, source, '\n', tarname, '\n', filesize(tar), '\n')
+        for (path, (off, size)) in entries
+            print(out, off, '\t', size, '\t', path, '\n')
+        end
+        write(tmp_idx, take!(out))
+        idx = joinpath(dir, string(tree_info, ".idx"))
+        # what the index being replaced names, and entries of earlier versions of this tarball
+        stale = String[]
+        path_field = string('\t', compressed_tar)
+        for f in readdir(dir)
+            endswith(f, ".idx") || continue
+            p = joinpath(dir, f)
+            h = parse_registry_cache_header(read(p, String))
+            h === nothing && continue
+            if f == basename(idx)
+                h[2] == tarname || push!(stale, joinpath(dir, h[2]))
+            elseif endswith(h[1], path_field)
+                push!(stale, p, joinpath(dir, h[2]))
+            end
+        end
+        Base.mv(tmp_idx, idx; force = true)
+        published = true
+        for p in stale
+            Base.rm(p; force = true)
+        end
+        io = open_registry_cache_stream(tar)
+        return RegistryTarIndex(compressed_tar, tar, entries, io, nothing)
+    finally
+        Base.rm(tmp_idx; force = true)
+        published || Base.rm(tar; force = true)
+    end
+end
+
+# The files of a compressed registry: from the unpack cache when enabled (building it on the
+# first load), otherwise (or if the cache fails) the stock in-memory `Dict`.
+function load_compressed_registry(compressed_tar::String, tree_info::Union{Base.SHA1, Nothing})
+    if tree_info !== nothing && registry_cache_enabled()
+        try
+            dir = registry_cache_dir()
+            path = abspath(compressed_tar)
+            source = registry_cache_source(path)
+            cached = read_registry_cache(dir, tree_info, source, path)
+            cached === nothing || return cached
+            built = write_registry_cache(dir, tree_info, source, path)
+            built === nothing || return built
+        catch e
+            @pkg_debug "registry cache unavailable, reading $(compressed_tar) in memory" exception = e
+        end
+    end
+    return uncompress_registry(compressed_tar)
+end
+
 struct RegistryInstance
     path::String
     name::String
@@ -315,7 +526,7 @@ struct RegistryInstance
     description::Union{String, Nothing}
     pkgs::Dict{UUID, PkgEntry}
     tree_info::Union{Base.SHA1, Nothing}
-    in_memory_registry::Union{Nothing, Dict{String, String}}
+    in_memory_registry::Union{Nothing, Dict{String, String}, RegistryTarIndex}
     # various caches
     name_to_uuids::Dict{String, Vector{UUID}}
 end
@@ -366,7 +577,8 @@ function RegistryInstance(path::AbstractString)
     # read in memory as stock does; `uncompress_registry` decompresses it through the Host
     # seam (`with_decompressed`), not a `7z` pipeline.
     in_memory_registry = if compressed_file !== nothing
-        uncompress_registry(joinpath(dirname(path), compressed_file))
+        # (or from the unpack cache: `load_compressed_registry`)
+        load_compressed_registry(joinpath(dirname(path), compressed_file), tree_info)
     else
         nothing
     end

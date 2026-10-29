@@ -283,6 +283,16 @@ struct AppInfo
     julia_flags::Vector{String}
     other::Dict{String, Any}
 end
+# `a == b` for values `a`, `b` of a field of type `FT`, each type of a Union told apart
+function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
+    FT === Dict{String, Any} && return :(WASM_TARGET ? toml_eq($a, $b) : $a == $b)
+    ts = Base.uniontypes(FT)
+    length(ts) <= 2 && return :($a == $b)
+    isa_chain(v, body) = foldr(ts[1:(end - 1)]; init = body(:($v::$(ts[end])))) do t, rest
+        :($v isa $t ? $(body(v)) : $rest)
+    end
+    return isa_chain(a, av -> isa_chain(b, bv -> :($av == $bv)))
+end
 # `all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(T))` with each field's
 # comparison typed: in order, stopping at the first unequal one (M4.2: static dispatch; e2e
 # B14: a field of a Union of more than two types compared type by type, a TOML table by
@@ -297,16 +307,6 @@ end
         end && $ex)
     end
     return ex
-end
-# `a == b` for values `a`, `b` of a field of type `FT`, each type of a Union told apart
-function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
-    FT === Dict{String, Any} && return :(WASM_TARGET ? toml_eq($a, $b) : $a == $b)
-    ts = Base.uniontypes(FT)
-    length(ts) <= 2 && return :($a == $b)
-    isa_chain(v, body) = foldr(ts[1:(end - 1)]; init = body(:($v::$(ts[end])))) do t, rest
-        :($v isa $t ? $(body(v)) : $rest)
-    end
-    return isa_chain(a, av -> isa_chain(b, bv -> :($av == $bv)))
 end
 
 # `a.version == b.version` for PackageSpecs, each type of the field's Union told apart

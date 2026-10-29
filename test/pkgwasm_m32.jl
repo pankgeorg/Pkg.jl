@@ -475,6 +475,34 @@ end
             n += 1
         end
         @info "typed artifact selection checked" tomls = length(tomls) cases = n
+        # Platform hashing (stock's Dict/Set order), incl. Base's julia_version strategy
+        PK = Pkg.Artifacts.PlatformKey
+        for p in [plats; BP.Platform("aarch64", "linux"; julia_version = v"1.13.0");
+                  BP.HostPlatform(BP.Platform("x86_64", "macos"; os_version = v"10.15"))], h in (UInt(0), UInt(17), typemax(UInt))
+            @test hash(PK(p), h) == hash(p, h)
+        end
+        # review-1 #1, #2: julia_version-tagged entries; ties broken in stock's (hash) order
+        mktempdir() do dir
+            hosts = [Pkg.host_platform(), BP.HostPlatform(BP.Platform("x86_64", "macos"; os_version = v"10.15")),
+                     BP.HostPlatform(BP.Platform("aarch64", "linux"; julia_version = v"1.13.2"))]
+            entry(h, kv) = "[[foo]]\n" * join(("$k = \"$v\"" for (k, v) in kv), "\n") * "\ngit-tree-sha1 = \"$h\"\n[[foo.download]]\nurl = \"http://x/$h\"\nsha256 = \"$("0"^64)\"\n"
+            cases = [
+                [("arch", "aarch64"), ("os", "linux"), ("julia_version", "1.13.0")],
+                [("arch", "aarch64"), ("os", "linux"), ("julia_version", "1.12.0")],
+                [("arch", "aarch64"), ("os", "linux"), ("libc", "glibc"), ("julia_version", "1.13.1")],
+                [("arch", "x86_64"), ("os", "macos"), ("os_version", "10.14")],
+                [("arch", "x86_64"), ("os", "macos"), ("os_version", "10.13")],
+                [("arch", "x86_64"), ("os", "macos"), ("os_version", "10.12")],
+                [("arch", "x86_64"), ("os", "macos"), ("os_version", "11.0")],
+            ]
+            for perm in ([1, 2, 3, 4, 5, 6, 7], [7, 6, 5, 4, 3, 2, 1], [5, 4, 2, 1, 3, 7, 6]), host in hosts
+                f = joinpath(dir, "Artifacts.toml")
+                write(f, join((entry(string(i; pad = 40), cases[i]) for i in perm), "\n"))
+                a = Pkg.Artifacts.select_downloadable_artifacts_typed(f; platform = host)
+                b = Base.invokelatest(Pkg.Artifacts.select_downloadable_artifacts, f; platform = host)
+                @test a == b
+            end
+        end
     end
 
     @testset "D4 update: artifact selection hooks are rejected" begin

@@ -704,6 +704,48 @@ extract_all_hashes(artifacts_toml::AbstractString; kwargs...) =
     extract_all_hashes(string(artifacts_toml)::String; kwargs...)
 
 
+# The `Platform` constructor's own `julia_version` strategy (an anonymous function of Base:
+# major and minor versions equal), taken from a Platform once
+const JULIA_VERSION_COMPARATOR = Platform("x86_64", "linux"; julia_version = v"1.0.0").compare_strategies["julia_version"]
+
+function call_compare_strategy(f::Function, a::String, b::String, a_requested::Bool, b_requested::Bool)::Bool
+    f === BinaryPlatforms.compare_default && return BinaryPlatforms.compare_default(a, b, a_requested, b_requested)
+    f === BinaryPlatforms.compare_version_cap && return BinaryPlatforms.compare_version_cap(a, b, a_requested, b_requested)
+    f === JULIA_VERSION_COMPARATOR && return JULIA_VERSION_COMPARATOR(a, b, a_requested, b_requested)::Bool
+    WASM_TARGET && error("PkgWasm built for Wasm: custom platform comparison strategies are not supported")
+    return (@invokelatest f(a, b, a_requested, b_requested))::Bool
+end
+
+# A Platform as a Dict/Set key, hashed and compared exactly as a `Platform`: Base hashes the
+# tags and the comparison strategies, i.e. each strategy function by its `objectid`. Those of
+# Base's three strategies are taken when PkgWasm is loaded (built for Wasm: when it is
+# compiled); they are stable across sessions of one Julia build.
+struct PlatformKey
+    p::Platform
+end
+Base.:(==)(a::PlatformKey, b::PlatformKey) = a.p == b.p
+Base.isequal(a::PlatformKey, b::PlatformKey) = isequal(a.p, b.p)
+const STRATEGY_OBJECTIDS = (objectid(BinaryPlatforms.compare_default), objectid(BinaryPlatforms.compare_version_cap),
+    objectid(JULIA_VERSION_COMPARATOR))
+function strategy_objectid(f::Function)::UInt
+    f === BinaryPlatforms.compare_default && return STRATEGY_OBJECTIDS[1]
+    f === BinaryPlatforms.compare_version_cap && return STRATEGY_OBJECTIDS[2]
+    f === JULIA_VERSION_COMPARATOR && return STRATEGY_OBJECTIDS[3]
+    WASM_TARGET && error("PkgWasm built for Wasm: custom platform comparison strategies are not supported")
+    return objectid(f)
+end
+function Base.hash(k::PlatformKey, h::UInt)
+    # Base.hash(::Platform, ::UInt), with `hash(f) == hash(objectid(f))` for each strategy
+    p = k.p
+    h ⊻= 0x506c6174666f726d % UInt
+    h = hash(p.tags, h)
+    ids = Dict{String, UInt}()
+    for (key, f) in p.compare_strategies
+        ids[key] = strategy_objectid(f)
+    end
+    return hash(ids, h)
+end
+
 # PkgWasm (for trim): `Artifacts.select_downloadable_artifacts(artifacts_toml; platform,
 # include_lazy)` and what it calls (`Artifacts.artifact_meta`, `BinaryPlatforms.select_platform`
 # and `platforms_match`), with the TOML values typed (TOML arrays are `Vector{Any}`) and the
@@ -734,17 +776,14 @@ function artifact_meta_typed(name::String, artifact_dict::Dict{String, Any}, art
     meta0 = artifact_dict[name]
     local meta::Union{Nothing, Dict{String, Any}}
     if meta0 isa Vector{Any}
-        # (stock: a Dict{Platform, ...}; hashing a Platform hashes its Function-valued
-        # comparison strategies, which WasmCodegen cannot. As in the Dict, an entry for a
-        # platform equal to an earlier one replaces it.)
-        dl = Pair{Platform, Dict{String, Any}}[]
+        # (stock: a Dict{Platform, ...}, keyed here by `PlatformKey`: the same hashes and
+        # equality, so the same entries in the same iteration order)
+        dl_dict = Dict{PlatformKey, Dict{String, Any}}()
         for x in meta0
             x = x::Dict{String, Any}
-            p = unpack_platform(x, name, artifacts_toml)::Platform
-            i = findfirst(e -> e.first == p, dl)
-            i === nothing ? push!(dl, p => x) : (dl[i] = dl[i].first => x)
+            dl_dict[PlatformKey(unpack_platform(x, name, artifacts_toml)::Platform)] = x
         end
-        meta = select_platform_typed(dl, platform)
+        meta = select_platform_typed(dl_dict, platform)
     elseif meta0 isa Dict{String, Any}
         meta = meta0
     else
@@ -758,16 +797,17 @@ function artifact_meta_typed(name::String, artifact_dict::Dict{String, Any}, art
     return meta
 end
 
-function select_platform_typed(download_info::Vector{Pair{Platform, Dict{String, Any}}}, platform::Platform)
-    ps = Pair{Platform, Dict{String, Any}}[e for e in download_info if platforms_match_typed(e.first, platform)]
+function select_platform_typed(download_info::Dict{PlatformKey, Dict{String, Any}}, platform::Platform)
+    # (stock's calls, so ties after the sort below keep stock's order: the Set's)
+    ps = collect(filter(k -> platforms_match_typed(k.p, platform), keys(download_info)))
     isempty(ps) && return nothing
     function match_loss(a::Platform, b::Platform)
         a_tags = Set(keys(tags(a)))
         b_tags = Set(keys(tags(b)))
         return length(union(a_tags, b_tags)) - length(intersect(a_tags, b_tags))
     end
-    sort!(ps, lt = (ea, eb) -> begin
-        a, b = ea.first, eb.first
+    sort!(ps, lt = (ka, kb) -> begin
+        a, b = ka.p, kb.p
         loss_a = match_loss(a, platform)
         loss_b = match_loss(b, platform)
         if loss_a != loss_b
@@ -775,7 +815,7 @@ function select_platform_typed(download_info::Vector{Pair{Platform, Dict{String,
         end
         return triplet(a) > triplet(b)
     end)
-    return first(ps).second
+    return download_info[first(ps)]
 end
 
 function platforms_match_typed(a::Platform, b::Platform)
@@ -800,11 +840,6 @@ function platforms_match_typed(a::Platform, b::Platform)
     return true
 end
 
-function call_compare_strategy(f::Function, a::String, b::String, a_requested::Bool, b_requested::Bool)::Bool
-    f === BinaryPlatforms.compare_default && return BinaryPlatforms.compare_default(a, b, a_requested, b_requested)
-    f === BinaryPlatforms.compare_version_cap && return BinaryPlatforms.compare_version_cap(a, b, a_requested, b_requested)
-    WASM_TARGET && error("PkgWasm built for Wasm: custom platform comparison strategies are not supported")
-    return (@invokelatest f(a, b, a_requested, b_requested))::Bool
-end
+
 
 end # module PkgArtifacts

@@ -185,6 +185,8 @@ function showerror_known(io::IO, @nospecialize(e))
         end
     elseif e isa Host.HostError
         showerror(io, e)
+    elseif e isa PlatformEngines.HTTPStatusError # (an artifact or package download's final status)
+        showerror(io, e)
     elseif e isa Base.TOML.ParserError
         showerror(io, e)
     elseif e isa Resolve.ResolverError

@@ -2238,8 +2238,14 @@ function download_source(
                 end
                 return (pkg, success, (urls, path))
             catch err
-                # (built for Wasm no backtraces: the error is reported without one, M4.2 G3)
-                return (pkg, err, WASM_TARGET ? nothing : catch_backtrace())
+                # (built for Wasm the install error is raised here, without a backtrace: no
+                # Any-typed error in the returned tuple, G3 #17-28; downloads are serial, D3)
+                if WASM_TARGET
+                    buf = IOBuffer()  # (`sprint(showerror_known, err)` without an Any-typed argument tuple)
+                    Pkg.showerror_known(buf, err)
+                    pkgerror("Error when installing package $(pkg.name):\n", String(take!(buf)))
+                end
+                return (pkg, err, catch_backtrace())
             end
         end
     end
@@ -2257,7 +2263,6 @@ function download_source(
             pkg::DownloadPkg, exc_or_success_or_nothing, bt_or_pathurls = install_one(pkg_i, urls_i, path_i)
             if exc_or_success_or_nothing isa Exception
                 exc = exc_or_success_or_nothing
-                WASM_TARGET && pkgerror("Error when installing package $(pkg.name):\n", sprint(Pkg.showerror_known, exc))
                 pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
             end
             if exc_or_success_or_nothing === nothing
@@ -4161,8 +4166,8 @@ function print_diff(io::IO, old::Union{Nothing, PackageSpec}, new::Union{Nothing
     elseif !is_instantiated(new)
         printstyled(io, "- $(stat_rep(old))"; color = :light_red)
     elseif is_tracking_registry(old) && is_tracking_registry(new) &&
-            new.version isa VersionNumber && old.version isa VersionNumber && new.version != old.version
-        if new.version > old.version
+            (nv = new.version; ov = old.version; nv isa VersionNumber && ov isa VersionNumber && nv != ov)  # (read once: typed, G3 #16)
+        if nv::VersionNumber > ov::VersionNumber  # (G3 V44)
             printstyled(io, "↑ $(stat_rep(old)) ⇒ $(stat_rep(new; name = false))"; color = :light_yellow)
         else
             printstyled(io, "↓ $(stat_rep(old)) ⇒ $(stat_rep(new; name = false))"; color = :light_magenta)
@@ -4453,7 +4458,7 @@ end
                 end
                 union!(matching_ids, deps_to_add)
             end
-            xs = eltype(xs)[(id, old, new) for (id, old, new) in xs if id in matching_ids]
+            xs = filter(x -> x[1] in matching_ids, xs)  # (the same rows, no tuple conversion: G3 #21-22)
         end
         if isempty(xs)
             printpkgstyle(

@@ -4,8 +4,10 @@
 const GIT_ENV = ("GIT_AUTHOR_NAME" => "t", "GIT_AUTHOR_EMAIL" => "t@t", "GIT_COMMITTER_NAME" => "t",
                  "GIT_COMMITTER_EMAIL" => "t@t", "GIT_AUTHOR_DATE" => "2026-01-01T00:00:00Z",
                  "GIT_COMMITTER_DATE" => "2026-01-01T00:00:00Z", "GIT_CONFIG_NOSYSTEM" => "1")
-fgit(dir, args...) = run(addenv(Cmd(["git", "-C", dir, args...]), GIT_ENV...))
-fgit_read(dir, args...) = chomp(read(addenv(Cmd(["git", "-C", dir, args...]), GIT_ENV...), String))
+# (never an empty or relative directory: `git -C ""` would run in the caller's cwd)
+fdir(dir) = (isabspath(dir) || error("git fixture: not an absolute directory: $(repr(dir))"); dir)
+fgit(dir, args...) = run(addenv(Cmd(["git", "-C", fdir(dir), args...]), GIT_ENV...))
+fgit_read(dir, args...) = chomp(read(addenv(Cmd(["git", "-C", fdir(dir), args...]), GIT_ENV...), String))
 commit_of(dir, rev) = fgit_read(dir, "rev-parse", rev * "^{commit}")
 tree_of(dir, rev) = fgit_read(dir, "rev-parse", rev * "^{tree}")
 

@@ -152,7 +152,8 @@ else
                         regsrc = mktempdir()
                         write(joinpath(regsrc, "Registry.toml"), "name = \"Mini\"\nuuid = \"$(uuid4())\"\n[packages]\n")
                         if git
-                            env = ("GIT_AUTHOR_NAME" => "t", "GIT_AUTHOR_EMAIL" => "t@t", "GIT_COMMITTER_NAME" => "t", "GIT_COMMITTER_EMAIL" => "t@t")
+                            env = ("GIT_AUTHOR_NAME" => "t", "GIT_AUTHOR_EMAIL" => "t@t", "GIT_COMMITTER_NAME" => "t", "GIT_COMMITTER_EMAIL" => "t@t",
+                                   "HOME" => regsrc, "GIT_CEILING_DIRECTORIES" => regsrc, "GIT_CONFIG_NOSYSTEM" => "1")
                             for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "r"])
                                 run(addenv(Cmd(["git", "-C", regsrc, a...]), env...))
                             end

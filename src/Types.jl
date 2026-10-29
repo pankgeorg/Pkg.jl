@@ -1488,7 +1488,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
                         GitTools.fetch(ctx.io, repo, repo_source_typed; refspecs = pr_refspecs, depth = 1)
                         # For branch names, fetch only the specific branch
                     elseif !looks_like_commit_hash(rev_or_hash_str)
-                        specific_refspec = ["+refs/heads/$(rev_or_hash):refs/cache/heads/$(rev_or_hash)"]
+                        specific_refspec = ["+refs/heads/$(string(rev_or_hash)::String):refs/cache/heads/$(string(rev_or_hash)::String)"] # (typed: G3)
                         GitTools.fetch(ctx.io, repo, repo_source_typed; refspecs = specific_refspec, depth = 1)
                     else
                         # For commit hashes, fetch all branches including the older commits
@@ -1525,7 +1525,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             ispinned = innerentry !== nothing && innerentry.pinned
             if isbranch && !fetched && !ispinned
                 # Fetch only the specific branch being tracked
-                specific_refspec = ["+refs/heads/$(rev_or_hash):refs/cache/heads/$(rev_or_hash)"]
+                specific_refspec = ["+refs/heads/$(string(rev_or_hash)::String):refs/cache/heads/$(string(rev_or_hash)::String)"] # (typed: G3)
                 GitTools.fetch(ctx.io, repo, repo_source_typed; refspecs = specific_refspec, depth = 1)
                 gitobject, isbranch = get_object_or_branch(repo, rev_or_hash)
             end

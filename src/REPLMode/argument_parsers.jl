@@ -17,6 +17,11 @@ struct Subdir
     dir::String
 end
 
+# Base's default `show` of the tokens, typed (PkgWasm, G3: shown in the parser's error messages)
+for T in (:PackageIdentifier, :VersionToken, :Rev, :Subdir)
+    @eval Base.show(io::IO, x::$T) = (show(io, $T); print(io, '('); show(io, getfield(x, 1)); print(io, ')'))
+end
+
 const PackageToken = Union{
     PackageIdentifier,
     VersionToken,
@@ -97,9 +102,19 @@ function extract_revision(input::String)
     return remaining, rev_part
 end
 
+# `findlast(c, s)`, as a loop (PkgWasm, G3: Base's goes through an untyped predicate)
+function findlast_char(c::Char, s::String)
+    i = lastindex(s)
+    while i > 0
+        s[i] == c && return i
+        i = prevind(s, i)
+    end
+    return nothing
+end
+
 # Extract version specifier from the end of input (rightmost @)
 function extract_version(input::String)
-    at_pos = findlast('@', input)
+    at_pos = findlast_char('@', input)
     if at_pos === nothing
         return input, nothing
     end

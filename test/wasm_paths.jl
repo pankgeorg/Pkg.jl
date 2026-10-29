@@ -41,6 +41,29 @@ end
     @test n > 10
 end
 
+@testset "G3: filtered status (review-19)" begin
+    stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
+    mktempdir() do dir
+        write(joinpath(dir, "Project.toml"), "[deps]\nDates = \"ade2ca70-3891-5945-98fb-dc099432e06a\"\nUUIDs = \"cf7118a7-6976-5b1a-9a39-7adc72f591a4\"\n")
+        out(mod, args...) = begin
+            old = Base.active_project()
+            try
+                mod.activate(dir; io = devnull)
+                buf = IOBuffer()
+                mod.status(args...; io = buf)
+                replace(String(take!(buf)), dir => "DIR")
+            finally
+                Base.ACTIVE_PROJECT[] = old
+            end
+        end
+        for args in (("Dates",), (["Dates", "UUIDs"],), ("NoSuchPackage",), ())
+            a, b = out(stock, args...), out(Pkg, args...)
+            @test a == b
+            args == ("Dates",) && @test occursin("Dates", b) && !occursin("UUIDs", b)
+        end
+    end
+end
+
 const CHILD = raw"""
 import Pkg; Pkg.instantiate(; io = devnull)
 using Pkg

@@ -193,3 +193,35 @@ end
         @test ours == stock
     end
 end
+
+# tree_hash sorts by a key computed once per entry: the same hashes as stock Pkg's
+@testset "tree_hash: PkgWasm == stock Pkg" begin
+    root = mktempdir()
+    # (names whose order depends on the directory key `name/`: '-' < '.' < '/' < '0')
+    for d in ("foo", "foo.d/x", "a/b/c", "empty", "z/.git", ".git")
+        mkpath(joinpath(root, d))
+    end
+    for f in ("foo.bar", "foo-bar", "foo0", "foo/x", "foo.d/x/y", "a/b/c/d", "a/b.txt", "z/.git/HEAD", "z/w", ".git/config")
+        write(joinpath(root, f), f)
+    end
+    chmod(joinpath(root, "a", "b.txt"), 0o755)
+    symlink("foo-bar", joinpath(root, "link"))
+    symlink("a", joinpath(root, "dlink"))
+    for HashType in (Pkg.GitTools.SHA.SHA1_CTX, Pkg.GitTools.SHA.SHA256_CTX)
+        @test Pkg.GitTools.tree_hash(HashType, root) == Pkg.GitTools.tree_hash(HashType, root)
+        for sub in ("a", "foo", "z")
+            @test Pkg.GitTools.tree_hash(HashType, joinpath(root, sub)) == Pkg.GitTools.tree_hash(HashType, joinpath(root, sub))
+        end
+    end
+    @test Pkg.GitTools.tree_hash(root) == Pkg.GitTools.tree_hash(root)
+    # a root through a symbolic link and `..`: modes of the entries as named from the root
+    for d in ("A/child", "B/child")
+        mkpath(joinpath(root, d))
+    end
+    write(joinpath(root, "A", "f"), "f"); write(joinpath(root, "B", "f"), "f")
+    chmod(joinpath(root, "B", "f"), 0o755)
+    symlink(joinpath(root, "B", "child"), joinpath(root, "A", "link"))
+    r = joinpath(root, "A", "link", "..")
+    @test Pkg.GitTools.tree_hash(r) == Pkg.GitTools.tree_hash(r)
+    rm(root; recursive = true)
+end

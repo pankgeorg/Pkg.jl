@@ -122,4 +122,19 @@ haskey(ENV, "PKGWASM_TYPED_EQ_CHILD") || @testset "typed equality, target = wasm
         @test m !== nothing && parse(Int, m[1]) > 15000 && m[2] == "0"
     end
 end
+
+# Loaded from source (no package images): the generated `fields_equal` runs in the world it
+# was defined in, so what it calls (`field_eq_expr`) must be defined before it.
+haskey(ENV, "PKGWASM_TYPED_EQ_CHILD") || @testset "typed equality, loaded from source" begin
+    code = """
+    import Pkg; T = Pkg.Types
+    m = T.Manifest(); m.julia_version = v"1.13.2"
+    p = T.Project(); p.name = "P"
+    println("FROMSOURCE ", T.Project() == T.Project(), " ", T.Manifest() == T.Manifest(), " ", p == T.Project(), " ", m == T.Manifest())
+    """
+    out = IOBuffer()
+    cmd = addenv(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --compiled-modules=no --pkgimages=no --project=$(pkgdir(Pkg)) -e $code`, "JULIA_PKG_PRECOMPILE_AUTO" => "0")
+    @test success(pipeline(cmd; stdout = out, stderr = devnull))
+    @test occursin("FROMSOURCE true true false false", String(take!(out)))
+end
 end # module

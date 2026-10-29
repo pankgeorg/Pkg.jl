@@ -51,6 +51,36 @@ function toml_valid(f::F, @nospecialize(value)) where {F}
     return Base.inferencebarrier(Base.TOML.Printer.to_toml_value)(f, value)
 end
 
+# The table and array types Pkg's tables hold. The recursive printers below take their
+# table or array unspecialized and read it through these accessors, so each has one
+# signature: specializations of one method calling each other through `printvalue` are
+# settled by inference with limited accuracy, which is not cached, and the trim verifier then
+# finds no code for them (G3). Another type is natively printed as stock does (the
+# `_generic` methods), and an error built for Wasm.
+const TABLE_TYPES = (Dict{String, Any}, Dict{String, String}, Dict{String, Vector{String}}, Dict{String, UUID},
+    Dict{String, Vector{Dict{String, Any}}}, Dict{String, Union{String, Vector{String}}},
+    Dict{String, Dict{String, String}}, Dict{String, Dates.DateTime})
+const VECTOR_TYPES = (Vector{Any}, Vector{String}, Vector{Int64}, Vector{Float64}, Vector{Bool},
+    Vector{Dates.DateTime}, Vector{Dates.Date}, Vector{Dates.Time},
+    Vector{Dict{String, Any}}, Vector{Dict{String, Dates.DateTime}})
+# an `isa` chain over `types`: `body(T)` for the type of `x`, `otherwise` for none
+isa_chain(x::Symbol, types, body, otherwise) =
+    foldr((T, rest) -> :($x isa $T ? $(body(T)) : $rest), types; init = otherwise)
+@eval Base.@nospecializeinfer is_typed_table(@nospecialize(t)) = $(isa_chain(:t, TABLE_TYPES, T -> true, false))
+@eval Base.@nospecializeinfer is_typed_vector(@nospecialize(v)) = $(isa_chain(:v, VECTOR_TYPES, T -> true, false))
+# the keys of a table (in `keys` order), the value at a key, an array's length and element
+@eval Base.@nospecializeinfer table_keys(@nospecialize(t)) = $(isa_chain(:t, TABLE_TYPES, T -> :(collect(keys(t::$T))::Vector{String}),
+    :(WASM_TARGET ? error("PkgWasm TOML writer: unsupported table type") : Base.inferencebarrier(collect)(keys(t)))))
+@eval Base.@nospecializeinfer table_get(@nospecialize(t), k::String) = $(isa_chain(:t, TABLE_TYPES, T -> :((t::$T)[k]),
+    :(error("PkgWasm TOML writer: unsupported table type"))))
+@eval Base.@nospecializeinfer vector_length(@nospecialize(v)) = $(isa_chain(:v, VECTOR_TYPES, T -> :(length(v::$T)),
+    :(error("PkgWasm TOML writer: unsupported array type"))))
+@eval Base.@nospecializeinfer vector_get(@nospecialize(v), i::Int) = $(isa_chain(:v, VECTOR_TYPES, T -> :((v::$T)[i]),
+    :(error("PkgWasm TOML writer: unsupported array type"))))
+# (a table's value by key, whatever its keys: natively for a table of another type)
+Base.@nospecializeinfer table_value(@nospecialize(t), @nospecialize(k)) =
+    is_typed_table(t) ? table_get(t, k::String) : Base.inferencebarrier(getindex)(t, k)
+
 ##########
 # Values #
 ##########
@@ -92,7 +122,19 @@ function printdate(io::IO, value::Base.TOML.Date)
     Base.print(io, string(value.day, pad=2))
 end
 
-function printvector(f::F, io::IO, value::AbstractVector, sorted::Bool) where {F}
+Base.@nospecializeinfer function printvector(f::F, io::IO, @nospecialize(value::AbstractVector), sorted::Bool) where {F}
+    if !is_typed_vector(value)
+        WASM_TARGET && error("PkgWasm TOML writer: unsupported array type")
+        return Base.inferencebarrier(printvector_generic)(f, io, value, sorted)
+    end
+    Base.print(io, "[")
+    for i in 1:vector_length(value)
+        i != 1 && Base.print(io, ", ")
+        printvalue(f, io, vector_get(value, i), sorted)
+    end
+    Base.print(io, "]")
+end
+function printvector_generic(f::F, io::IO, value::AbstractVector, sorted::Bool) where {F}
     Base.print(io, "[")
     for (i, x) in enumerate(value)
         i != 1 && Base.print(io, ", ")
@@ -101,7 +143,7 @@ function printvector(f::F, io::IO, value::AbstractVector, sorted::Bool) where {F
     Base.print(io, "]")
 end
 
-function printvalue(f::F, io::IO, @nospecialize(value), sorted::Bool) where {F}
+Base.@nospecializeinfer function printvalue(f::F, io::IO, @nospecialize(value), sorted::Bool) where {F}
     if value isa String
         printstring(io, value)
     elseif value isa SubString{String}
@@ -171,14 +213,14 @@ function printvalue(f::F, io::IO, @nospecialize(value), sorted::Bool) where {F}
     return nothing
 end
 
-function print_inline_table(f::F, io::IO, value::AbstractDict, sorted::Bool) where {F}
-    vkeys = collect(keys(value))::AbstractArray
+Base.@nospecializeinfer function print_inline_table(f::F, io::IO, @nospecialize(value::AbstractDict), sorted::Bool) where {F}
+    vkeys = table_keys(value)::AbstractArray
     if sorted
         sort!(vkeys)
     end
     Base.print(io, "{")
     for (i, k) in enumerate(vkeys)
-        v = value[k]
+        v = table_value(value, k)
         i != 1 && Base.print(io, ", ")
         printkey(io, [String(k)])
         Base.print(io, " = ")
@@ -209,25 +251,11 @@ isinline(@nospecialize(value), inline_tables::Union{Nothing, Vector}) =
     inline_tables !== nothing && any(t -> t === value, inline_tables)
 
 # `print_table` on a table of a type Pkg's tables hold (the keywords explicit: no splat)
-function print_subtable(f::F, io::IO, @nospecialize(value), ks::Vector{String};
+Base.@nospecializeinfer function print_subtable(f::F, io::IO, @nospecialize(value), ks::Vector{String};
                         indent::Int = 0, first_block::Bool = true, sorted::Bool = false,
                         by::B = identity, inline_tables::Union{Nothing, Vector} = nothing) where {F, B}
-    if value isa Dict{String, Any}
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, String}
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, Vector{String}}
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, UUID}  # (destructure's typed tables: e2e B18)
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, Vector{Dict{String, Any}}}  # (destructure's typed tables: e2e B18)
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, Union{String, Vector{String}}}  # (destructure's typed tables: e2e B18)
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, Dict{String, String}}
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
-    elseif value isa Dict{String, Dates.DateTime}
-        print_table(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
+    if is_typed_table(value)
+        print_table(f, io, value::AbstractDict, ks; indent, first_block, sorted, by, inline_tables)
     else
         WASM_TARGET && error("PkgWasm TOML writer: unsupported table type")
         Base.inferencebarrier(print_table)(f, io, value, ks; indent, first_block, sorted, by, inline_tables)
@@ -235,8 +263,8 @@ function print_subtable(f::F, io::IO, @nospecialize(value), ks::Vector{String};
     return nothing
 end
 
-function print_table(
-        f::F, io::IO, a::AbstractDict,
+Base.@nospecializeinfer function print_table(
+        f::F, io::IO, @nospecialize(a::AbstractDict),
         ks::Vector{String} = String[];
         indent::Int = 0,
         first_block::Bool = true,
@@ -250,14 +278,14 @@ function print_table(
         return
     end
 
-    akeys = keys(a)
+    akeys = table_keys(a)
     if sorted
-        akeys = sort!(collect(akeys); by)
+        akeys = sort!(akeys; by)
     end
 
     # First print non-tabular entries
     for key in akeys
-        value = toml_valid(f, a[key])
+        value = toml_valid(f, table_value(a, key))
         if is_tabular(value) && !isinline(value, inline_tables)
             continue
         end
@@ -271,7 +299,7 @@ function print_table(
     end
 
     for key in akeys
-        value = toml_valid(f, a[key])
+        value = toml_valid(f, table_value(a, key))
         if is_table(value) && !isinline(value, inline_tables)
             push!(ks, String(key))
             header = is_empty_table(value) || !all_values(is_tabular, value) || any_value(v -> isinline(v, inline_tables), value)
@@ -307,7 +335,23 @@ function print_table(
 end
 
 # the tables of an array of tables
-function print_tables(f::F, io::IO, value::AbstractVector, ks::Vector{String}, indent::Int, sorted::Bool, by::B, inline_tables) where {F, B}
+Base.@nospecializeinfer function print_tables(f::F, io::IO, @nospecialize(value::AbstractVector), ks::Vector{String}, indent::Int, sorted::Bool, by::B, inline_tables) where {F, B}
+    if !is_typed_vector(value)
+        WASM_TARGET && error("PkgWasm TOML writer: unsupported array type")
+        return Base.inferencebarrier(print_tables_generic)(f, io, value, ks, indent, sorted, by, inline_tables)
+    end
+    for i in 1:vector_length(value)
+        v = vector_get(value, i)
+        Base.print(io, ' '^4indent)
+        Base.print(io, "[[")
+        printkey(io, ks)
+        Base.print(io, "]]\n")
+        # TODO, nicer error here
+        !isa(v, AbstractDict) && error("array should contain only tables")
+        print_subtable(f, io, v, ks; indent = indent + 1, sorted, by, inline_tables)
+    end
+end
+function print_tables_generic(f::F, io::IO, value::AbstractVector, ks::Vector{String}, indent::Int, sorted::Bool, by::B, inline_tables) where {F, B}
     for v in value
         Base.print(io, ' '^4indent)
         Base.print(io, "[[")

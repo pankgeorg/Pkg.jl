@@ -283,7 +283,10 @@ Calculate the git tree hash of a given path.
 """
 function tree_hash(::Type{HashType}, root::AbstractString; debug_out::Union{IO, Nothing} = nothing, indent::Int = 0) where {HashType}
     entries = Tuple{String, Vector{UInt8}, GitMode}[]
-    for f in sort(readdir(root; join = true); by = f -> gitmode(f) == mode_dir ? f * "/" : f)
+    # The sort key of each entry, computed once (a `by` function would run per comparison)
+    sorted = map(f -> (gitmode(f) == mode_dir ? f * "/" : f, f), readdir(root; join = true))
+    sort!(sorted; by = first)
+    for (_, f) in sorted
         # Skip `.git` directories
         if basename(f) == ".git"
             continue

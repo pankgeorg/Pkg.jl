@@ -175,9 +175,6 @@ end
                     (() -> Pkg.test(; io = devnull), "test"),
                     (() -> Pkg.gc(; io = devnull), "gc"),
                     (() -> Pkg.precompile(; io = devnull), "precompile"),
-                    (() -> Pkg.develop("Example"; io = devnull), "develop"),
-                    (() -> Pkg.add(url = "https://github.com/JuliaLang/Example.jl"; io = devnull), "adding a package by URL, path or revision"),
-                    (() -> Pkg.add(Pkg.PackageSpec(name = "Example", rev = "master"); io = devnull), "adding a package by URL, path or revision"),
                     (() -> Pkg.Apps.add(Pkg.PackageSpec[]), "apps"),
                     (() -> Pkg.Apps.add(Pkg.PackageSpec(name = "Example")), "apps"),
                     (() -> Pkg.Apps.develop(Pkg.PackageSpec(path = joinpath(dir, "missing"))), "apps"),
@@ -251,54 +248,13 @@ end
         end
     end
 
-    @testset "D4 git unreachable from supported commands (review-2 #2)" begin
-        is_git_error(e) = e isa Pkg.Types.PkgError && occursin("is not supported in PkgWasm", e.msg) && startswith(e.msg, "git (")
-        # repo-tracked manifest entry whose source is missing: instantiate
-        mktempdir() do dir
-            write(joinpath(dir, "Project.toml"), "[deps]\nExample = \"$EXAMPLE_UUID\"\n")
-            write(joinpath(dir, "Manifest.toml"), """
-            julia_version = "1.13.2"
-            manifest_format = "2.0"
-
-            [[deps.Example]]
-            git-tree-sha1 = "0000000000000000000000000000000000000001"
-            repo-rev = "master"
-            repo-url = "https://github.com/JuliaLang/Example.jl.git"
-            uuid = "$EXAMPLE_UUID"
-            version = "0.5.5"
-            """)
-            Pkg.activate(dir; io = devnull)
-            @test is_git_error(capture_error(() -> Pkg.instantiate(; io = devnull)))
-            Pkg.activate(; io = devnull)
-        end
-        # server lists no registries: the default-registry install would clone General
-        base, server = serve(path -> path == "/registries" ? (200, "") : (404, ""))
-        mktempdir() do depot
-            old = copy(DEPOT_PATH)
-            copy!(DEPOT_PATH, [depot])
-            try
-                withenv("JULIA_PKG_SERVER" => base) do
-                    Pkg.activate(joinpath(depot, "env"); io = devnull)
-                    @test is_git_error(capture_error(() -> Pkg.add("Dates"; io = devnull)))
-                    @test !isdir(joinpath(depot, "registries", "General"))
-                end
-            finally
-                copy!(DEPOT_PATH, old)
-                Pkg.activate(; io = devnull)
-            end
-        end
-        close(server)
-        # an existing git registry is reported as not updatable, without touching git
-        mktempdir() do depot
-            reg = joinpath(depot, "registries", "Foo")
-            mkpath(joinpath(reg, ".git"))
-            write(joinpath(reg, "Registry.toml"), "name = \"Foo\"\nuuid = \"$(uuid4())\"\nrepo = \"https://example.invalid/Foo.git\"\n\n[packages]\n")
-            @test_logs (:error, r"updating a git registry is not supported in PkgWasm") match_mode = :any Pkg.Registry.update(; depots = [depot], io = devnull)
-        end
-        # status --diff against git HEAD (G3 clean compile: LibGit2 unreachable). Repository
-        # discovery (discover_repo, as stock) walks up from the project directory to the home
-        # directory; HOME is the test's own temp root, so a stray `.git` above it (e.g. /tmp/.git
-        # from another process) cannot be found.
+    @testset "D14 git through the git command line (the stock paths; see pkgwasm_git.jl)" begin
+        # a clone that fails: stock's JULIA_PKG_USE_CLI_GIT error
+        err = capture_error(() -> Pkg.GitTools.clone(devnull, joinpath(mktempdir(), "no-such-repo"), mktempdir()))
+        @test err isa Pkg.Types.PkgError && startswith(err.msg, "The command `git clone")
+        # status --diff: not a git repository gives stock's warning; a broken `.git` is a GitError
+        # from opening the repository, as stock's LibGit2.GitError. Repository discovery
+        # (discover_repo) walks up to the home directory; HOME is the test's own temp root.
         mktempdir() do root
             dir = joinpath(root, "proj")
             mkpath(dir)
@@ -307,18 +263,13 @@ end
                 @test homedir() == root
                 Pkg.activate(dir; io = devnull)
                 @test Pkg.discover_repo(dir) === nothing
-                # not a git repository: stock's warning, as before
                 @test_logs (:warn, r"diff option only available") match_mode = :any Pkg.status(; diff = true, io = IOBuffer())
                 mkpath(joinpath(dir, ".git"))
                 @test Pkg.discover_repo(dir) == dir
-                @test is_git_error(capture_error(() -> Pkg.status(; diff = true, io = IOBuffer())))
+                @test capture_error(() -> Pkg.status(; diff = true, io = IOBuffer())) isa Pkg.GitCLI.GitError
                 Pkg.activate(; io = devnull)
             end
         end
-        # explicit repo tracking through the Types entry points
-        ctx = Pkg.Types.Context(; io = devnull)
-        @test is_git_error(capture_error(() -> Pkg.Types.handle_repo_add!(ctx, Pkg.PackageSpec(url = "https://example.invalid/X.jl"))))
-        @test is_git_error(capture_error(() -> Pkg.GitTools.clone(devnull, "https://example.invalid/X.jl", mktempdir())))
     end
 
     @testset "D11 stale compressed descriptor does not hide the directory registry (review-2 #3)" begin

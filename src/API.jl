@@ -7,7 +7,7 @@ using UUIDs
 using Printf
 import Random
 using Dates
-import LibGit2
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 import Logging
 import FileWatching
 
@@ -250,7 +250,6 @@ function develop(
         ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool = true,
         preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = Pkg.host_platform(), kwargs...
     )
-    unsupported("develop")
     require_not_empty(pkgs, :develop)
     Context!(ctx; kwargs...)
 
@@ -316,8 +315,6 @@ function add(
             pkgerror("name, UUID, URL, or filesystem path specification required when calling `add`")
         end
         if pkg.repo.source !== nothing || pkg.repo.rev !== nothing
-            # PkgWasm (PLAN.md D4): tracking a repository (url=, path=, #rev) needs git
-            unsupported("adding a package by URL, path or revision")
             if pkg.version != VersionSpec()
                 pkgerror(
                     "version specification invalid when tracking a repository:",

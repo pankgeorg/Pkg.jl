@@ -8,31 +8,13 @@ using ..MiniProgressBars
 import ..can_fancyprint, ..printpkgstyle, ..stdout_f
 using SHA
 import Base: SHA1
-import LibGit2
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 using Printf
 
-use_cli_git() = Base.get_bool_env("JULIA_PKG_USE_CLI_GIT", false)
+# PkgWasm (D14): always the git command line (stock Pkg's `JULIA_PKG_USE_CLI_GIT=true` mode;
+# there is no LibGit2). The other operations go through `GitCLI`, bound as `LibGit2`.
+use_cli_git() = true
 const RESOLVING_DELTAS_HEADER = "Resolving Deltas:"
-
-function transfer_progress(progress::Ptr{LibGit2.TransferProgress}, p::Any)
-    progress = unsafe_load(progress)
-    @assert haskey(p, :transfer_progress)
-    bar = p[:transfer_progress]
-    @assert typeof(bar) == MiniProgressBar
-    if progress.total_deltas != 0
-        if bar.header != RESOLVING_DELTAS_HEADER
-            bar.header = RESOLVING_DELTAS_HEADER
-            bar.prev = 0
-        end
-        bar.max = progress.total_deltas
-        bar.current = progress.indexed_deltas
-    else
-        bar.max = progress.total_objects
-        bar.current = progress.received_objects
-    end
-    show_progress(stdout_f(), bar)
-    return Cint(0)
-end
 
 const GIT_REGEX =
     r"^(?:(?<proto>git|ssh|https)://)?(?:[\w\.\+\-:]+@)?(?<hostname>.+?)(?(<proto>)/|:)(?<path>.+?)(?:\.git)?$"
@@ -73,14 +55,7 @@ function normalize_url(url::AbstractString)
     end
 end
 
-# PkgWasm (PLAN.md D4): no git. Every clone/fetch entry point of the fork (package tarball
-# fallback, git registries, repo-tracked manifest entries, `add url=`/`#rev`) fails here,
-# before LibGit2 or a `git` subprocess is reached.
-git_unsupported(what::AbstractString) =
-    throw(Pkg.Types.PkgError(string("git (", what, ") is not supported in PkgWasm")))
-
 function ensure_clone(io::IO, target_path, url; kwargs...)
-    git_unsupported("clone of $url")
     if ispath(target_path)
         return LibGit2.GitRepo(target_path)
     else
@@ -89,17 +64,10 @@ function ensure_clone(io::IO, target_path, url; kwargs...)
 end
 
 function checkout_tree_to_path(repo::LibGit2.GitRepo, tree::LibGit2.GitObject, path::String)
-    return GC.@preserve path begin
-        opts = LibGit2.CheckoutOptions(
-            checkout_strategy = LibGit2.Consts.CHECKOUT_FORCE,
-            target_directory = Base.unsafe_convert(Cstring, path)
-        )
-        LibGit2.checkout_tree(repo, tree, options = opts)
-    end
+    return LibGit2.checkout_tree(repo, tree, path) # (stock: CHECKOUT_FORCE into target_directory)
 end
 
 function clone(io::IO, url, source_path; header = nothing, credentials = nothing, isbare = false, kwargs...)
-    git_unsupported("clone of $url")
     url = String(url)::String
     source_path = String(source_path)::String
     @assert !isdir(source_path) || isempty(readdir(source_path))
@@ -108,34 +76,17 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
     bar = MiniProgressBar(header = "Cloning:", color = Base.info_color())
     fancyprint = can_fancyprint(io)
     fancyprint && start_progress(io, bar)
-    if credentials === nothing
-        credentials = LibGit2.CachedCredentials()
-    end
+    # (stock's JULIA_PKG_USE_CLI_GIT branch; credentials are git's own)
     return try
-        if use_cli_git()
-            args = ["--quiet", url, source_path]
-            isbare && pushfirst!(args, "--bare")
-            cmd = `git clone $args`
-            try
-                run(pipeline(cmd; stdout = devnull))
-            catch err
-                Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
-            end
-            return LibGit2.GitRepo(source_path)
-        else
-            callbacks = if fancyprint
-                LibGit2.Callbacks(
-                    :transfer_progress => (
-                        @cfunction(transfer_progress, Cint, (Ptr{LibGit2.TransferProgress}, Any)),
-                        bar,
-                    )
-                )
-            else
-                LibGit2.Callbacks()
-            end
-            mkpath(source_path)
-            return LibGit2.clone(url, source_path; callbacks, credentials, isbare, kwargs...)
+        args = ["--quiet", url, source_path]
+        isbare && pushfirst!(args, "--bare")
+        cmd = `git clone $args`
+        try
+            run(pipeline(cmd; stdout = devnull))
+        catch err
+            Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
         end
+        return LibGit2.GitRepo(source_path)
     catch err
         rm(source_path; force = true, recursive = true)
         err isa LibGit2.GitError || err isa InterruptException || rethrow()
@@ -148,50 +99,30 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
             Pkg.Types.pkgerror("failed to clone from $(url), error: $err")
         end
     finally
-        Base.shred!(credentials)
         fancyprint && end_progress(io, bar)
     end
 end
 
 function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = nothing, credentials = nothing, refspecs = [""], kwargs...)
-    git_unsupported("fetch")
     if remoteurl === nothing
-        remoteurl = LibGit2.with(LibGit2.get(LibGit2.GitRemote, repo, "origin")) do remote
-            LibGit2.url(remote)
-        end
+        remoteurl = LibGit2.remote_url(repo, "origin")
     end
     fancyprint = can_fancyprint(io)
     remoteurl = normalize_url(remoteurl)
     printpkgstyle(io, :Updating, header === nothing ? "git-repo `$remoteurl`" : header)
     bar = MiniProgressBar(header = "Fetching:", color = Base.info_color())
-    callbacks = if fancyprint
-        LibGit2.Callbacks(
-            :transfer_progress => (
-                @cfunction(transfer_progress, Cint, (Ptr{LibGit2.TransferProgress}, Any)),
-                bar,
-            )
-        )
-    else
-        LibGit2.Callbacks()
-    end
     fancyprint && start_progress(io, bar)
-    if credentials === nothing
-        credentials = LibGit2.CachedCredentials()
-    end
+    # (stock's JULIA_PKG_USE_CLI_GIT branch)
     return try
-        if use_cli_git()
-            let remoteurl = remoteurl
-                cd(LibGit2.path(repo)) do
-                    cmd = `git fetch -q $remoteurl $(only(refspecs))`
-                    try
-                        run(pipeline(cmd; stdout = devnull))
-                    catch err
-                        Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
-                    end
+        let remoteurl = remoteurl
+            cd(LibGit2.path(repo)) do
+                cmd = `git fetch -q $remoteurl $(only(refspecs))`
+                try
+                    run(pipeline(cmd; stdout = devnull))
+                catch err
+                    Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
                 end
             end
-        else
-            return LibGit2.fetch(repo; remoteurl, callbacks, credentials, refspecs, kwargs...)
         end
     catch err
         err isa LibGit2.GitError || rethrow()
@@ -201,7 +132,6 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
             Pkg.Types.pkgerror("failed to fetch from $(remoteurl), error: $err")
         end
     finally
-        Base.shred!(credentials)
         fancyprint && end_progress(io, bar)
     end
 end

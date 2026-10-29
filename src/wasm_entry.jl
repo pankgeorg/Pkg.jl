@@ -94,7 +94,7 @@ end
 
 pkgwasm_main()::Int32 = pkgwasm_main(ARGS)
 
-const SUPPORTED_COMMANDS = ("add", "rm", "resolve", "instantiate", "status", "registry")
+const SUPPORTED_COMMANDS = ("add", "develop", "rm", "resolve", "instantiate", "status", "registry")
 const SUPPORTED_COMMANDS_LIST = join(SUPPORTED_COMMANDS, ", ") # computed at load time: no runtime join
 
 function pkgwasm_main(args::Vector{String})::Int32
@@ -114,10 +114,18 @@ function run_command(args::Vector{String})
     cmd = args[1]
     cmd == "registry" && return run_registry_command(args[2:end])
     cmd == "request" && return run_request(args[2:end]) # wasm_request.jl
-    pkgs = PackageSpec[PackageSpec(name) for name in args[2:end]]
+    # add/develop: the REPL's package syntax (`url#rev`, `name@version`, `path:subdir`, ...;
+    # PLAN D14), so they take what `pkg> add ...` takes; the other commands take names
+    words = args[2:end]
+    pkgs = cmd == "add" || cmd == "develop" ?
+        REPLMode.parse_package(REPLMode.QString[REPLMode.QString(w, false) for w in words], nothing; add_or_dev = true) :
+        PackageSpec[PackageSpec(name) for name in words]
     if cmd == "add"
         isempty(pkgs) && Types.pkgerror("pkgwasm add: no packages given")
         API.add(pkgs)
+    elseif cmd == "develop"
+        isempty(pkgs) && Types.pkgerror("pkgwasm develop: no packages given")
+        API.develop(pkgs)
     elseif cmd == "rm"
         isempty(pkgs) && Types.pkgerror("pkgwasm rm: no packages given")
         API.rm(pkgs)
@@ -137,8 +145,7 @@ end
 
 # `registry` subcommands (PLAN.md D15): the REPL `registry` mode's names, aliases, argument
 # parsing (`REPLMode.parse_registry`), argument counts and API calls, so the printed output is
-# the same as `pkg> registry ...`. Only Pkg-server registries (by name/UUID) are supported: a
-# git URL or local path needs git or a directory copy outside S1 (D14), and is a PkgError.
+# the same as `pkg> registry ...`, including git registries by URL or path (D14).
 const REGISTRY_SUBCOMMANDS = ("add", "rm", "update", "status")
 
 function run_registry_command(args::Vector{String})
@@ -152,12 +159,6 @@ function run_registry_command(args::Vector{String})
     lo, hi = sub == "rm" ? (1, typemax(Int)) : sub == "status" ? (0, 0) : (0, typemax(Int))
     lo <= length(words) <= hi || Types.pkgerror("Wrong number of arguments")
     regs = Registry.RegistrySpec[REPLMode.parse_registry(w; add = sub == "add") for w in words]
-    for (w, r) in zip(words, regs)
-        (r.url !== nothing || r.path !== nothing) && Types.pkgerror(
-            "registry `", w, "` is a git URL or local path; PkgWasm supports only Pkg-server registries, ",
-            "given by name or UUID (git is not supported in PkgWasm)"
-        )
-    end
     if sub == "add"
         Registry.add(regs)
     elseif sub == "rm"

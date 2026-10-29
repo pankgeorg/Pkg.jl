@@ -5,7 +5,8 @@ import ..Pkg
 using ..Pkg: depots, depots1, printpkgstyle, stderr_f, isdir_nothrow, pathrepr, pkg_server,
     GitTools
 using ..Pkg.PlatformEngines: download_verify_unpack, download, download_verify, exe7z, verify_archive_tree_hash, with_decompressed
-using UUIDs, LibGit2, TOML, Dates
+using UUIDs, TOML, Dates
+import ..Pkg.GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 import FileWatching
 
 public add, rm, status, update
@@ -315,9 +316,6 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         return
                     elseif reg.url !== nothing # clone from url
                         # retry to help spurious connection issues, particularly on CI
-                        # PkgWasm (D4/D14, G3): no git; GitTools.clone would raise this as its first
-                        # statement (not retried: not a GitError); the stock retry/clone below is unreachable
-                        GitTools.git_unsupported("clone of $(reg.url::String)")
                         repo = retry(GitTools.clone, delays = fill(1.0, 5), check = (s, e) -> isa(e, LibGit2.GitError))(io, reg.url, tmp; header = "registry from $(repr(reg.url))")
                         LibGit2.close(repo)
                     else
@@ -564,11 +562,6 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                 end
                             end
                         elseif isdir(joinpath(reg.path, ".git"))
-                            # PkgWasm (PLAN.md D4): no git. Reported through the same `errors`
-                            # list stock uses for registries it cannot update; the stock git
-                            # update below is unreachable.
-                            push!(errors, (regpath, "updating a git registry is not supported in PkgWasm"))
-                            continue
                             printpkgstyle(io, :Updating, "registry at " * regpath)
                             if reg.name == "General" && Base.get_bool_env("JULIA_PKG_GEN_REG_FMT_CHECK", true)
                                 @pkg_info """

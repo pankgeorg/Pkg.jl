@@ -896,10 +896,22 @@ end
 
 Context!(kw_context::Vector{Pair{Symbol, Any}})::Context =
     Context!(Context(); kw_context...)
+const CONTEXT_FIELDS = fieldnames(Context) # (load time: no reflection at run time)
 function Context!(ctx::Context; kwargs...)
-    for (k, v) in kwargs
-        setfield!(ctx, k, v)
+    # one `setfield!` per field with a constant name, not `setfield!(ctx, k, v)` in a loop over
+    # the keywords: with several keywords of different types that is a dynamic call, which
+    # the Wasm compiler cannot resolve. Same effect, including the error for an unknown key.
+    nt = values(kwargs)
+    for k in keys(nt)
+        k in CONTEXT_FIELDS || throw(FieldError(Context, k))
     end
+    haskey(nt, :env) && setfield!(ctx, :env, nt.env)
+    haskey(nt, :io) && setfield!(ctx, :io, nt.io)
+    haskey(nt, :use_git_for_all_downloads) && setfield!(ctx, :use_git_for_all_downloads, nt.use_git_for_all_downloads)
+    haskey(nt, :use_only_tarballs_for_downloads) && setfield!(ctx, :use_only_tarballs_for_downloads, nt.use_only_tarballs_for_downloads)
+    haskey(nt, :num_concurrent_downloads) && setfield!(ctx, :num_concurrent_downloads, nt.num_concurrent_downloads)
+    haskey(nt, :registries) && setfield!(ctx, :registries, nt.registries)
+    haskey(nt, :julia_version) && setfield!(ctx, :julia_version, nt.julia_version)
 
     # Highlight for logging purposes if julia_version is set to a different version than current VERSION
     if haskey(kwargs, :julia_version) && ctx.julia_version !== nothing && ctx.julia_version != VERSION

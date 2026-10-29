@@ -15,6 +15,7 @@
 #   update|up [reg...] (no argument: all installed registries)
 #   status|st          (no argument)
 # where each reg is a name (`General`), a UUID, or `name=uuid`, as in the REPL `registry` mode.
+# `pkgwasm request <request.toml> <result.toml>` runs one full API call (wasm_request.jl).
 
 const ABI_VERSION = Int32(3) # ABI.md v3
 
@@ -100,7 +101,7 @@ function pkgwasm_main(args::Vector{String})::Int32
         run_command(args)
         Int32(0)
     catch e
-        report_error(e)
+        e isa RequestFailed || report_error(e) # (a failed request has recorded its error)
         Int32(1)
     end
 end
@@ -109,6 +110,7 @@ function run_command(args::Vector{String})
     isempty(args) && Types.pkgerror("usage: pkgwasm <command> [packages...]; commands: ", SUPPORTED_COMMANDS_LIST)
     cmd = args[1]
     cmd == "registry" && return run_registry_command(args[2:end])
+    cmd == "request" && return run_request(args[2:end]) # wasm_request.jl
     pkgs = PackageSpec[PackageSpec(name) for name in args[2:end]]
     if cmd == "add"
         isempty(pkgs) && Types.pkgerror("pkgwasm add: no packages given")

@@ -1320,8 +1320,14 @@ function instantiate(
     if Operations.is_manifest_current(ctx.env) === false
         resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
         update_cmd = Pkg.in_repl_mode() ? "pkg> update" : "Pkg.update()"
-        @pkg_warn """The project dependencies or compat requirements have changed since the manifest was last resolved.
-        It is recommended to `$resolve_cmd` or consider `$update_cmd` if necessary."""
+        # (G3 V166: the message printed piece by piece, the same text as the interpolation)
+        msg_io = IOBuffer()
+        print(msg_io, "The project dependencies or compat requirements have changed since the manifest was last resolved.\nIt is recommended to `")
+        print(msg_io, resolve_cmd)
+        print(msg_io, "` or consider `")
+        print(msg_io, update_cmd)
+        print(msg_io, "` if necessary.")
+        @pkg_warn String(take!(msg_io))
     end
 
     Operations.prune_manifest(ctx.env)

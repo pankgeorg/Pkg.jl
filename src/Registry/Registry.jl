@@ -224,6 +224,15 @@ function registry_use_pkg_server()
     return get(ENV, "JULIA_PKG_SERVER", nothing) !== ""
 end
 
+# PkgWasm: `sprint(showerror, err)` for a caught error. Natively the same text; built for Wasm
+# it goes through the typed `showerror_known`, and writes to an IOBuffer directly (`sprint`
+# with an untyped argument builds a `Tuple{Any}`, which the Wasm build does not support).
+function error_text(@nospecialize(err))
+    io = IOBuffer()
+    Pkg.showerror_known(io, err)
+    return String(take!(io))
+end
+
 registry_read_from_tarball() =
     registry_use_pkg_server() && !Base.get_bool_env("JULIA_PKG_UNPACK_REGISTRY", false)
 
@@ -347,7 +356,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                 try
                     download_verify(url, nothing, tmp)
                 catch err
-                    Pkg.Types.pkgerror("could not download $url \nException: $(sprint(Pkg.showerror_known, err))")
+                    Pkg.Types.pkgerror("could not download $url \nException: $(error_text(err))")
                 end
                 _hash = pkg_server_url_hash(url)
                 if !verify_archive_tree_hash(tmp, _hash)
@@ -392,7 +401,7 @@ function download_registries(io::IO, regs::Vector{RegistrySpec}, depots::Union{S
                         try
                             download_registry_dir(url, hash, tmp)
                         catch err
-                            Pkg.Types.pkgerror("could not download $url \nException: $(sprint(Pkg.showerror_known, err))")
+                            Pkg.Types.pkgerror("could not download $url \nException: $(error_text(err))")
                         end
                         tree_info_file = joinpath(tmp, ".tree_info.toml")
                         write(tree_info_file, "git-tree-sha1 = " * repr(string(hash)))
@@ -615,7 +624,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                         try
                                             download_verify(url, nothing, tmp)
                                         catch err
-                                            push!(errors, (reg.path, "failed to download from $(url). Exception: $(sprint(Pkg.showerror_known, err))"))
+                                            push!(errors, (reg.path, "failed to download from $(url). Exception: $(error_text(err))"))
                                             @goto done_tarball_read
                                         end
                                         hash = pkg_server_url_hash(url)
@@ -654,7 +663,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                                 download_registry_dir(url, new_hash, tmp)
                                                 registry_update_log[string(reg.uuid)] = now()
                                             catch err
-                                                push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(sprint(Pkg.showerror_known, err))"))
+                                                push!(errors, (reg.path, "failed to download and unpack from $(url). Exception: $(error_text(err))"))
                                                 @goto done_tarball_unpack
                                             end
                                             tree_info_file = joinpath(tmp, ".tree_info.toml")

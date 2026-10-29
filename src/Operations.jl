@@ -235,15 +235,20 @@ function update_manifest!(env::EnvCache, pkgs::Vector{PackageSpec}, deps_map, ju
     empty!(manifest)
 
     for pkg in pkgs
-        entry = PackageEntry(;
-            name = pkg.name,
-            # PackageEntry requires version::Union{VersionNumber, Nothing}
-            # pkg.version may be a VersionSpec in some cases (e.g., when freeing a package)
-            # so we convert non-VersionNumber values to nothing
-            version = pkg.version isa VersionNumber ? pkg.version : nothing,
-            pinned = pkg.pinned,
-            tree_hash = pkg.tree_hash, path = pkg.path, repo = pkg.repo, uuid = pkg.uuid
-        )
+        # (`PackageEntry(; name, version, pinned, tree_hash, path, repo, uuid)` field by field: its
+        # keyword NamedTuple of Union-typed values is an abstract tuple built for Wasm, e2e B24)
+        entry = PackageEntry()
+        entry.name = pkg.name
+        # PackageEntry requires version::Union{VersionNumber, Nothing}
+        # pkg.version may be a VersionSpec in some cases (e.g., when freeing a package)
+        # so we convert non-VersionNumber values to nothing
+        version = pkg.version
+        entry.version = version isa VersionNumber ? version : nothing
+        entry.pinned = pkg.pinned
+        entry.tree_hash = pkg.tree_hash
+        entry.path = pkg.path
+        entry.repo = pkg.repo
+        entry.uuid = pkg.uuid
         if is_stdlib(pkg.uuid, julia_version)
             # Only set stdlib versions for versioned (external) stdlibs
             entry.version = stdlib_version(pkg.uuid, julia_version)

@@ -146,12 +146,27 @@ module PkgTestsInner
         end
         return Expr(ex.head, map(to_pkgwasm, ex.args)...)
     end
-    const MAPEXPR = TARGET == "pkgwasm" ? to_pkgwasm : identity
+    # STOCK_TESTSETS="name|name...": only these top-level testsets of the file run (for checking
+    # one testset without the state that earlier ones leave behind); other code runs as usual.
+    const SELECTED = filter(!isempty, split(get(ENV, "STOCK_TESTSETS", ""), '|'))
+    is_dropped(ex) = !isempty(SELECTED) && ex isa Expr && ex.head === :macrocall &&
+        ex.args[1] === Symbol("@testset") && any(a -> a isa String && a ∉ SELECTED, ex.args)
+    function select_testsets(ex)
+        is_dropped(ex) && return nothing
+        if ex isa Expr && ex.head === :module
+            body = ex.args[3]
+            return Expr(:module, ex.args[1], ex.args[2], Expr(:block, filter(!is_dropped, body.args)...))
+        end
+        return ex
+    end
+    const MAPEXPR = TARGET == "pkgwasm" ? to_pkgwasm ∘ select_testsets : select_testsets
 
     ENV["JULIA_PKG_PRECOMPILE_AUTO"] = 0
     ENV["JULIA_PKG_DISALLOW_PKG_PRECOMPILATION"] = 1
 
-    const TESTDIR = dirname(@__DIR__)
+    # stock: the stdlib's own test directory (its files are those of test/, checked by runtests.jl),
+    # so that "this Pkg" (the parent of the test directory) is the stdlib Pkg, as on Pkg's CI
+    const TESTDIR = TARGET == "stock" ? joinpath(pkgdir(Pkg), "test") : dirname(@__DIR__)
     logfile = OUT * ".pkg.log"
     Pkg.DEFAULT_IO[] = open(logfile, "w")
 

@@ -85,8 +85,19 @@ function compare(out, files)
     return joinpath(out, "compare.md")
 end
 
+# The stock target runs the stdlib Pkg's copy of the test files; they must be these.
+function check_stock_copy(files)
+    stock_test = joinpath(dirname(dirname(Base.find_package("Pkg"))), "test")
+    for f in [files; "utils.jl"]
+        read(joinpath(stock_test, f)) == read(joinpath(dirname(@__DIR__), f)) ||
+            error("test/$f differs from the stdlib Pkg's $(joinpath(stock_test, f))")
+    end
+    return
+end
+
 function main(args)
     targets, files, out, timeout, do_compare = parse_args(args)
+    "stock" in targets && check_stock_copy(files)
     for target in targets, file in files
         run_file(target, file, out, timeout)
     end

@@ -1,18 +1,19 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Types
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Random
 using Dates
-import LibGit2
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 import Base.string
 
 using TOML
-import ..Pkg, ..Registry
-import ..Pkg: GitTools, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_path, isurl, stderr_f, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
+import ..PkgWasm, ..Registry
+import ..PkgWasm: GitTools, TOMLWriter, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
 import Base.BinaryPlatforms: Platform
-using ..Pkg.Versions
+using ..PkgWasm.Versions
 import FileWatching
 
 import Base: SHA1
@@ -47,9 +48,25 @@ function deepcopy_toml(x::Dict{String, Any})
     d = Dict{String, Any}()
     sizehint!(d, length(x))
     for (k, v) in x
-        d[k] = deepcopy_toml(v)
+        d[k] = deepcopy_toml_value(v)
     end
     return d
+end
+# `deepcopy_toml(v)` for a value of a parsed TOML table: the copy, by the types TOML's
+# parser makes (M4.2: static dispatch); other values natively as `deepcopy_toml`
+function deepcopy_toml_value(@nospecialize(v))
+    v isa Dict{String, Any} && return deepcopy_toml(v)
+    v isa Union{String, Int64, Float64, Bool, Dates.DateTime, Dates.Date, Dates.Time} && return v
+    v isa Vector{Any} && return Any[deepcopy_toml_value(x) for x in v]
+    v isa Vector{String} && return copy(v)
+    v isa Vector{Int64} && return copy(v)
+    v isa Vector{Float64} && return copy(v)
+    v isa Vector{Bool} && return copy(v)
+    v isa Vector{Dates.DateTime} && return copy(v)
+    v isa Vector{Dates.Date} && return copy(v)
+    v isa Vector{Dates.Time} && return copy(v)
+    WASM_TARGET && error("PkgWasm: unsupported TOML value type")
+    return Base.inferencebarrier(deepcopy_toml)(v)
 end
 
 # See loading.jl
@@ -65,7 +82,14 @@ parse_toml(toml_file::AbstractString) =
 struct PkgError <: Exception
     msg::String
 end
-pkgerror(msg::String...) = throw(PkgError(join(msg)))
+# (`join(msg)`, by a loop: `join` of a tuple of strings dispatches on its length)
+function pkgerror(msg::String...)
+    s = IOBuffer()
+    for m in msg
+        print(s, m)
+    end
+    throw(PkgError(String(take!(s))))
+end
 Base.showerror(io::IO, err::PkgError) = print(io, err.msg)
 
 ###############
@@ -123,7 +147,8 @@ PackageSpec(n::AbstractString, u::UUID, v::VersionTypes) = PackageSpec(; name = 
 
 # XXX: These definitions are a bit fishy. It seems to be used in an `==` call in status printing
 function Base.:(==)(a::PackageSpec, b::PackageSpec)
-    return a.name == b.name && a.uuid == b.uuid && a.version == b.version &&
+    # (`version`, a Union of five types, compared type by type: `packagespec_version_eq`, e2e B22)
+    return a.name == b.name && a.uuid == b.uuid && packagespec_version_eq(a.version, b.version) &&
         a.tree_hash == b.tree_hash && a.repo == b.repo && a.path == b.path &&
         a.pinned == b.pinned
 end
@@ -144,17 +169,19 @@ has_uuid(pkg::PackageSpec) = pkg.uuid !== nothing
 isresolved(pkg::PackageSpec) = pkg.uuid !== nothing && pkg.name !== nothing
 
 function Base.show(io::IO, pkg::PackageSpec)
-    vstr = repr(pkg.version)
-    f = Pair{String, Any}[]
+    vstr = version_repr(pkg.version)
+    # PkgWasm (G3, add front): the fields as Strings (stock collects `Pair{String, Any}` and
+    # calls `string(value)` on each, a dynamic call in the Wasm build); the same text.
+    f = Pair{String, String}[]
 
     pkg.name !== nothing && push!(f, "name" => pkg.name)
-    pkg.uuid !== nothing && push!(f, "uuid" => pkg.uuid)
-    pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
+    pkg.uuid !== nothing && push!(f, "uuid" => string(pkg.uuid))
+    pkg.tree_hash !== nothing && push!(f, "tree_hash" => string(pkg.tree_hash))
     pkg.path !== nothing && push!(f, "path" => pkg.path)
     pkg.url !== nothing && push!(f, "url" => pkg.url)
     pkg.rev !== nothing && push!(f, "rev" => pkg.rev)
     pkg.subdir !== nothing && push!(f, "subdir" => pkg.subdir)
-    pkg.pinned && push!(f, "pinned" => pkg.pinned)
+    pkg.pinned && push!(f, "pinned" => string(pkg.pinned))
     push!(f, "version" => (vstr == "VersionSpec(\"*\")" ? "*" : vstr))
     if pkg.repo.source !== nothing
         push!(f, "repo/source" => string("\"", pkg.repo.source::String, "\""))
@@ -167,10 +194,16 @@ function Base.show(io::IO, pkg::PackageSpec)
     end
     print(io, "PackageSpec(\n")
     for (field, value) in f
-        print(io, "  ", field, " = ", string(value)::String, "\n")
+        print(io, "  ", field, " = ", value, "\n")
     end
     return print(io, ")")
 end
+# `repr` of a PackageSpec version, one concrete call per member of its Union
+version_repr(v::Nothing) = repr(v)
+version_repr(v::String) = repr(v)
+version_repr(v::VersionNumber) = repr(v)
+version_repr(v::VersionSpec) = repr(v)
+version_repr(v::UpgradeLevel) = repr(v)
 
 ############
 # EnvCache #
@@ -233,7 +266,7 @@ function find_project_file(env::Union{Nothing, String} = nothing)
         isfile(project_file) || !ispath(project_file) ||
             isdir(project_file) && isempty(readdir(project_file))
     )
-    return Pkg.safe_realpath(project_file)
+    return PkgWasm.safe_realpath(project_file)
 end
 
 Base.@kwdef mutable struct Compat
@@ -250,6 +283,121 @@ struct AppInfo
     julia_flags::Vector{String}
     other::Dict{String, Any}
 end
+# `a == b` for values `a`, `b` of a field of type `FT`, each type of a Union told apart
+function field_eq_expr(@nospecialize(FT), a::Symbol, b::Symbol)
+    FT === Dict{String, Any} && return :(WASM_TARGET ? toml_eq($a, $b) : $a == $b)
+    ts = Base.uniontypes(FT)
+    length(ts) <= 2 && return :($a == $b)
+    isa_chain(v, body) = foldr(ts[1:(end - 1)]; init = body(:($v::$(ts[end])))) do t, rest
+        :($v isa $t ? $(body(v)) : $rest)
+    end
+    return isa_chain(a, av -> isa_chain(b, bv -> :($av == $bv)))
+end
+# `all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(T))` with each field's
+# comparison typed: in order, stopping at the first unequal one (M4.2: static dispatch; e2e
+# B14: a field of a Union of more than two types compared type by type, a TOML table by
+# `toml_eq`); fields in `skip` are not compared
+@generated function fields_equal(t1::T, t2::T, ::Val{skip} = Val(())) where {T, skip}
+    ex = :(true)
+    for (x, FT) in reverse(collect(zip(fieldnames(T), fieldtypes(T))))
+        x in skip && continue
+        cmp = field_eq_expr(FT, :a, :b)
+        ex = :(let a = getfield(t1, $(QuoteNode(x))), b = getfield(t2, $(QuoteNode(x)))
+            ($cmp)::Bool
+        end && $ex)
+    end
+    return ex
+end
+
+# `a.version == b.version` for PackageSpecs, each type of the field's Union told apart
+@eval packagespec_version_eq(@nospecialize(a), @nospecialize(b)) = $(field_eq_expr(fieldtype(PackageSpec, :version), :a, :b))
+
+# `a == b` for TOML values (what TOML's parser makes: `Dict{String, Any}` tables, arrays,
+# strings, numbers, dates and times) built for Wasm without dynamic dispatch: values of
+# different kinds are unequal (as Base's `==`), tables equal with the same keys and equal
+# values, arrays with equal elements in order, the rest by `==` on both concrete types; a
+# value of another type is an error (M4.2 B14). Natively fields use Base's `==` itself.
+Base.@nospecializeinfer @noinline function toml_eq(@nospecialize(a), @nospecialize(b))
+    ka, kb = toml_kind(a), toml_kind(b)
+    (ka == 0 || kb == 0) && return toml_eq_other(a, b)
+    ka == kb || return false
+    if ka == 1
+        a = a::Dict{String, Any}; b = b::Dict{String, Any}
+        length(a) == length(b) || return false
+        for (k, v) in a
+            haskey(b, k) || return false
+            toml_eq(b[k], v) || return false  # (Base: `r[key] == l_value`)
+        end
+        return true
+    elseif ka == 2
+        return toml_vec_eq(a, b)
+    elseif ka == 3
+        return (a::String) == (b::String)
+    elseif ka == 4
+        b isa Int64 && return toml_num_eq(a, b)
+        b isa Float64 && return toml_num_eq(a, b)
+        return toml_num_eq(a, b::Bool)
+    else
+        b isa Dates.Date && return toml_date_eq(a, b)
+        b isa Dates.DateTime && return toml_date_eq(a, b)
+        return toml_date_eq(a, b::Dates.Time)
+    end
+end
+# 1 a table, 2 an array, 3 a string, 4 a number, 5 a date or time, 0 another type
+function toml_kind(@nospecialize(x))
+    x isa Dict{String, Any} && return 1
+    toml_vec_kind(x) && return 2
+    x isa String && return 3
+    x isa Union{Int64, Float64, Bool} && return 4
+    x isa Union{Dates.Date, Dates.DateTime, Dates.Time} && return 5
+    return 0
+end
+toml_vec_kind(@nospecialize(x)) = x isa Vector{Any} || x isa Vector{String} || x isa Vector{Dict{String, Any}} ||
+    x isa Vector{Int64} || x isa Vector{Float64} || x isa Vector{Bool} ||
+    x isa Vector{Dates.Date} || x isa Vector{Dates.DateTime} || x isa Vector{Dates.Time}
+toml_num_eq(a, b::Union{Int64, Float64, Bool}) =
+    a isa Int64 ? a == b : a isa Float64 ? a == b : (a::Bool) == b
+toml_date_eq(a, b::Union{Dates.Date, Dates.DateTime, Dates.Time}) =
+    a isa Dates.Date ? a == b : a isa Dates.DateTime ? a == b : (a::Dates.Time) == b
+# (both arrays of one of the parser's element types) `==` of arrays: equal lengths, then the
+# elements in order. Every function of the toml_eq recursion has one signature, its elements
+# read through `toml_vec_get` as Any: no specializations of one method calling each other
+# (inference limits those, and the trim verifier then finds no code for them: G3 V83-V91)
+Base.@nospecializeinfer function toml_vec_eq(@nospecialize(a), @nospecialize(b))
+    n = toml_vec_length(a)
+    n == toml_vec_length(b) || return false
+    for i in 1:n
+        toml_eq(toml_vec_get(a, i), toml_vec_get(b, i)) || return false
+    end
+    return true
+end
+Base.@nospecializeinfer function toml_vec_length(@nospecialize(v))
+    v isa Vector{Any} && return length(v)
+    v isa Vector{String} && return length(v)
+    v isa Vector{Dict{String, Any}} && return length(v)
+    v isa Vector{Int64} && return length(v)
+    v isa Vector{Float64} && return length(v)
+    v isa Vector{Bool} && return length(v)
+    v isa Vector{Dates.Date} && return length(v)
+    v isa Vector{Dates.DateTime} && return length(v)
+    return length(v::Vector{Dates.Time})
+end
+Base.@nospecializeinfer function toml_vec_get(@nospecialize(v), i::Int)
+    v isa Vector{Any} && return v[i]
+    v isa Vector{String} && return v[i]
+    v isa Vector{Dict{String, Any}} && return v[i]
+    v isa Vector{Int64} && return v[i]
+    v isa Vector{Float64} && return v[i]
+    v isa Vector{Bool} && return v[i]
+    v isa Vector{Dates.Date} && return v[i]
+    v isa Vector{Dates.DateTime} && return v[i]
+    return (v::Vector{Dates.Time})[i]
+end
+function toml_eq_other(@nospecialize(a), @nospecialize(b))
+    WASM_TARGET && error("PkgWasm built for Wasm: comparing TOML values of unsupported types")
+    return Base.inferencebarrier(==)(a, b)::Bool
+end
+
 Base.@kwdef mutable struct Project
     other::Dict{String, Any} = Dict{String, Any}()
     # The comments of the project file, preserved across writes.
@@ -282,7 +430,8 @@ Base.@kwdef mutable struct Project
     readonly::Bool = false
 end
 const _project_comparison_fields = filter(!=(:comments), collect(fieldnames(Project)))
-Base.:(==)(t1::Project, t2::Project) = all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, _project_comparison_fields)
+# (`all(x -> getfield(t1, x) == getfield(t2, x), _project_comparison_fields)`, the fields in order: M4.2)
+Base.:(==)(t1::Project, t2::Project) = fields_equal(t1, t2, Val((:comments,)))
 Base.hash(t::Project, h::UInt) = foldr(hash, [getfield(t, x) for x in _project_comparison_fields], init = h)
 
 
@@ -351,7 +500,7 @@ Base.@kwdef mutable struct Manifest
     registries::Dict{String, ManifestRegistryEntry} = Dict{String, ManifestRegistryEntry}()
     other::Dict{String, Any} = Dict{String, Any}()
 end
-Base.:(==)(t1::Manifest, t2::Manifest) = all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(Manifest))
+Base.:(==)(t1::Manifest, t2::Manifest) = fields_equal(t1, t2)
 Base.hash(m::Manifest, h::UInt) = foldr(hash, [getfield(m, x) for x in fieldnames(Manifest)], init = h)
 Base.getindex(m::Manifest, i_or_key) = getindex(m.deps, i_or_key)
 Base.get(m::Manifest, key, default) = get(m.deps, key, default)
@@ -427,6 +576,99 @@ mutable struct EnvCache
     original_manifest::Manifest
 end
 
+# Typed copies of a Project and a Manifest (M4.2): equal (`==`) to their `deepcopy`, and
+# sharing no mutable part with the original, without `deepcopy`'s reflection. (Unlike
+# `deepcopy`, parts aliased within the original are copied separately: the copies kept
+# by `EnvCache` are only compared and read.)
+copy_versionspec(v::VersionSpec) = VersionSpec(copy(v.ranges))
+copy_version(@nospecialize(v)) = v isa VersionSpec ? copy_versionspec(v) : v
+# `deepcopy(v)` of a value of a table kept in a snapshot: by the types TOML's parser makes,
+# others (programmatic metadata) natively by `deepcopy` (built for Wasm an error)
+function snapshot_copy(@nospecialize(v))
+    if v isa Dict{String, Any}
+        d = Dict{String, Any}()
+        for (k, x) in v
+            d[k] = snapshot_copy(x)
+        end
+        return d
+    end
+    v isa Union{String, Int64, Float64, Bool, Nothing, Dates.DateTime, Dates.Date, Dates.Time} && return v
+    v isa Vector{Any} && return Any[snapshot_copy(x) for x in v]
+    v isa Vector{String} && return copy(v)
+    v isa Vector{Int64} && return copy(v)
+    v isa Vector{Float64} && return copy(v)
+    v isa Vector{Bool} && return copy(v)
+    v isa Vector{Dict{String, Any}} && return Dict{String, Any}[snapshot_copy(x)::Dict{String, Any} for x in v]
+    v isa Vector{Dates.DateTime} && return copy(v)
+    v isa Vector{Dates.Date} && return copy(v)
+    v isa Vector{Dates.Time} && return copy(v)
+    WASM_TARGET && error("PkgWasm: unsupported value in a project or manifest table")
+    return Base.inferencebarrier(deepcopy)(v)
+end
+
+copy_appinfo(a::AppInfo) = AppInfo(a.name, a.julia_command, a.submodule, copy(a.julia_flags), snapshot_copy(a.other))
+copy_exts(e::Dict{String, Union{Vector{String}, String}}) =
+    Dict{String, Union{Vector{String}, String}}(k => (v isa Vector{String} ? copy(v) : v) for (k, v) in e)
+copy_gitrepo(r::GitRepo) = GitRepo(r.source, r.rev, r.subdir)
+
+# `deepcopy(pkgs)` of PackageSpecs, typed: each spec and its GitRepo copied once, so what is
+# shared in `pkgs` is shared in the copy, as deepcopy's memo has it
+function copy_packagespecs(pkgs::Vector{PackageSpec})
+    specs = IdDict{PackageSpec, PackageSpec}()
+    repos = IdDict{GitRepo, GitRepo}()
+    return PackageSpec[get!(specs, p) do
+        repo = get!(() -> copy_gitrepo(p.repo), repos, p.repo)
+        PackageSpec(p.name, p.uuid, copy_version(p.version), p.tree_hash, repo, p.path, p.pinned, p.url, p.rev, p.subdir)
+    end for p in pkgs]
+end
+
+# (`deepcopy` of a project file's comments)
+copy_comments(::Nothing) = nothing
+copy_comments(c::TOML.Comments) = TOML.Comments(
+    Dict{Vector{String}, Base.TOML.CommentBlock}(copy(k) => Base.TOML.CommentBlock(copy(v.above), v.inline) for (k, v) in c.items),
+    Dict{Vector{String}, Vector{String}}(copy(k) => copy(v) for (k, v) in c.floating),
+)
+
+function copy_project(p::Project)
+    return Project(;
+        other = snapshot_copy(p.other), comments = copy_comments(p.comments),
+        name = p.name, uuid = p.uuid, version = copy_version(p.version),
+        manifest = p.manifest, entryfile = p.entryfile, julia_syntax_version = copy_version(p.julia_syntax_version),
+        deps = copy(p.deps), _deps_weak = copy(p._deps_weak), weakdeps = copy(p.weakdeps),
+        exts = copy_exts(p.exts), extras = copy(p.extras),
+        targets = Dict{String, Vector{String}}(k => copy(v) for (k, v) in p.targets),
+        apps = Dict{String, AppInfo}(k => copy_appinfo(v) for (k, v) in p.apps),
+        compat = Dict{String, Compat}(k => Compat(copy_versionspec(v.val), v.str) for (k, v) in p.compat),
+        compat_overrides = Dict{String, Compat}(k => Compat(copy_versionspec(v.val), v.str) for (k, v) in p.compat_overrides),
+        sources = Dict{String, Dict{String, String}}(k => copy(v) for (k, v) in p.sources),
+        workspace = snapshot_copy(p.workspace),
+        readonly = p.readonly,
+    )
+end
+
+function copy_entry(e::PackageEntry)
+    other = e.other
+    return PackageEntry(;
+        name = e.name, version = e.version, path = e.path, entryfile = e.entryfile, pinned = e.pinned,
+        repo = copy_gitrepo(e.repo), tree_hash = e.tree_hash,
+        deps = copy(e.deps), weakdeps = copy(e.weakdeps), exts = copy_exts(e.exts), uuid = e.uuid,
+        apps = Dict{String, AppInfo}(k => copy_appinfo(v) for (k, v) in e.apps),
+        registries = copy(e.registries), julia_syntax_version = copy_version(e.julia_syntax_version),
+        other = other === nothing ? nothing : other isa Dict{String, Any} ? snapshot_copy(other) :
+            WASM_TARGET ? error("PkgWasm: unsupported manifest entry table") : Base.inferencebarrier(deepcopy)(other),
+    )
+end
+
+function copy_manifest(m::Manifest)
+    return Manifest(;
+        julia_version = m.julia_version, project_hash = m.project_hash,
+        environment_id = m.environment_id, environment_name = m.environment_name, manifest_format = m.manifest_format,
+        deps = Dict{UUID, PackageEntry}(k => copy_entry(v) for (k, v) in m.deps),
+        registries = Dict{String, ManifestRegistryEntry}(k => ManifestRegistryEntry(v.id, v.uuid, v.url) for (k, v) in m.registries),
+        other = snapshot_copy(m.other),
+    )
+end
+
 function EnvCache(env::Union{Nothing, String} = nothing)
     # @show env
     project_file = find_project_file(env)
@@ -472,8 +714,8 @@ function EnvCache(env::Union{Nothing, String} = nothing)
         project,
         workspace,
         manifest,
-        deepcopy(project),
-        deepcopy(manifest),
+        copy_project(project),
+        copy_manifest(manifest),
     )
 
     return env′
@@ -508,7 +750,7 @@ end
 # ENV variables to set some of these defaults?
 Base.@kwdef mutable struct Context
     env::EnvCache = EnvCache()
-    io::IO = stderr_f()
+    io::TargetIO = stderr_f()
     use_git_for_all_downloads::Bool = false
     use_only_tarballs_for_downloads::Bool = false
     num_concurrent_downloads::Int = num_concurrent_downloads()
@@ -537,25 +779,49 @@ is_project_uuid(env::EnvCache, uuid::UUID) = project_uuid(env) == uuid
 const UPGRADABLE_STDLIBS = ["DelimitedFiles", "Statistics"]
 const UPGRADABLE_STDLIBS_UUIDS = Set{UUID}()
 const STDLIB = Ref{Union{DictStdLibs, Nothing}}(nothing)
+# PkgWasm (PLAN.md D10): built from the embedded stdlib metadata of the target Julia
+# (`src/stdlib_data.jl`) instead of reading the project files under `stdlib_dir()`.
+# Same filtering as stock: entries without uuid are absent from the data, upgradable
+# stdlibs only record their UUID.
 function load_stdlib()
     stdlib = DictStdLibs()
-    for name in readdir(Sys.STDLIB)
-        projfile = projectfile_path(stdlib_path(name); strict = true)
-        nothing === projfile && continue
-        project = parse_toml(projfile)
-        uuid = get(project, "uuid", nothing)::Union{String, Nothing}
-        v_str = get(project, "version", nothing)::Union{String, Nothing}
-        version = isnothing(v_str) ? nothing : VersionNumber(v_str)
-        nothing === uuid && continue
-        if name in UPGRADABLE_STDLIBS
-            push!(UPGRADABLE_STDLIBS_UUIDS, UUID(uuid))
+    for e in PkgWasm.STDLIB_DATA
+        uuid = UUID(e.uuid)
+        if e.name in UPGRADABLE_STDLIBS
+            push!(UPGRADABLE_STDLIBS_UUIDS, uuid)
             continue
         end
-        deps = UUID.(values(get(project, "deps", Dict{String, Any}())))
-        weakdeps = UUID.(values(get(project, "weakdeps", Dict{String, Any}())))
-        stdlib[UUID(uuid)] = StdlibInfo(name, Base.UUID(uuid), version, deps, weakdeps)
+        version = e.version === nothing ? nothing : VersionNumber(e.version)
+        deps = UUID[UUID(last(d)) for d in e.deps]
+        weakdeps = UUID[UUID(last(d)) for d in e.weakdeps]
+        stdlib[uuid] = StdlibInfo(e.name, uuid, version, deps, weakdeps)
     end
     return stdlib
+end
+
+# The embedded entry for the stdlib `uuid` of the running Julia version, or `nothing`.
+function stdlib_data(uuid::UUID)
+    for e in PkgWasm.STDLIB_DATA
+        UUID(e.uuid) == uuid && return e
+    end
+    return nothing
+end
+
+# PkgWasm (PLAN.md D10): fixed default-sysimage policy, replacing `Base.in_sysimage` and the
+# versions in `Base.pkgorigins` (embedded from the target Julia's default sysimage).
+function in_sysimage(pkgid::Base.PkgId)
+    pkgid.uuid === nothing && return false
+    for e in PkgWasm.SYSIMAGE_PKGS
+        UUID(e.uuid) == pkgid.uuid && return true
+    end
+    return false
+end
+function sysimage_version(pkgid::Base.PkgId)::Union{VersionNumber, Nothing}
+    pkgid.uuid === nothing && return nothing
+    for e in PkgWasm.SYSIMAGE_PKGS
+        UUID(e.uuid) == pkgid.uuid && return e.version === nothing ? nothing : VersionNumber(e.version)
+    end
+    return nothing
 end
 
 function stdlibs()
@@ -651,14 +917,26 @@ end
 
 Context!(kw_context::Vector{Pair{Symbol, Any}})::Context =
     Context!(Context(); kw_context...)
+const CONTEXT_FIELDS = fieldnames(Context) # (load time: no reflection at run time)
 function Context!(ctx::Context; kwargs...)
-    for (k, v) in kwargs
-        setfield!(ctx, k, v)
+    # one `setfield!` per field with a constant name, not `setfield!(ctx, k, v)` in a loop over
+    # the keywords: with several keywords of different types that is a dynamic call, which
+    # the Wasm compiler cannot resolve. Same effect, including the error for an unknown key.
+    nt = values(kwargs)
+    for k in keys(nt)
+        k in CONTEXT_FIELDS || throw(FieldError(Context, k))
     end
+    haskey(nt, :env) && setfield!(ctx, :env, nt.env)
+    haskey(nt, :io) && setfield!(ctx, :io, nt.io)
+    haskey(nt, :use_git_for_all_downloads) && setfield!(ctx, :use_git_for_all_downloads, nt.use_git_for_all_downloads)
+    haskey(nt, :use_only_tarballs_for_downloads) && setfield!(ctx, :use_only_tarballs_for_downloads, nt.use_only_tarballs_for_downloads)
+    haskey(nt, :num_concurrent_downloads) && setfield!(ctx, :num_concurrent_downloads, nt.num_concurrent_downloads)
+    haskey(nt, :registries) && setfield!(ctx, :registries, nt.registries)
+    haskey(nt, :julia_version) && setfield!(ctx, :julia_version, nt.julia_version)
 
     # Highlight for logging purposes if julia_version is set to a different version than current VERSION
     if haskey(kwargs, :julia_version) && ctx.julia_version !== nothing && ctx.julia_version != VERSION
-        Pkg.printpkgstyle(
+        PkgWasm.printpkgstyle(
             ctx.io, :Context,
             "Pkg is operating with julia_version set to `$(ctx.julia_version)`",
             color = Base.warn_color()
@@ -686,8 +964,13 @@ function load_workspace_sources(env::EnvCache)
     for (project_file, project) in Iterators.flatten(((env.project_file => env.project,), env.workspace))
         for name in keys(project.sources)
             path, repo = get_path_repo(project, project_file, env.manifest_file, name)
-            fields = (; path, url = repo.source, rev = repo.rev, subdir = repo.subdir)
-            str = join((string(k, "=", v) for (k, v) in pairs(fields) if v !== nothing), ",")
+            # (G3: the `k=v` parts pushed one by one, same order and text as the NamedTuple join)
+            parts = String[]
+            path !== nothing && push!(parts, string("path=", path))
+            repo.source !== nothing && push!(parts, string("url=", repo.source))
+            repo.rev !== nothing && push!(parts, string("rev=", repo.rev))
+            repo.subdir !== nothing && push!(parts, string("subdir=", repo.subdir))
+            str = join(parts, ",")
             push!(get!(Set{String}, sources, name), str)
         end
     end
@@ -698,14 +981,14 @@ end
 function workspace_resolve_hash(env::EnvCache; include_sources::Bool = true)
     # Handle deps in both [deps] and [weakdeps]
     deps = Dict{String, UUID}()
-    for pkg in Pkg.Operations.load_direct_deps(env)
+    for pkg in PkgWasm.Operations.load_direct_deps(env)
         deps[pkg.name] = pkg.uuid
     end
     weakdeps = load_workspace_weak_deps(env)
     alldeps = merge(deps, weakdeps)
     compats = Dict{String, VersionSpec}()
     for (name, uuid) in alldeps
-        compats[name] = Pkg.Operations.get_compat_workspace(env, name)
+        compats[name] = PkgWasm.Operations.get_compat_workspace(env, name)
     end
     iob = IOBuffer()
     for (name, uuid) in sort!(collect(deps); by = first)
@@ -726,7 +1009,7 @@ function workspace_resolve_hash(env::EnvCache; include_sources::Bool = true)
         for name in keys(project.extras)
             haskey(alldeps, name) && continue
             haskey(project.compat, name) || continue
-            compat = Pkg.Operations.get_compat(project, name)
+            compat = PkgWasm.Operations.get_compat(project, name)
             extras_compats[name] = intersect(get(extras_compats, name, VersionSpec()), compat)
         end
     end
@@ -811,6 +1094,28 @@ end
 write_env_usage(source_file::AbstractString, usage_filepath::AbstractString) =
     write_env_usage([source_file], usage_filepath)
 
+# the times of the entries of a package in a usage file (`map` over them), the entries told
+# apart by the types they have: a table, from the file, or one written this session
+function usage_times(@nospecialize(entries), usage_filepath, k)
+    entry_time(d) =
+        if haskey(d, "time")
+            t = d["time"]
+            t isa Dates.DateTime ? t : t isa String ? Dates.DateTime(t) :
+                WASM_TARGET ? error("PkgWasm: unsupported usage time") : Base.inferencebarrier(Dates.DateTime)(t)
+        else
+            # if there's no time entry because of a write failure be conservative and mark it as being used now
+            @pkg_debug "Usage file `$usage_filepath` has a missing `time` entry for `$k`. Marking as used `now()`"
+            Dates.now()
+        end
+    # (a vector of `DateTime`s, as `map` makes them; empty, `maximum` throws the same error)
+    entries isa Vector{Dict{String, Dates.DateTime}} && return Dates.DateTime[entry_time(d) for d in entries]
+    if entries isa Vector{Any} && all(d -> d isa Dict{String, Any}, entries)
+        return Dates.DateTime[entry_time(d::Dict{String, Any}) for d in entries]
+    end
+    WASM_TARGET && error("PkgWasm: unsupported usage entries")
+    return Base.inferencebarrier(map)(entry_time, entries)
+end
+
 function write_env_usage(source_files, usage_filepath::AbstractString)
     # Don't record ghost usage
     source_files = filter(isfile, source_files)
@@ -825,7 +1130,7 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
         _write_env_usage(source_files, usage_file, timestamp)
     catch err
         err isa InterruptException && rethrow()
-        @warn "Failed to record usage in `$usage_file`, ignoring." exception = err maxlog = 1
+        @pkg_warn "Failed to record usage in `$usage_file`, ignoring." exception = err maxlog = 1
     end
     return
 end
@@ -835,12 +1140,12 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
     !ispath(dirname(usage_file)) && mkpath(dirname(usage_file))
 
     ## Atomically write usage file using process id locking
-    FileWatching.mkpidlock(usage_file * ".pid", stale_age = 3) do
+    PkgWasm.mkpidlock(usage_file * ".pid", stale_age = 3) do
         usage = if isfile(usage_file)
             try
                 TOML.parsefile(usage_file)
             catch err
-                @warn "Failed to parse usage file `$usage_file`, ignoring." err
+                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err = PkgWasm.log_value(err)
                 Dict{String, Any}()
             end
         else
@@ -854,22 +1159,14 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
 
         # keep only latest usage info
         for k in keys(usage)
-            times = map(usage[k]) do d
-                if haskey(d, "time")
-                    Dates.DateTime(d["time"])
-                else
-                    # if there's no time entry because of a write failure be conservative and mark it as being used now
-                    @debug "Usage file `$usage_file` has a missing `time` entry for `$k`. Marking as used `now()`"
-                    Dates.now()
-                end
-            end
+            times = usage_times(usage[k], usage_file, k)
             usage[k] = [Dict("time" => maximum(times))]
         end
 
         try
             atomic_toml_write(usage_file, usage, sorted = true)
         catch err
-            @error "Failed to write valid usage file `$usage_file`" exception = err
+            @pkg_error "Failed to write valid usage file `$usage_file`" exception = err
         end
     end
     return
@@ -905,29 +1202,31 @@ function relative_project_path(project_file::String, path::String)
     # keep a path inside the project as given, so that symlinks in it are preserved (#4636)
     path = abspath(path)
     project_dir = abspath(dirname(project_file))
-    for dir in (project_dir, Pkg.safe_realpath(project_dir))
+    for dir in (project_dir, PkgWasm.safe_realpath(project_dir))
         rel = relpath(path, dir)
         (isabspath(rel) || first(splitpath(rel)) == "..") || return rel
     end
     # otherwise, realpath needed to expand symlinks before taking the relative path
-    return relpath(Pkg.safe_realpath(path), Pkg.safe_realpath(project_dir))
+    return relpath(PkgWasm.safe_realpath(path), PkgWasm.safe_realpath(project_dir))
 end
 
 function devpath(env::EnvCache, name::AbstractString, shared::Bool)
     @assert name != ""
-    dev_dir = shared ? abspath(Pkg.devdir()) : joinpath(dirname(env.project_file), "dev")
+    dev_dir = shared ? abspath(PkgWasm.devdir()) : joinpath(dirname(env.project_file), "dev")
     return joinpath(dev_dir, name)
 end
 
 function error_if_in_sysimage(pkg::PackageSpec)
     RESPECT_SYSIMAGE_VERSIONS[] || return false
     if pkg.uuid === nothing
-        @error "Expected package $(pkg.name) to have a set UUID, please file a bug report."
+        @pkg_error "Expected package $(pkg.name) to have a set UUID, please file a bug report."
         return false
     end
     pkgid = Base.PkgId(pkg.uuid, pkg.name)
-    return if Base.in_sysimage(pkgid)
-        pkgerror("Tried to develop or add by URL package $(pkgid) which is already in the sysimage, use `Pkg.respect_sysimage_versions(false)` to disable this check.")
+    return if in_sysimage(pkgid)
+        # (built for Wasm, G3: Base's default show of a PkgId as text; natively stock's interpolation)
+        what = PkgWasm.WASM_TARGET ? "Base.PkgId(Base.UUID(\"$(pkgid.uuid::Base.UUID)\"), $(repr(pkgid.name)))" : string(pkgid)
+        pkgerror("Tried to develop or add by URL package $(what) which is already in the sysimage, use `Pkg.respect_sysimage_versions(false)` to disable this check.")
     end
 end
 
@@ -941,7 +1240,7 @@ function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
         # Resolve manifest-relative paths to absolute paths for file system operations
         dev_path = if is_local_path
             isabspath(pkg.repo.source) ? pkg.repo.source :
-                Pkg.manifest_rel_path(ctx.env, pkg.repo.source)
+                PkgWasm.manifest_rel_path(ctx.env, pkg.repo.source)
         else
             devpath(ctx.env, pkg.name, shared)
         end
@@ -1007,7 +1306,7 @@ function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
         else
             # Resolve manifest-relative path to absolute before passing to git
             repo_source_resolved = !isurl(pkg.repo.source) && !isabspath(pkg.repo.source) ?
-                Pkg.manifest_rel_path(ctx.env, pkg.repo.source) :
+                PkgWasm.manifest_rel_path(ctx.env, pkg.repo.source) :
                 pkg.repo.source
             LibGit2.close(GitTools.ensure_clone(ctx.io, repo_path, repo_source_resolved))
             cloned = true
@@ -1025,7 +1324,7 @@ function handle_repo_develop!(ctx::Context, pkg::PackageSpec, shared::Bool)
         if !cloned
             # Resolve manifest-relative path to absolute before passing to git
             repo_source_resolved = !isurl(pkg.repo.source) && !isabspath(pkg.repo.source) ?
-                Pkg.manifest_rel_path(ctx.env, pkg.repo.source) :
+                PkgWasm.manifest_rel_path(ctx.env, pkg.repo.source) :
                 pkg.repo.source
             LibGit2.close(GitTools.ensure_clone(ctx.io, dev_path, repo_source_resolved))
         else
@@ -1069,7 +1368,7 @@ function set_repo_source_from_registry!(ctx, pkg)
     registry_resolve!(ctx.registries, pkg)
     # Didn't find the package in the registry, but maybe it exists in the updated registry
     if !isresolved(pkg)
-        Pkg.Operations.update_registries(ctx; force = false)
+        PkgWasm.Operations.update_registries(ctx; force = false)
         registry_resolve!(ctx.registries, pkg)
     end
     ensure_resolved(ctx, ctx.env.manifest, [pkg]; registry = true)
@@ -1077,7 +1376,7 @@ function set_repo_source_from_registry!(ctx, pkg)
     for reg in ctx.registries
         regpkg = get(reg, pkg.uuid, nothing)
         regpkg === nothing && continue
-        info = Pkg.Registry.registry_info(reg, regpkg)
+        info = PkgWasm.Registry.registry_info(reg, regpkg)
         url = info.repo
         url === nothing && continue
         pkg.repo.source = url
@@ -1089,6 +1388,10 @@ function set_repo_source_from_registry!(ctx, pkg)
     pkgerror("Repository for package with UUID `$(pkg.uuid)` could not be found in a registry.")
 end
 
+
+# the repository source, else the package name, else `default` (typed `something`; G3 V162)
+repo_label(pkg::PackageSpec, default::String) =
+    pkg.repo.source !== nothing ? pkg.repo.source : pkg.name !== nothing ? pkg.name : default
 
 function handle_repo_add!(ctx::Context, pkg::PackageSpec)
     # The first goal is to populate pkg.repo.source if that wasn't given explicitly
@@ -1143,7 +1446,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             is_bare || let repo_source = repo_source
                 LibGit2.with(LibGit2.GitRepo(repo_source)) do repo
                     if LibGit2.isdirty(repo)
-                        @warn "The repository at `$(repo_source)` has uncommitted changes. Consider using `Pkg.develop` instead of `Pkg.add` if you want to work with the current state of the repository."
+                        @pkg_warn "The repository at `$(repo_source)` has uncommitted changes. Consider using `Pkg.develop` instead of `Pkg.add` if you want to work with the current state of the repository."
                     end
                 end
             end
@@ -1187,7 +1490,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
                         GitTools.fetch(ctx.io, repo, repo_source_typed; refspecs = pr_refspecs, depth = 1)
                         # For branch names, fetch only the specific branch
                     elseif !looks_like_commit_hash(rev_or_hash_str)
-                        specific_refspec = ["+refs/heads/$(rev_or_hash):refs/cache/heads/$(rev_or_hash)"]
+                        specific_refspec = ["+refs/heads/$(string(rev_or_hash)::String):refs/cache/heads/$(string(rev_or_hash)::String)"] # (typed: G3)
                         GitTools.fetch(ctx.io, repo, repo_source_typed; refspecs = specific_refspec, depth = 1)
                     else
                         # For commit hashes, fetch all branches including the older commits
@@ -1224,7 +1527,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             ispinned = innerentry !== nothing && innerentry.pinned
             if isbranch && !fetched && !ispinned
                 # Fetch only the specific branch being tracked
-                specific_refspec = ["+refs/heads/$(rev_or_hash):refs/cache/heads/$(rev_or_hash)"]
+                specific_refspec = ["+refs/heads/$(string(rev_or_hash)::String):refs/cache/heads/$(string(rev_or_hash)::String)"] # (typed: G3)
                 GitTools.fetch(ctx.io, repo, repo_source_typed; refspecs = specific_refspec, depth = 1)
                 gitobject, isbranch = get_object_or_branch(repo, rev_or_hash)
             end
@@ -1249,7 +1552,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             # If we already resolved a uuid and name, we can bail early if this package is already installed at the current tree_hash
             if has_uuid(pkg) && has_name(pkg)
                 error_if_in_sysimage(pkg)
-                version_path = Pkg.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
+                version_path = PkgWasm.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
                 isdir(version_path) && return false
             end
 
@@ -1260,7 +1563,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
 
             # Now that we are fully resolved (name, UUID, tree_hash, repo.source, repo.rev), we can finally
             # check to see if the package exists at its canonical path.
-            version_path = Pkg.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
+            version_path = PkgWasm.Operations.source_path(ctx.env.project_file, pkg, ctx.julia_version)
             isdir(version_path) && return false
 
             # Otherwise, move the temporary path into its correct place and set read only
@@ -1542,7 +1845,7 @@ function registered_uuid(registries::Vector{Registry.RegistryInstance}, name::St
         for reg in registries
             pkg = get(reg, uuid, nothing)
             pkg === nothing && continue
-            info = Pkg.Registry.registry_info(reg, pkg)
+            info = PkgWasm.Registry.registry_info(reg, pkg)
             repo = info.repo
             repo === nothing && continue
             push!(repo_infos, (reg.name, repo, uuid))
@@ -1688,7 +1991,7 @@ function write_env(
     if env.manifest != env.original_manifest
         write_manifest(env)
     end
-    return update_undo && Pkg.API.add_snapshot_to_undo(env)
+    return update_undo && PkgWasm.API.add_snapshot_to_undo(env)
 end
 
 

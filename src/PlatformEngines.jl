@@ -3,20 +3,24 @@
 # Content in this file is extracted from BinaryProvider.jl, see LICENSE.method
 
 module PlatformEngines
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using SHA, Downloads, Tar, Dates, Printf
 using ArgTools: FileSpec, arg_write
 using Base.ScopedValues: ScopedValue, @with
-import ...Pkg: Pkg, TOML, pkg_server, depots1, can_fancyprint, stderr_f, atomic_toml_write
+import ...PkgWasm: PkgWasm, TOML, pkg_server, depots1, can_fancyprint, stderr_f, atomic_toml_write, toml_float, WASM_TARGET
+import ..Host
 using ..MiniProgressBars
 using Base.BinaryPlatforms, p7zip_jll, Zstd_jll
 
 export verify, unpack, package, download_verify_unpack, get_extract_cmd, detect_archive_format
 
 const EXE7Z_LOCK = ReentrantLock()
-const EXE7Z = Ref{String}()
 const EXEZSTD_LOCK = ReentrantLock()
-const EXEZSTD = Ref{String}()
+# PkgWasm (D8): "" = not looked up yet (stock uses an unassigned Ref, which cannot be reset by
+# `sanitize_globals!`); a found path is a build-host path and must not reach the image.
+const EXE7Z = Ref{String}("")
+const EXEZSTD = Ref{String}("")
 
 function exe7z()
     # If the JLL is available, use the wrapper function defined in there
@@ -25,7 +29,7 @@ function exe7z()
     end
 
     return lock(EXE7Z_LOCK) do
-        if !isassigned(EXE7Z)
+        if isempty(EXE7Z[])
             EXE7Z[] = find7z()
         end
         return Cmd([EXE7Z[]])
@@ -39,7 +43,7 @@ function exezstd()
     end
 
     return lock(EXEZSTD_LOCK) do
-        if !isassigned(EXEZSTD)
+        if isempty(EXEZSTD[])
             EXEZSTD[] = findzstd()
         end
         return Cmd([EXEZSTD[]])
@@ -81,7 +85,7 @@ function get_server_dir(
     url == server || startswith(url, "$server/") || return
     m = match(r"^\w+:///?([^\\/]+)(?:$|/)", server)
     if m === nothing
-        @warn "malformed Pkg server value" server
+        @pkg_warn "malformed Pkg server value" server
         return
     end
     isempty(Base.DEPOT_PATH) && return
@@ -94,6 +98,11 @@ const AUTH_ERROR_HANDLERS = Pair{Union{String, Regex}, Any}[]
 
 function handle_auth_error(url, err; verbose::Bool = false)
     handled, should_retry = false, false
+    # (built for Wasm no handlers can be registered, the table is empty: G3 #29)
+    if WASM_TARGET
+        isempty(AUTH_ERROR_HANDLERS) || PkgWasm.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
+        return nothing
+    end
     for (scheme, handler) in AUTH_ERROR_HANDLERS
         occursin(scheme, url) || continue
         handled, should_retry = handler(url, pkg_server(), err)
@@ -123,6 +132,7 @@ is `true`.
 `register_auth_error_handler` returns a zero-arg function that can be called to deregister the handler.
 """
 function register_auth_error_handler(urlscheme::Union{AbstractString, Regex}, @nospecialize(f))
+    WASM_TARGET && PkgWasm.Types.pkgerror("PkgWasm built for Wasm: authentication error handlers are not supported")
     unique!(pushfirst!(AUTH_ERROR_HANDLERS, urlscheme => f))
     return () -> deregister_auth_error_handler(urlscheme, f)
 end
@@ -144,19 +154,19 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     isfile(auth_file) || return handle_auth_error(url, "no-auth-file"; verbose = verbose)
     # TODO: check for insecure auth file permissions
     if !is_secure_url(url)
-        @warn "refusing to send auth info over insecure connection" url = url
+        @pkg_warn "refusing to send auth info over insecure connection" url = url
         return handle_auth_error(url, "insecure-connection"; verbose = verbose)
     end
     # parse the auth file
     auth_info = try
         TOML.parsefile(auth_file)
     catch err
-        @error "malformed auth file" file = auth_file err = err
+        @pkg_error "malformed auth file" file = auth_file err = PkgWasm.log_value(err)
         return handle_auth_error(url, "malformed-file"; verbose = verbose)
     end
     # check for an auth token
     if !haskey(auth_info, "access_token")
-        @warn "auth file without access_token field" file = auth_file
+        @pkg_warn "auth file without access_token field" file = auth_file
         return handle_auth_error(url, "no-access-token"; verbose = verbose)
     end
     auth_token = auth_info["access_token"]::String
@@ -164,10 +174,10 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     # handle token expiration and refresh
     expires_at = Inf
     if haskey(auth_info, "expires_at")
-        expires_at = min(expires_at, Float64(auth_info["expires_at"])::Float64)
+        expires_at = min(expires_at, toml_float(auth_info["expires_at"]))
     end
     if haskey(auth_info, "expires_in")
-        expires_at = min(expires_at, mtime(auth_file) + Float64(auth_info["expires_in"])::Float64)
+        expires_at = min(expires_at, mtime(auth_file) + toml_float(auth_info["expires_in"]))
     end
     # if token is good until ten minutes from now, use it
     time_now = time()
@@ -176,31 +186,31 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     end
     if !haskey(auth_info, "refresh_url") || !haskey(auth_info, "refresh_token")
         if expires_at ≤ time_now
-            @warn "expired auth without refresh keys" file = auth_file
+            @pkg_warn "expired auth without refresh keys" file = auth_file
         end
         # try it anyway since we can't refresh
         return something(handle_auth_error(url, "no-refresh-key"; verbose = verbose), auth_header)
     end
     refresh_url = auth_info["refresh_url"]::String
     if !is_secure_url(refresh_url)
-        @warn "ignoring insecure auth refresh URL" url = refresh_url
+        @pkg_warn "ignoring insecure auth refresh URL" url = refresh_url
         return something(handle_auth_error(url, "insecure-refresh-url"; verbose = verbose), auth_header)
     end
-    verbose && @info "Refreshing expired auth token..." file = auth_file
+    verbose && @pkg_info "Refreshing expired auth token..." file = auth_file
     tmp = tempname()
     refresh_token = auth_info["refresh_token"]::String
     refresh_auth = "Authorization" => "Bearer $refresh_token"
     try
         download(refresh_url, FileSpec(tmp; mode = 0o600), auth_header = refresh_auth, verbose = verbose)
     catch err
-        @warn "token refresh failure" file = auth_file url = refresh_url err = err
+        @pkg_warn "token refresh failure" file = auth_file url = refresh_url err = PkgWasm.log_value(err)
         rm(tmp, force = true)
         return handle_auth_error(url, "token-refresh-failed"; verbose = verbose)
     end
     auth_info = try
         TOML.parsefile(tmp)
     catch err
-        @warn "discarding malformed auth file" url = refresh_url err = err
+        @pkg_warn "discarding malformed auth file" url = refresh_url err = PkgWasm.log_value(err)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "malformed-file"; verbose = verbose), auth_header)
     end
@@ -208,14 +218,14 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
         if haskey(auth_info, "refresh_token")
             auth_info["refresh_token"] = "*"^64
         end
-        @warn "discarding auth file without access token" auth = auth_info
+        @pkg_warn "discarding auth file without access token" auth = PkgWasm.log_table(auth_info)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "no-access-token"; verbose = verbose), auth_header)
     end
     if haskey(auth_info, "expires_in")
         expires_in = auth_info["expires_in"]
         if expires_in isa Number
-            expires_at = floor(time_now + Float64(expires_in)::Float64)
+            expires_at = floor(time_now + toml_float(expires_in))
             # overwrite expires_at (avoids clock skew issues)
             auth_info["expires_at"] = expires_at
         end
@@ -250,7 +260,7 @@ function get_metadata_headers(url::AbstractString)
     push!(headers, "Julia-Pkg-Protocol" => "1.0")
     push!(headers, "Julia-Pkg-Server" => server)
     push!(headers, "Julia-Version" => string(VERSION))
-    system = triplet(HostPlatform())
+    system = triplet(PkgWasm.host_platform())
     push!(headers, "Julia-System" => system)
     ci_info = String[]
     for var in CI_VARIABLES
@@ -289,59 +299,8 @@ function get_metadata_headers(url::AbstractString)
     return headers
 end
 
-"""
-    DownloadCancellation()
-
-Tracks the downloads that are currently in flight inside a
-[`with_download_cancellation`](@ref) scope so that they can all be aborted at once.
-"""
-struct DownloadCancellation
-    lock::ReentrantLock
-    events::Set{Base.Event}
-    cancelled::Base.RefValue{Bool}
-end
-DownloadCancellation() = DownloadCancellation(ReentrantLock(), Set{Base.Event}(), Ref(false))
-
-const DOWNLOAD_CANCELLATION = ScopedValue{Union{Nothing, DownloadCancellation}}(nothing)
-
-"""
-    with_download_cancellation(f, cancellation::DownloadCancellation)
-
-Run `f`, registering every download started within it, including the ones started on
-tasks spawned by `f`, with `cancellation`.
-"""
-with_download_cancellation(f, cancellation::DownloadCancellation) =
-    @with(DOWNLOAD_CANCELLATION => cancellation, f())
-
-"""
-    cancel_downloads(cancellation::DownloadCancellation)
-
-Abort the downloads that are still in flight in `cancellation`'s scope, and make any
-download started in it from now on fail immediately rather than begin transferring.
-"""
-function cancel_downloads(cancellation::DownloadCancellation)
-    return @lock cancellation.lock begin
-        cancellation.cancelled[] = true
-        for event in cancellation.events
-            notify(event)
-        end
-        empty!(cancellation.events)
-    end
-end
-
-function register_download!(cancellation::DownloadCancellation)
-    event = Base.Event()
-    @lock cancellation.lock begin
-        # a download started after the cancellation is not worth beginning
-        cancellation.cancelled[] ? notify(event) : push!(cancellation.events, event)
-    end
-    return event
-end
-register_download!(::Nothing) = nothing
-
-unregister_download!(cancellation::DownloadCancellation, event::Base.Event) =
-    @lock cancellation.lock delete!(cancellation.events, event)
-unregister_download!(::Nothing, ::Nothing) = nothing
+# PkgWasm (PLAN.md D3): the stock DownloadCancellation machinery (Base.Event per download,
+# notify on cancel) is removed; downloads are serial calls into the Host seam.
 
 function download(
         url::AbstractString,
@@ -362,41 +321,112 @@ function download(
         push!(headers, header)
     end
 
-    do_fancy = verbose && can_fancyprint(io)
-    progress = if !isnothing(progress)
-        progress
-    elseif do_fancy
-        bar = MiniProgressBar(header = "Downloading", color = Base.info_color())
-        start_progress(io, bar)
-        let bar = bar
-            (total, now) -> begin
-                bar.max = total
-                bar.current = now
-                # Downloads.download attatches the progress indicator to the header request too
-                # which is only ~100 bytes, and will report as 0 - 100% progress immediately
-                # then dip down to 0 before the actual download starts. So we only show the
-                # progress bar once the real download starts.
-                total > 1000 && show_progress(io, bar)
-            end
-        end
-    else
-        nothing
+    # PkgWasm (PLAN.md D2, D3): the transfer goes through the Host seam: one request, no
+    # Downloads.jl tasks, no progress callbacks or cancellation events (`progress` is accepted
+    # and ignored). As in stock Pkg, a non-2xx final status is an error and `dest` is not left
+    # behind; it is reported like the `Downloads.RequestError` stock Pkg throws.
+    dest isa FileSpec && return download_filespec(String(url), dest, headers)
+    response = Host.download(String(url), String(dest), headers)
+    if !(200 <= response.status < 300)
+        Base.rm(dest; force = true)
+        throw(HTTPStatusError(String(url), response.status))
     end
-    cancellation = DOWNLOAD_CANCELLATION[]
-    interrupt = register_download!(cancellation)
-    return try
-        # `Downloads.download` cannot be interrupted once the transfer has started, so do
-        # what it would do for us around `Downloads.request`, which takes an interrupt event.
-        arg_write(dest) do output
-            response = Downloads.request(url; output, headers, progress, interrupt)
-            Downloads.Curl.status_ok(response) && return output
-            throw(Downloads.RequestError(url, Downloads.Curl.CURLE_OK, "", response))
-        end
-    finally
-        unregister_download!(cancellation, interrupt)
-        do_fancy && end_progress(io, bar)
-    end
+    return dest
 end
+
+# A `FileSpec` destination (master: e.g. a refreshed token, mode 0o600) is created with its
+# mode, as `ArgTools.arg_write` does: the download goes to a fresh private directory next to
+# it, so the file is never readable by others, then is given the mode and renamed into place.
+function download_filespec(url::String, dest::FileSpec, headers::Vector{Pair{String, String}})
+    dir = mktempdir(dirname(abspath(dest.path)))
+    try
+        tmp = joinpath(dir, "download")
+        response = Host.download(url, tmp, headers)
+        200 <= response.status < 300 || throw(HTTPStatusError(url, response.status))
+        chmod(tmp, dest.mode)
+        mv(tmp, dest.path; force = true)
+    finally
+        Base.rm(dir; force = true, recursive = true)
+    end
+    return dest.path
+end
+
+"""
+    HTTPStatusError(url, status)
+
+PkgWasm: a download whose final HTTP status is not 2xx, printed like stock Pkg's
+`Downloads.RequestError`, i.e. `RequestError: <status line> while requesting <url>`.
+
+The Host seam (ABI v2 `http_head`) carries the status code but not the status line, so the
+line is rebuilt as `HTTP/1.1 <code> <reason>` with the standard reason phrases (those of Node's
+`http.STATUS_CODES`). That is byte-identical to stock against an HTTP/1.1 server using the
+standard phrases, which includes the frozen Pkg-server proxy (runner/pkgserver.mjs). Against
+an HTTP/2 server stock prints `HTTP/2 <code>` instead; see lanes/pkg-fork/STATUS.md.
+"""
+struct HTTPStatusError <: Exception
+    url::String
+    status::Int
+end
+
+const HTTP_REASON_PHRASES = Dict{Int, String}(
+    300 => "Multiple Choices",
+    301 => "Moved Permanently",
+    302 => "Found",
+    303 => "See Other",
+    304 => "Not Modified",
+    305 => "Use Proxy",
+    307 => "Temporary Redirect",
+    308 => "Permanent Redirect",
+    400 => "Bad Request",
+    401 => "Unauthorized",
+    402 => "Payment Required",
+    403 => "Forbidden",
+    404 => "Not Found",
+    405 => "Method Not Allowed",
+    406 => "Not Acceptable",
+    407 => "Proxy Authentication Required",
+    408 => "Request Timeout",
+    409 => "Conflict",
+    410 => "Gone",
+    411 => "Length Required",
+    412 => "Precondition Failed",
+    413 => "Payload Too Large",
+    414 => "URI Too Long",
+    415 => "Unsupported Media Type",
+    416 => "Range Not Satisfiable",
+    417 => "Expectation Failed",
+    418 => "I'm a Teapot",
+    421 => "Misdirected Request",
+    422 => "Unprocessable Entity",
+    423 => "Locked",
+    424 => "Failed Dependency",
+    425 => "Too Early",
+    426 => "Upgrade Required",
+    428 => "Precondition Required",
+    429 => "Too Many Requests",
+    431 => "Request Header Fields Too Large",
+    451 => "Unavailable For Legal Reasons",
+    500 => "Internal Server Error",
+    501 => "Not Implemented",
+    502 => "Bad Gateway",
+    503 => "Service Unavailable",
+    504 => "Gateway Timeout",
+    505 => "HTTP Version Not Supported",
+    506 => "Variant Also Negotiates",
+    507 => "Insufficient Storage",
+    508 => "Loop Detected",
+    509 => "Bandwidth Limit Exceeded",
+    510 => "Not Extended",
+    511 => "Network Authentication Required",
+)
+
+function http_status_line(status::Int)
+    reason = get(HTTP_REASON_PHRASES, status, nothing)
+    return reason === nothing ? "HTTP/1.1 $status" : "HTTP/1.1 $status $reason"
+end
+
+Base.showerror(io::IO, err::HTTPStatusError) =
+    print(io, "RequestError: ", http_status_line(err.status), " while requesting ", err.url)
 
 """
     download_verify(
@@ -440,7 +470,7 @@ function download_verify(
     if isfile(dest)
         file_existed = true
         if verbose
-            @info("Destination file $(dest) already exists, verifying...")
+            @pkg_info("Destination file $(dest) already exists, verifying...")
         end
 
         # verify download, if it passes, return happy.  If it fails, (and
@@ -462,7 +492,7 @@ function download_verify(
             download(url, dest; verbose = verbose || !quiet_download, progress)
             break
         catch err
-            @debug "download and verify failed on attempt $i/$attempts" url dest err
+            @pkg_debug "download and verify failed on attempt $i/$attempts" url dest err
             # for system errors like `no space left on device` exit after first try
             if err isa SystemError || i == attempts
                 rethrow()
@@ -478,7 +508,7 @@ function download_verify(
         # and start over from scratch.
         if file_existed
             if verbose
-                @info("Continued download didn't work, restarting from scratch")
+                @pkg_info("Continued download didn't work, restarting from scratch")
             end
             Base.rm(dest; force = true)
 
@@ -578,12 +608,34 @@ function get_extract_cmd(tarball_path::AbstractString)
     end
 end
 
+"""
+    with_decompressed(f, tarball_path)
+
+PkgWasm (PLAN.md D2): call `f(tar_path)` on a decompressed copy of `tarball_path`, made by
+[`Host.decompress`](@ref) in a fresh `tempname()` and removed afterwards. This replaces the
+`zstd -d -c` / `7z x -so` pipelines of `get_extract_cmd`. Only gzip and zstd are accepted
+(anything else throws `Host.HostError` with EILSEQ), which is what the Pkg server serves.
+"""
+function with_decompressed(f, tarball_path::AbstractString)
+    # (master: an uncompressed tar is passed through, as `get_extract_cmd` does)
+    detect_archive_format(tarball_path) == "tar" && return f(String(tarball_path))
+    tar_path = tempname()
+    try
+        Host.decompress(String(tarball_path), tar_path)
+        return f(tar_path)
+    finally
+        Base.rm(tar_path; force = true)
+    end
+end
+
 function unpack(
         tarball_path::AbstractString,
         dest::AbstractString;
         verbose::Bool = false,
     )
-    return Tar.extract(get_extract_cmd(tarball_path), dest, copy_symlinks = copy_symlinks())
+    return with_decompressed(tarball_path) do tar_path
+        Tar.extract(tar_path, dest, copy_symlinks = copy_symlinks())
+    end
 end
 
 """
@@ -702,7 +754,7 @@ function download_verify_unpack(
     should_delete = !download_verify(url, hash, tarball_path; force, verbose, quiet_download, progress)
     if should_delete
         if verbose
-            @info("Removing dest directory $(dest) as source tarball changed")
+            @pkg_info("Removing dest directory $(dest) as source tarball changed")
         end
         Base.rm(dest; recursive = true, force = true)
     end
@@ -710,7 +762,7 @@ function download_verify_unpack(
     # If the destination path already exists, don't bother to unpack
     if !ignore_existence && isdir(dest)
         if verbose
-            @info("Destination directory $(dest) already exists, returning")
+            @pkg_info("Destination directory $(dest) already exists, returning")
         end
 
         # Signify that we didn't do any unpacking
@@ -719,11 +771,11 @@ function download_verify_unpack(
 
     try
         if verbose
-            @info("Unpacking $(tarball_path) into $(dest)...")
+            @pkg_info("Unpacking $(tarball_path) into $(dest)...")
         end
         isnothing(progress) || progress(10000, 10000; status = "unpacking")
-        open(get_extract_cmd(tarball_path)) do io
-            Tar.extract(io, dest, copy_symlinks = copy_symlinks())
+        with_decompressed(tarball_path) do tar_path
+            Tar.extract(tar_path, dest, copy_symlinks = copy_symlinks())
         end
     finally
         if remove_tarball
@@ -792,7 +844,7 @@ function verify(
             if stat(hash_path).mtime >= stat(path).mtime
                 # If all of that is true, then we're good!
                 if verbose
-                    @info("Hash cache is consistent, returning true")
+                    @pkg_info("Hash cache is consistent, returning true")
                 end
                 status = :hash_cache_consistent
 
@@ -804,19 +856,19 @@ function verify(
                 end
             else
                 if verbose
-                    @info("File has been modified, hash cache invalidated")
+                    @pkg_info("File has been modified, hash cache invalidated")
                 end
                 status = :file_modified
             end
         else
             if verbose
-                @info("Verification hash mismatch, hash cache invalidated")
+                @pkg_info("Verification hash mismatch, hash cache invalidated")
             end
             status = :hash_cache_mismatch
         end
     else
         if verbose
-            @info("No hash cache found")
+            @pkg_info("No hash cache found")
         end
         status = :hash_cache_missing
     end
@@ -827,7 +879,7 @@ function verify(
     @assert occursin(r"^[0-9a-f]{64}$", calc_hash)
 
     if verbose
-        @info("Calculated hash $calc_hash for file $path")
+        @pkg_info("Calculated hash $calc_hash for file $path")
     end
 
     if calc_hash != hash
@@ -835,7 +887,7 @@ function verify(
         msg *= "  Expected sha256:   $hash\n"
         msg *= "  Calculated sha256: $calc_hash"
         if isnothing(details)
-            @error(msg)
+            @pkg_error(msg)
         else
             push!(details, msg)
         end
@@ -857,7 +909,7 @@ function verify(
         end
 
         if verbose
-            @warn("Unable to create hash cache file $(hash_path)")
+            @pkg_warn("Unable to create hash cache file $(hash_path)")
         end
     end
 
@@ -874,13 +926,13 @@ function verify_archive_tree_hash(compressed_tar::AbstractString, expected_hash:
     # tarball, tree hash verification requires that the file can i) be
     # decompressed and ii) is a proper archive.
     calc_hash = try
-        Base.SHA1(open(Tar.tree_hash, get_extract_cmd(compressed_tar)))
+        Base.SHA1(with_decompressed(tar_path -> open(Tar.tree_hash, tar_path), compressed_tar))
     catch err
-        @warn "unable to decompress and read archive" exception = err
+        @pkg_warn "unable to decompress and read archive" exception = err
         return false
     end
     if calc_hash != expected_hash
-        @warn "Tarball content does not match expected hash (git-tree-sha1)" tarball = compressed_tar expected = expected_hash computed = calc_hash
+        @pkg_warn "Tarball content does not match expected hash (git-tree-sha1)" tarball = compressed_tar expected = expected_hash computed = calc_hash
         return false
     end
     return true

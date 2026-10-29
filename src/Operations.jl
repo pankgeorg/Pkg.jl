@@ -1149,7 +1149,8 @@ function download_source(ctx::Context, pkgs; readonly = true)
         catch err
             # S2: the worker hands the consumer the error's text (the stock consumer prints
             # `sprint(showerror, err, bt)`), so the results Channel has a concrete type
-            CONCURRENT && return (pkg, install_error_text(err, catch_backtrace()), (urls, path))
+            # (built for Wasm without the backtrace, as in S1: no `jl_get_backtrace`)
+            CONCURRENT && return (pkg, install_error_text(err, WASM_TARGET ? nothing : catch_backtrace()), (urls, path))
             # (built for Wasm the install error is raised here, without a backtrace: no
             # Any-typed error in the returned tuple, G3 #17-28; downloads are serial, D3)
             if WASM_TARGET

@@ -1048,8 +1048,9 @@ function error_if_in_sysimage(pkg::PackageSpec)
     end
     pkgid = Base.PkgId(pkg.uuid, pkg.name)
     return if in_sysimage(pkgid)
-        # (`$(pkgid)` typed, G3: Base's default show of a PkgId)
-        pkgerror("Tried to develop or add by URL package Base.PkgId(Base.UUID(\"$(pkgid.uuid::Base.UUID)\"), $(repr(pkgid.name))) which is already in the sysimage, use `Pkg.respect_sysimage_versions(false)` to disable this check.")
+        # (built for Wasm, G3: Base's default show of a PkgId as text; natively stock's interpolation)
+        what = Pkg.WASM_TARGET ? "Base.PkgId(Base.UUID(\"$(pkgid.uuid::Base.UUID)\"), $(repr(pkgid.name)))" : string(pkgid)
+        pkgerror("Tried to develop or add by URL package $(what) which is already in the sysimage, use `Pkg.respect_sysimage_versions(false)` to disable this check.")
     end
 end
 

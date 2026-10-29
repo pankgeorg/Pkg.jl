@@ -120,6 +120,37 @@ ENV["GIT_CONFIG_NOSYSTEM"] = "1"
             Pkg.GitTools.checkout_tree_to_path(lr2, LibGit2.GitObject(lr2, tree_of(foo, "HEAD")), b)
             @test read(joinpath(a, "f.txt"), String) == read(joinpath(b, "f.txt"), String) == "lower\n"
         end
+        @testset "review-8: a tag named as the branch, short hex tag names, working-tree-encoding, registry filters" begin
+            c2 = joinpath(dir, "Foo-tags")
+            fgit(dir, "clone", "-q", foo, c2)
+            fgit(c2, "tag", "main", "origin/dev"); fgit(c2, "tag", "abc", "origin/dev"); fgit(c2, "tag", "0", "origin/dev")
+            r2, lr2 = GitCLI.GitRepo(c2), LibGit2.GitRepo(c2)
+            @test GitCLI.branch(r2) == LibGit2.branch(lr2) == "main"
+            @test GitCLI.headname(r2) == LibGit2.headname(lr2)
+            for rev in ("abc", "0", "ab", "a0", "main")
+                @test cli_or(() -> string(GitCLI.GitHash(GitCLI.GitObject(r2, rev)))) ==
+                      cli_or(() -> string(LibGit2.GitHash(LibGit2.GitObject(lr2, rev))))
+            end
+            # working-tree-encoding: git converts, LibGit2 does not
+            write(joinpath(c2, ".gitattributes"), "*.jl working-tree-encoding=UTF-16LE\n")
+            fgit(c2, "add", ".gitattributes"); fgit(c2, "commit", "-qm", "enc")
+            t = tree_of(c2, "HEAD")
+            a, b = mktempdir(ROOT), mktempdir(ROOT)
+            Pkg.GitTools.checkout_tree_to_path(r2, GitCLI.GitObject(r2, t), a)
+            Pkg.GitTools.checkout_tree_to_path(lr2, LibGit2.GitObject(lr2, t), b)
+            @test snapshot(a) == snapshot(b)
+            # a fast-forward (registry update) does not run a configured smudge filter
+            up = joinpath(dir, "Foo-up")
+            fgit(dir, "clone", "-q", foo, up)
+            fgit(up, "config", "filter.rw.smudge", "sed s/f/g/g")
+            write(joinpath(foo, ".gitattributes"), "*.jl filter=rw\n")
+            fgit(foo, "checkout", "-q", "main")
+            write(joinpath(foo, "src", "New.jl"), "f\n")
+            fgit(foo, "add", "-A"); fgit(foo, "commit", "-qm", "new")
+            fgit(up, "fetch", "-q", "origin")
+            @test GitCLI.merge!(GitCLI.GitRepo(up); branch = "refs/remotes/origin/main", fastforward = true)
+            @test read(joinpath(up, "src", "New.jl"), String) == "f\n"
+        end
         @testset "isdirty" begin
             r2, lr2 = GitCLI.GitRepo(foo), LibGit2.GitRepo(foo)
             @test GitCLI.isdirty(r2) == LibGit2.isdirty(lr2) == false

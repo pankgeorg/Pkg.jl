@@ -287,8 +287,8 @@ function read_project(f_or_io::Union{String, IO})
         end
         # (`$f_or_io` typed, G3: Base's default show of devnull, the only IO passed here besides
         # an IOBuffer of a git blob)
-        what = f_or_io isa AbstractString ? String(f_or_io) : f_or_io isa Base.DevNull ? "Base.DevNull()" :
-            f_or_io isa IOBuffer ? sprint(show, f_or_io::IOBuffer) : "(an IO)"
+        what = !WASM_TARGET ? string(f_or_io) : f_or_io isa AbstractString ? String(f_or_io) :
+            f_or_io isa Base.DevNull ? "Base.DevNull()" : f_or_io isa IOBuffer ? sprint(show, f_or_io::IOBuffer) : "(an IO)"
         pkgerror("Errored when reading $what, got: ", Pkg.error_text(e))
     end
     return Project(raw; file = f_or_io isa IO ? nothing : f_or_io)

@@ -139,7 +139,7 @@ end
         @test hdrs == Dict(Pkg.PlatformEngines.get_metadata_headers("https://pkg.julialang.org/registries"))
         @test Pkg.BinaryPlatformsCompat.platform_key_abi() === Pkg.HOST_PLATFORM[]
         frozen_file = joinpath(@__DIR__, "..", "..", "..", "fixtures", "frozen.toml") # wt/<lane>/test -> wasm-pkg/fixtures
-        if isfile(frozen_file) # the native baselines' platform is this host's
+        if isfile(frozen_file) && VERSION == v"1.13.2" # the native baselines' platform is this host's (baselines of Julia 1.13.2)
             @test BP.triplet(Pkg.host_platform()) == Pkg.TOML.parsefile(frozen_file)["platform_triplet"]
         end
         # sanitised (image state): placeholder, and use fails loudly; init answers it again
@@ -442,7 +442,7 @@ end
                 b = findfirst(l -> occursin("pkgwasm-marker-begin", l), lines)
                 e = findfirst(l -> occursin("pkgwasm-marker-end", l), lines)
                 @test b !== nothing && e !== nothing
-                stdlib = Pkg.stdlib_dir()
+                stdlib = Sys.STDLIB
                 hits = filter(l -> occursin(stdlib, l), lines[b:e])
                 @test isempty(hits)
                 isempty(hits) || foreach(println, first(hits, 10))
@@ -455,7 +455,6 @@ end
             Pkg.activate(dir; io = devnull)
             Pkg.status(; io = devnull) # fills registry/TOML/stdlib caches
             @test !isempty(Pkg.Registry.REGISTRY_CACHE) || !isempty(Pkg.Registry.TOML_CACHE.d) || Pkg.Types.STDLIB[] !== nothing
-            Pkg.DEFAULT_IO[] = devnull
             Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
             sentinel = joinpath(dir, "sentinel.toml")
             write(sentinel, "secret = \"build-host\"\n")
@@ -468,7 +467,7 @@ end
                 @test cache.p.str == "" && cache.p.filepath === nothing && isempty(cache.p.root)
             end
             @test isempty(Pkg.PlatformEngines.AUTH_ERROR_HANDLERS)
-            @test Pkg.DEFAULT_IO[] === nothing
+            @test Base.ScopedValues.get(Pkg.DEFAULT_IO) === nothing # (a ScopedValue on master: no global to reset)
             @test !Pkg.UPDATED_REGISTRY_THIS_SESSION[]
             @test isempty(Pkg.Registry.REGISTRY_CACHE) && isempty(Pkg.Registry.TOML_CACHE.d) && isempty(Pkg.Types.TOML_CACHE.d)
             @test Pkg.Types.STDLIB[] === nothing && isempty(Pkg.Types.UPGRADABLE_STDLIBS_UUIDS)
@@ -511,7 +510,6 @@ end
             @test !isempty(Pkg.Registry.REGISTRY_CACHE)
             Pkg.UPDATED_REGISTRY_THIS_SESSION[] = true
             Pkg.OFFLINE_MODE[] = true
-            Pkg.DEFAULT_IO[] = IOBuffer("pkgwasm-sentinel-io")
             Pkg.PREV_ENV_PATH[] = joinpath(root, "pkgwasm-sentinel-prev")
             Pkg.PlatformEngines.EXE7Z[] = joinpath(root, "pkgwasm-sentinel-7z")
             Pkg.PlatformEngines.register_auth_error_handler("https://pkgwasm-sentinel", (u, s, e) -> nothing)
@@ -667,7 +665,8 @@ end
                 Pkg.activate(; io = devnull)
             end
             # the depot is left as stock wrote it: descriptor and tarball unchanged, nothing added
-            @test Dict(f => read(joinpath(regdir, f)) for f in readdir(regdir)) == before
+            # (but master's own registry cache, `.cache`, which stock writes too)
+            @test Dict(f => read(joinpath(regdir, f)) for f in readdir(regdir) if f != ".cache") == before
             # without a Pkg server, stock ignores descriptors and so does PkgWasm
             withenv("JULIA_PKG_SERVER" => "") do
                 @test isempty(Pkg.Registry.reachable_registries(; depots = [depot]))

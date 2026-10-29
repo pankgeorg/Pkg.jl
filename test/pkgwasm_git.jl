@@ -183,6 +183,8 @@ end
         run_ops(which, env...) = read(addenv(`$julia --startup-file=no $script $which $pkgwasm $work`, env...), String)
         stock = run_ops("stock", "JULIA_PKG_USE_CLI_GIT" => "true")
         ours = run_ops("pkgwasm")
+        # (master writes a random environment_id into each new manifest)
+        stock, ours = (replace(s, r"environment_id = \"[0-9a-f-]+\"" => "environment_id = \"<id>\"") for s in (stock, ours))
         @test occursin("## develop url (file://: cloned into dev/): ok", stock)
         @test occursin("## registry Foo versions: [\"0.1.0\", \"0.1.1\"]", stock)
         if ours != stock

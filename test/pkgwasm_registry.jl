@@ -40,11 +40,9 @@ function in_depot(f, M, depot)
     old = copy(DEPOT_PATH)
     copy!(DEPOT_PATH, [depot])
     buf = IOBuffer()
-    M.DEFAULT_IO[] = buf
     try
-        f()
+        Base.ScopedValues.@with M.DEFAULT_IO => buf f()
     finally
-        M.DEFAULT_IO[] = nothing
         copy!(DEPOT_PATH, old)
     end
     return String(take!(buf))

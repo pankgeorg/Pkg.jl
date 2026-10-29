@@ -49,9 +49,9 @@ for e in Any[Pkg.Types.PkgError("pkg message"), ErrorException("plain"), Argumen
     println("SE=", repr(sprint(Pkg.showerror_known, e)))
 end
 # a DEFAULT_IO override: honoured natively, an error built for Wasm
-Pkg.DEFAULT_IO[] = IOBuffer()
-println("OVERRIDE=", try Pkg.stderr_f() === Pkg.DEFAULT_IO[] catch e; sprint(showerror, e) end)
-Pkg.DEFAULT_IO[] = nothing
+Base.ScopedValues.@with Pkg.DEFAULT_IO => IOBuffer() begin
+    println("OVERRIDE=", try Pkg.stderr_f() === something(Base.ScopedValues.get(Pkg.DEFAULT_IO)) catch e; sprint(showerror, e) end)
+end
 # logging: the stock logger natively, the direct print built for Wasm, the same text
 module LogProbe
     import Main.Pkg: @pkg_warn, @pkg_info, @pkg_debug
@@ -78,7 +78,7 @@ end
     @test occursin("OVERRIDE=true", nat[2])
     se(s) = filter(l -> startswith(l, "SE="), split(s, '\n'))
     @test length(se(nat[2])) == 9 && se(nat[2]) == se(wasm[2])
-    @test occursin("OVERRIDE=PkgWasm built for Wasm: DEFAULT_IO[] is not supported", wasm[2])
+    @test occursin("OVERRIDE=PkgWasm built for Wasm: DEFAULT_IO is not supported", wasm[2])
     norm(s) = replace(join(filter(l -> !startswith(l, "TARGET=") && !startswith(l, "IO=") && !startswith(l, "OVERRIDE="), split(s, '\n')), '\n'),
                       r"[^\s`]*jl_\w+" => "TMP", r"/tmp/claude[^\s`]*" => "TMP")   # (any TMPDIR)
     @test norm(nat[2]) == norm(wasm[2])

@@ -438,6 +438,40 @@ function read_registry_cache(dir::String, tree_info::Base.SHA1, source::String, 
     return RegistryTarIndex(compressed_tar, tar, entries, io, nothing)
 end
 
+# An IO that counts the bytes written to it (as `tee` of `Tar.read_header`: the bytes read)
+mutable struct ByteCounter <: IO
+    n::Int64
+end
+Base.write(c::ByteCounter, x::UInt8) = (c.n += 1; 1)
+Base.unsafe_write(c::ByteCounter, ::Ptr{UInt8}, n::UInt) = (c.n += Int(n); Int(n))
+
+# Whether `Tar.check_header` accepts `hdr`, decided by one scan of its path, without the
+# regular expressions, for the usual header: a file or directory with an ASCII path without
+# control characters. For any other header this is `false` and `Tar.check_header` decides
+# (and throws its errors).
+function tar_header_ok(hdr::Tar.Header)
+    (hdr.type === :file || hdr.type === :directory) || return false
+    (isempty(hdr.link) && hdr.size >= 0) || return false
+    hdr.type === :directory && hdr.size != 0 && return false
+    p = codeunits(hdr.path)
+    n = length(p)
+    (n > 0 && p[1] != UInt8('/')) || return false
+    hdr.type !== :directory && p[n] == UInt8('/') && return false
+    start = 1   # (the first byte of the component)
+    for i in 1:(n + 1)
+        if i > n || p[i] == UInt8('/')
+            len = i - start
+            # no `..` component; a non-directory's last component is not `.`
+            len == 2 && p[start] == UInt8('.') && p[start + 1] == UInt8('.') && return false
+            i > n && hdr.type !== :directory && len == 1 && p[start] == UInt8('.') && return false
+            start = i + 1
+        elseif p[i] < 0x20 || p[i] >= 0x7f
+            return false
+        end
+    end
+    return true
+end
+
 # Decompress `compressed_tar` into a new tar generation, index it and publish the index;
 # returns the index, or `nothing` if the tarball changed during the build.
 function write_registry_cache(dir::String, tree_info::Base.SHA1, source::String, compressed_tar::String)
@@ -453,14 +487,19 @@ function write_registry_cache(dir::String, tree_info::Base.SHA1, source::String,
         buf = Vector{UInt8}(undef, Tar.DEFAULT_BUFFER_SIZE)
         open(tar) do io
             globals = Dict{String, String}()
+            # (the offset of the next header, from the bytes Tar reads: no `position` calls)
+            counted = ByteCounter(0)
+            off = Int64(0)
             while !eof(io)
-                hdr = Tar.read_header(io, globals = globals, buf = buf)
+                counted.n = 0
+                hdr = Tar.read_header(io, globals = globals, buf = buf, tee = counted)
                 hdr === nothing && break
-                Tar.check_header(hdr)
+                off += counted.n
+                tar_header_ok(hdr) || Tar.check_header(hdr)
                 ('\n' in hdr.path || '\t' in hdr.path) && error("unsupported entry path $(repr(hdr.path))")
-                off = Int64(position(io))
                 entries[hdr.path] = (off, Int64(hdr.size))
-                seek(io, off + Tar.round_up(hdr.size))
+                off += Tar.round_up(hdr.size)
+                skip(io, Tar.round_up(hdr.size))
             end
         end
         # the tarball must not have changed while it was read

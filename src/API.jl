@@ -15,6 +15,7 @@ import Base: StaleCacheKey
 
 import ..depots, ..depots1, ..logdir, ..devdir, ..printpkgstyle, .._autoprecompilation_enabled_scoped, ..manifest_rel_path
 import ..Operations, ..GitTools, ..Pkg, ..Registry
+import ..Pkg: WASM_TARGET
 
 # PkgWasm (PLAN.md D4): public operations outside the supported set throw this.
 unsupported(op::String) = pkgerror(op, " is not supported in PkgWasm")
@@ -614,6 +615,11 @@ function is_manifest_current(path::AbstractString)
 end
 
 const UsageDict = Dict{String, DateTime}
+
+# `DateTime(t)::DateTime` of a usage entry's `time` (PkgWasm, trim: the TOML value is a
+# `DateTime`, or a string from an older writer; `Types.usage_times` handles them alike)
+usage_time(@nospecialize(t)) = t isa DateTime ? t : t isa String ? DateTime(t) :
+    WASM_TARGET ? error("PkgWasm: unsupported usage time") : Base.inferencebarrier(DateTime)(t)::DateTime
 const UsageByDepotDict = Dict{String, UsageDict}
 
 """
@@ -682,7 +688,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "manifest_usage.toml")) do filename, info
                 # For Manifest usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info["time"]))
             end
         end
         manifest_usage_by_depot[depot] = usage
@@ -691,7 +697,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "artifact_usage.toml")) do filename, info
                 # For Artifact usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info["time"]))
             end
         end
         artifact_usage_by_depot[depot] = usage
@@ -702,12 +708,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "scratch_usage.toml")) do filename, info
                 # For Artifact usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info["time"]))
                 if !haskey(parents, filename)
                     parents[filename] = Set{String}()
                 end
-                for parent in info["parent_projects"]
-                    push!(parents[filename], parent)
+                for parent in info["parent_projects"]::Vector{Any} # (PkgWasm, trim: a TOML array)
+                    push!(parents[filename], parent::String)
                 end
             end
         end

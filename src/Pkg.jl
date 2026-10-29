@@ -116,7 +116,9 @@ const WASM_TARGET = TARGET == "wasm"
 struct StdStream <: IO
     fd::Int32
 end
-std_stream(s::StdStream) = s.fd == Int32(1) ? stdout : stderr
+# (G3 V2/V18/V39: through the Host seam, so the Wasm build's patch can return the runtime's
+# concrete stream; `Base.stdout`/`stderr` are bindings typed `IO`)
+std_stream(s::StdStream) = Host.std_stream(s.fd)
 Base.unsafe_write(s::StdStream, p::Ptr{UInt8}, n::UInt) = unsafe_write(std_stream(s), p, n)
 Base.write(s::StdStream, b::UInt8) = write(std_stream(s), b)
 Base.flush(s::StdStream) = flush(std_stream(s))

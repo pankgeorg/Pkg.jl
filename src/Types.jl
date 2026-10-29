@@ -952,8 +952,13 @@ function load_workspace_sources(env::EnvCache)
     for (project_file, project) in Iterators.flatten(((env.project_file => env.project,), env.workspace))
         for name in keys(project.sources)
             path, repo = get_path_repo(project, project_file, env.manifest_file, name)
-            fields = (; path, url = repo.source, rev = repo.rev, subdir = repo.subdir)
-            str = join((string(k, "=", v) for (k, v) in pairs(fields) if v !== nothing), ",")
+            # (G3: the `k=v` parts pushed one by one, same order and text as the NamedTuple join)
+            parts = String[]
+            path !== nothing && push!(parts, string("path=", path))
+            repo.source !== nothing && push!(parts, string("url=", repo.source))
+            repo.rev !== nothing && push!(parts, string("rev=", repo.rev))
+            repo.subdir !== nothing && push!(parts, string("subdir=", repo.subdir))
+            str = join(parts, ",")
             push!(get!(Set{String}, sources, name), str)
         end
     end
@@ -1128,7 +1133,7 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
             try
                 TOML.parsefile(usage_file)
             catch err
-                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err
+                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err = Pkg.log_value(err)
                 Dict{String, Any}()
             end
         else

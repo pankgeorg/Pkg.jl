@@ -141,7 +141,15 @@ function read_project_sources(raw::Dict{String, Any}, project::Project)
             if haskey(source, "path") && (haskey(source, "url") || haskey(source, "rev"))
                 pkgerror("Both `path` and `url` or `rev` are specified in `source` section")
             end
-            convert(Dict{String, String}, source)
+            # (G3 row 47: built for Wasm the values are checked one by one; natively stock's
+            # convert, including its MethodError for a non-String value)
+            WASM_TARGET || return convert(Dict{String, String}, source)
+            d = Dict{String, String}()
+            for (k, v) in source
+                v isa String || pkgerror("Expected `$k` in the `source` section of `$name` to be a string")
+                d[k] = v
+            end
+            d
         end::Dict{String, String}
     end
     return sources
@@ -278,10 +286,11 @@ function read_project(f_or_io::Union{String, IO})
             return Project()
         end
     catch e
+        # (typed: the parser error as such, any other through error_text; G3)
         if e isa TOML.ParserError
-            pkgerror("Could not parse project: ", sprint(showerror, e))
+            pkgerror("Could not parse project: ", sprint(showerror, e::TOML.ParserError))
         end
-        pkgerror("Errored when reading $f_or_io, got: ", sprint(showerror, e))
+        pkgerror("Errored when reading $f_or_io, got: ", Pkg.error_text(e))
     end
     project = Project(raw; file = f_or_io isa IO ? nothing : f_or_io)
     project.comments = comments

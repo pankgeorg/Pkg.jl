@@ -89,6 +89,15 @@ runtime's `init_base_globals!()` (ABI v3 §6 step 6).
 init_runtime()::Nothing = nothing
 
 """
+    Host.std_stream(fd::Int32) -> IO
+
+The process's stdout (`fd = 1`) or stderr (`fd = 2`) that `StdStream` writes to. Natively
+`Base.stdout`/`Base.stderr` (bindings typed `IO`); the Wasm build's patch returns the
+WasmCodegen runtime's concrete stream for `fd`, so the writes are statically dispatched.
+"""
+std_stream(fd::Int32)::IO = fd == Int32(1) ? stdout : stderr
+
+"""
     Host.platform() -> Base.BinaryPlatforms.Platform
 
 The platform of the machine PkgWasm runs on (PLAN.md D13): natively `HostPlatform()`; in the

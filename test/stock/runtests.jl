@@ -56,7 +56,8 @@ function run_file(target, file, out, timeout)
     return r
 end
 
-const KEY = r -> (r["path"], r["source"], r["kind"])
+# The two targets run copies of the files in different directories: compare by file:line.
+const KEY = r -> (r["path"], replace(r["source"], r"#= .*/test/(.*) =#" => s"\1"), r["kind"])
 
 function compare(out, files)
     io = IOBuffer()
@@ -95,11 +96,24 @@ function check_stock_copy(files)
     return
 end
 
+stdlib_files() = Set(String[joinpath(r, f) for (r, _, fs) in walkdir(dirname(dirname(Base.find_package("Pkg")))) for f in fs])
+
 function main(args)
     targets, files, out, timeout, do_compare = parse_args(args)
-    "stock" in targets && check_stock_copy(files)
+    if "stock" in targets
+        check_stock_copy(files)
+        before = stdlib_files()
+    end
     for target in targets, file in files
         run_file(target, file, out, timeout)
+    end
+    if "stock" in targets
+        # some tests write next to their test packages (build logs, coverage files): the stdlib
+        # copy of the tests is shared, so files they left behind are removed
+        for f in sort!(collect(setdiff(stdlib_files(), before)))
+            println("removing ", f, ", written by the stock run")
+            rm(f)
+        end
     end
     do_compare && println("comparison: ", compare(out, files))
     return

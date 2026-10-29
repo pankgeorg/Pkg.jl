@@ -170,17 +170,19 @@ has_uuid(pkg::PackageSpec) = pkg.uuid !== nothing
 isresolved(pkg::PackageSpec) = pkg.uuid !== nothing && pkg.name !== nothing
 
 function Base.show(io::IO, pkg::PackageSpec)
-    vstr = repr(pkg.version)
-    f = Pair{String, Any}[]
+    vstr = version_repr(pkg.version)
+    # PkgWasm (G3, add front): the fields as Strings (stock collects `Pair{String, Any}` and
+    # calls `string(value)` on each, a dynamic call in the Wasm build); the same text.
+    f = Pair{String, String}[]
 
     pkg.name !== nothing && push!(f, "name" => pkg.name)
-    pkg.uuid !== nothing && push!(f, "uuid" => pkg.uuid)
-    pkg.tree_hash !== nothing && push!(f, "tree_hash" => pkg.tree_hash)
+    pkg.uuid !== nothing && push!(f, "uuid" => string(pkg.uuid))
+    pkg.tree_hash !== nothing && push!(f, "tree_hash" => string(pkg.tree_hash))
     pkg.path !== nothing && push!(f, "path" => pkg.path)
     pkg.url !== nothing && push!(f, "url" => pkg.url)
     pkg.rev !== nothing && push!(f, "rev" => pkg.rev)
     pkg.subdir !== nothing && push!(f, "subdir" => pkg.subdir)
-    pkg.pinned && push!(f, "pinned" => pkg.pinned)
+    pkg.pinned && push!(f, "pinned" => string(pkg.pinned))
     push!(f, "version" => (vstr == "VersionSpec(\"*\")" ? "*" : vstr))
     if pkg.repo.source !== nothing
         push!(f, "repo/source" => string("\"", pkg.repo.source::String, "\""))
@@ -193,10 +195,16 @@ function Base.show(io::IO, pkg::PackageSpec)
     end
     print(io, "PackageSpec(\n")
     for (field, value) in f
-        print(io, "  ", field, " = ", string(value)::String, "\n")
+        print(io, "  ", field, " = ", value, "\n")
     end
     return print(io, ")")
 end
+# `repr` of a PackageSpec version, one concrete call per member of its Union
+version_repr(v::Nothing) = repr(v)
+version_repr(v::String) = repr(v)
+version_repr(v::VersionNumber) = repr(v)
+version_repr(v::VersionSpec) = repr(v)
+version_repr(v::UpgradeLevel) = repr(v)
 
 ############
 # EnvCache #

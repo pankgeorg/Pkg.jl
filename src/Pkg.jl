@@ -143,6 +143,7 @@ include("API.jl")
 include("Apps/Apps.jl")
 include("REPLMode/REPLMode.jl")
 include("wasm_entry.jl")
+include("wasm_request.jl")
 
 import .REPLMode: @pkg_str
 import .Types: UPLEVEL_MAJOR, UPLEVEL_MINOR, UPLEVEL_PATCH, UPLEVEL_FIXED

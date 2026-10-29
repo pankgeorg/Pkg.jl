@@ -961,7 +961,7 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
             try
                 TOML.parsefile(usage_file)
             catch err
-                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err
+                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err = Pkg.log_value(err)
                 Dict{String, Any}()
             end
         else

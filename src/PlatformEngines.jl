@@ -131,7 +131,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     auth_info = try
         TOML.parsefile(auth_file)
     catch err
-        @pkg_error "malformed auth file" file = auth_file err = err
+        @pkg_error "malformed auth file" file = auth_file err = Pkg.log_value(err)
         return handle_auth_error(url, "malformed-file"; verbose = verbose)
     end
     # check for an auth token
@@ -173,14 +173,14 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     try
         download(refresh_url, tmp, auth_header = refresh_auth, verbose = verbose)
     catch err
-        @pkg_warn "token refresh failure" file = auth_file url = refresh_url err = err
+        @pkg_warn "token refresh failure" file = auth_file url = refresh_url err = Pkg.log_value(err)
         rm(tmp, force = true)
         return handle_auth_error(url, "token-refresh-failed"; verbose = verbose)
     end
     auth_info = try
         TOML.parsefile(tmp)
     catch err
-        @pkg_warn "discarding malformed auth file" url = refresh_url err = err
+        @pkg_warn "discarding malformed auth file" url = refresh_url err = Pkg.log_value(err)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "malformed-file"; verbose = verbose), auth_header)
     end
@@ -188,7 +188,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
         if haskey(auth_info, "refresh_token")
             auth_info["refresh_token"] = "*"^64
         end
-        @pkg_warn "discarding auth file without access token" auth = auth_info
+        @pkg_warn "discarding auth file without access token" auth = Pkg.log_table(auth_info)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "no-access-token"; verbose = verbose), auth_header)
     end

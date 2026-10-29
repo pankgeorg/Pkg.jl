@@ -145,7 +145,9 @@ mutable struct GraphData
             d = Dict{InstState, Set{InstState}}()
             for v0 in 1:spp[p0]
                 let p0 = p0 # Due to https://github.com/JuliaLang/julia/issues/15276
-                    d[eq_vn(v0, p0)] = Set{InstState}((eq_vn(v0, p0),))
+                    s = Set{InstState}() # PkgWasm (B23): typed, as Set{InstState}((x,))
+                    push!(s, eq_vn(v0, p0))
+                    d[eq_vn(v0, p0)] = s
                 end
             end
             eq_classes[pkgs[p0]] = d
@@ -524,9 +526,18 @@ function check_consistency(graph::Graph)
 
     @assert np ≥ 0
     @assert data.spp ≡ spp
-    for x in Any[spp, gadj, gmsk, gconstr, adjdict, ignored, rlog.pool, pkgs, pdict, pvers, vdict]
-        @assert length(x)::Int == np
-    end
+    # PkgWasm (G2 B23): one typed check per container (stock loops over an `Any[...]`)
+    @assert length(spp) == np
+    @assert length(gadj) == np
+    @assert length(gmsk) == np
+    @assert length(gconstr) == np
+    @assert length(adjdict) == np
+    @assert length(ignored) == np
+    @assert length(rlog.pool) == np
+    @assert length(pkgs) == np
+    @assert length(pdict) == np
+    @assert length(pvers) == np
+    @assert length(vdict) == np
     for p0 in 1:np
         @assert pdict[pkgs[p0]] == p0
         spp0 = spp[p0]
@@ -630,9 +641,12 @@ pkgID_color(pkgID) = CONFLICT_COLORS[mod1(hash(pkgID), end)]
 logstr(pkgID) = logstr(pkgID, pkgID)
 function logstr(pkgID, args...)
     # workout the string with the color codes, check stderr to decide if color is enabled
-    return sprint(args; context = stderr::IO) do io, iargs
-        printstyled(io, iargs...; color = pkgID_color(pkgID))
-    end
+    # PkgWasm (B23): a concrete IOContext carrying stderr's :color, as `sprint(...; context =
+    # stderr)` does for printstyled; built for Wasm the stream is the target's stderr
+    color = Pkg.WASM_TARGET ? get(stderr_f(), :color, false)::Bool : get(stderr, :color, false)::Bool
+    buf = IOBuffer()
+    printstyled(IOContext(buf, :color => color), args...; color = pkgID_color(pkgID))
+    return String(take!(buf))
 end
 
 """
@@ -1505,7 +1519,16 @@ function build_eq_classes_soft1!(graph::Graph, p0::Int)
     gmsk0 = gmsk[p0]
     gconstr0 = gconstr[p0]
     eff_spp0 = count(gconstr0)
-    cvecs = BitVector[vcat(BitVector(), (gmsk0[j1][gconstr[gadj0[j1]], v0] for j1 in 1:length(gadj0) if !ignored[gadj0[j1]])...) for v0 in findall(gconstr0)]
+    # PkgWasm (B23): the same concatenation without splatting a generator into `vcat`
+    cvecs = BitVector[]
+    for v0 in findall(gconstr0)
+        cv = BitVector()
+        for j1 in 1:length(gadj0)
+            ignored[gadj0[j1]] && continue
+            append!(cv, gmsk0[j1][gconstr[gadj0[j1]], v0])
+        end
+        push!(cvecs, cv)
+    end
 
     @assert length(cvecs) == eff_spp0
 

@@ -317,7 +317,7 @@ end
 # different kinds are unequal (as Base's `==`), tables equal with the same keys and equal
 # values, arrays with equal elements in order, the rest by `==` on both concrete types; a
 # value of another type is an error (M4.2 B14). Natively fields use Base's `==` itself.
-@noinline function toml_eq(@nospecialize(a), @nospecialize(b))
+Base.@nospecializeinfer @noinline function toml_eq(@nospecialize(a), @nospecialize(b))
     ka, kb = toml_kind(a), toml_kind(b)
     (ka == 0 || kb == 0) && return toml_eq_other(a, b)
     ka == kb || return false
@@ -363,7 +363,7 @@ toml_date_eq(a, b::Union{Dates.Date, Dates.DateTime, Dates.Time}) =
 # elements in order. Every function of the toml_eq recursion has one signature, its elements
 # read through `toml_vec_get` as Any: no specializations of one method calling each other
 # (inference limits those, and the trim verifier then finds no code for them: G3 V83-V91)
-function toml_vec_eq(@nospecialize(a), @nospecialize(b))
+Base.@nospecializeinfer function toml_vec_eq(@nospecialize(a), @nospecialize(b))
     n = toml_vec_length(a)
     n == toml_vec_length(b) || return false
     for i in 1:n
@@ -371,7 +371,7 @@ function toml_vec_eq(@nospecialize(a), @nospecialize(b))
     end
     return true
 end
-function toml_vec_length(@nospecialize(v))
+Base.@nospecializeinfer function toml_vec_length(@nospecialize(v))
     v isa Vector{Any} && return length(v)
     v isa Vector{String} && return length(v)
     v isa Vector{Dict{String, Any}} && return length(v)
@@ -382,7 +382,7 @@ function toml_vec_length(@nospecialize(v))
     v isa Vector{Dates.DateTime} && return length(v)
     return length(v::Vector{Dates.Time})
 end
-function toml_vec_get(@nospecialize(v), i::Int)
+Base.@nospecializeinfer function toml_vec_get(@nospecialize(v), i::Int)
     v isa Vector{Any} && return v[i]
     v isa Vector{String} && return v[i]
     v isa Vector{Dict{String, Any}} && return v[i]

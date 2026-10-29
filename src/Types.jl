@@ -359,36 +359,39 @@ toml_num_eq(a, b::Union{Int64, Float64, Bool}) =
     a isa Int64 ? a == b : a isa Float64 ? a == b : (a::Bool) == b
 toml_date_eq(a, b::Union{Dates.Date, Dates.DateTime, Dates.Time}) =
     a isa Dates.Date ? a == b : a isa Dates.DateTime ? a == b : (a::Dates.Time) == b
-# (both arrays of one of the parser's element types)
+# (both arrays of one of the parser's element types) `==` of arrays: equal lengths, then the
+# elements in order. Every function of the toml_eq recursion has one signature, its elements
+# read through `toml_vec_get` as Any: no specializations of one method calling each other
+# (inference limits those, and the trim verifier then finds no code for them: G3 V83-V91)
 function toml_vec_eq(@nospecialize(a), @nospecialize(b))
-    a isa Vector{Any} && return toml_vec_eq_b(a, b)
-    a isa Vector{String} && return toml_vec_eq_b(a, b)
-    a isa Vector{Dict{String, Any}} && return toml_vec_eq_b(a, b)
-    a isa Vector{Int64} && return toml_vec_eq_b(a, b)
-    a isa Vector{Float64} && return toml_vec_eq_b(a, b)
-    a isa Vector{Bool} && return toml_vec_eq_b(a, b)
-    a isa Vector{Dates.Date} && return toml_vec_eq_b(a, b)
-    a isa Vector{Dates.DateTime} && return toml_vec_eq_b(a, b)
-    return toml_vec_eq_b(a::Vector{Dates.Time}, b)
-end
-function toml_vec_eq_b(a::Vector, @nospecialize(b))
-    b isa Vector{Any} && return toml_elems_eq(a, b)
-    b isa Vector{String} && return toml_elems_eq(a, b)
-    b isa Vector{Dict{String, Any}} && return toml_elems_eq(a, b)
-    b isa Vector{Int64} && return toml_elems_eq(a, b)
-    b isa Vector{Float64} && return toml_elems_eq(a, b)
-    b isa Vector{Bool} && return toml_elems_eq(a, b)
-    b isa Vector{Dates.Date} && return toml_elems_eq(a, b)
-    b isa Vector{Dates.DateTime} && return toml_elems_eq(a, b)
-    return toml_elems_eq(a, b::Vector{Dates.Time})
-end
-# (`==` of arrays: equal axes, then the elements in order)
-function toml_elems_eq(a::Vector, b::Vector)
-    length(a) == length(b) || return false
-    for i in eachindex(a, b)
-        toml_eq(a[i], b[i]) || return false
+    n = toml_vec_length(a)
+    n == toml_vec_length(b) || return false
+    for i in 1:n
+        toml_eq(toml_vec_get(a, i), toml_vec_get(b, i)) || return false
     end
     return true
+end
+function toml_vec_length(@nospecialize(v))
+    v isa Vector{Any} && return length(v)
+    v isa Vector{String} && return length(v)
+    v isa Vector{Dict{String, Any}} && return length(v)
+    v isa Vector{Int64} && return length(v)
+    v isa Vector{Float64} && return length(v)
+    v isa Vector{Bool} && return length(v)
+    v isa Vector{Dates.Date} && return length(v)
+    v isa Vector{Dates.DateTime} && return length(v)
+    return length(v::Vector{Dates.Time})
+end
+function toml_vec_get(@nospecialize(v), i::Int)
+    v isa Vector{Any} && return v[i]
+    v isa Vector{String} && return v[i]
+    v isa Vector{Dict{String, Any}} && return v[i]
+    v isa Vector{Int64} && return v[i]
+    v isa Vector{Float64} && return v[i]
+    v isa Vector{Bool} && return v[i]
+    v isa Vector{Dates.Date} && return v[i]
+    v isa Vector{Dates.DateTime} && return v[i]
+    return (v::Vector{Dates.Time})[i]
 end
 function toml_eq_other(@nospecialize(a), @nospecialize(b))
     WASM_TARGET && error("PkgWasm built for Wasm: comparing TOML values of unsupported types")

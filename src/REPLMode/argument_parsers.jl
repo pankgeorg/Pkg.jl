@@ -75,7 +75,7 @@ end
 
 # Extract subdir specifier from the end of input (rightmost : that's not a Windows drive letter)
 function extract_subdir(input::String)
-    colon_pos = findlast(':', input)
+    colon_pos = findlast_char(':', input)
     if colon_pos === nothing
         return input, nothing
     end
@@ -180,7 +180,7 @@ end
 
 # Extract subdir from URL, being careful about URL structure
 function extract_url_subdir(input::String)
-    colon_pos = findlast(':', input)
+    colon_pos = findlast_char(':', input)
     if colon_pos === nothing
         return input, nothing
     end

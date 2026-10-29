@@ -731,12 +731,17 @@ function artifact_meta_typed(name::String, artifact_dict::Dict{String, Any}, art
     meta0 = artifact_dict[name]
     local meta::Union{Nothing, Dict{String, Any}}
     if meta0 isa Vector{Any}
-        dl_dict = Dict{Platform, Dict{String, Any}}()
+        # (stock: a Dict{Platform, ...}; hashing a Platform hashes its Function-valued
+        # comparison strategies, which WasmCodegen cannot. As in the Dict, an entry for a
+        # platform equal to an earlier one replaces it.)
+        dl = Pair{Platform, Dict{String, Any}}[]
         for x in meta0
             x = x::Dict{String, Any}
-            dl_dict[unpack_platform(x, name, artifacts_toml)::Platform] = x
+            p = unpack_platform(x, name, artifacts_toml)::Platform
+            i = findfirst(e -> e.first == p, dl)
+            i === nothing ? push!(dl, p => x) : (dl[i] = dl[i].first => x)
         end
-        meta = select_platform_typed(dl_dict, platform)
+        meta = select_platform_typed(dl, platform)
     elseif meta0 isa Dict{String, Any}
         meta = meta0
     else
@@ -750,15 +755,16 @@ function artifact_meta_typed(name::String, artifact_dict::Dict{String, Any}, art
     return meta
 end
 
-function select_platform_typed(download_info::Dict{Platform, Dict{String, Any}}, platform::Platform)
-    ps = Platform[p for p in keys(download_info) if platforms_match_typed(p, platform)]
+function select_platform_typed(download_info::Vector{Pair{Platform, Dict{String, Any}}}, platform::Platform)
+    ps = Pair{Platform, Dict{String, Any}}[e for e in download_info if platforms_match_typed(e.first, platform)]
     isempty(ps) && return nothing
     function match_loss(a::Platform, b::Platform)
         a_tags = Set(keys(tags(a)))
         b_tags = Set(keys(tags(b)))
         return length(union(a_tags, b_tags)) - length(intersect(a_tags, b_tags))
     end
-    sort!(ps, lt = (a, b) -> begin
+    sort!(ps, lt = (ea, eb) -> begin
+        a, b = ea.first, eb.first
         loss_a = match_loss(a, platform)
         loss_b = match_loss(b, platform)
         if loss_a != loss_b
@@ -766,7 +772,7 @@ function select_platform_typed(download_info::Dict{Platform, Dict{String, Any}},
         end
         return triplet(a) > triplet(b)
     end)
-    return download_info[first(ps)]
+    return first(ps).second
 end
 
 function platforms_match_typed(a::Platform, b::Platform)

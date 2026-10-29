@@ -367,10 +367,12 @@ end
 const NO_ENCODING = "* -working-tree-encoding"
 function libgit2_filters(r::GitRepo)
     f = joinpath(r.gitdir, "info", "attributes")
-    lines = isfile(f) ? readlines(f) : String[]
+    lines = isfile(f) ? split(read(f, String), '\n') : SubString{String}[]   # (not `readlines`: G3)
     if !(NO_ENCODING in lines)
         mkpath(dirname(f))
-        open(io -> println(io, NO_ENCODING), f, "a")
+        old = isfile(f) ? read(f, String) : ""
+        # (its own record: an existing last line without a newline stays as it is)
+        open(io -> print(io, isempty(old) || endswith(old, '\n') ? "" : "\n", NO_ENCODING, "\n"), f, "a")
     end
     over = String[]
     for d in configured_drivers(r)

@@ -43,7 +43,7 @@ function RecordingTestSet(desc::AbstractString; kwargs...)
 end
 
 record(ts::RecordingTestSet, ::Test.Pass) = (ts.npass += 1; nothing)
-function record(ts::RecordingTestSet, t::Union{Test.Fail, Test.Error, Test.Broken})
+function record(ts::RecordingTestSet, t::Test.Result) # Fail, Error, Broken, LogTestFailure, ...
     push!(ts.nonpass, (ts.path, t))
     if !(t isa Test.Broken)
         printstyled(join(ts.path, " > "), ": "; bold = true)
@@ -62,7 +62,7 @@ function finish(ts::RecordingTestSet)
     return ts
 end
 
-kind(::Test.Fail) = "fail"
+kind(::Test.Result) = "fail"
 kind(t::Test.Error) = t.test_type === :nontest_error ? "nontest_error" : "error"
 kind(::Test.Broken) = "broken"
 
@@ -123,9 +123,23 @@ module PkgTestsInner
         end
         return Expr(ex.head, args...)
     end
+    # HistoricalStdlibVersions fills in the tables of the module it loads as `Pkg` (stock Pkg);
+    # its register!/unregister! are pointed at PkgWasm's tables instead.
+    function retarget_hsv!(HSV::Module)
+        T = Pkg.Types
+        conv(d) = T.DictStdLibs(u => T.StdlibInfo(i.name, i.uuid, i.version, i.deps, i.weakdeps) for (u, i) in d)
+        Core.eval(HSV, :(unregister!() = (empty!($T.STDLIBS_BY_VERSION); empty!($T.UNREGISTERED_STDLIBS); nothing)))
+        Core.eval(HSV, :(register!() = (unregister!();
+            append!($T.STDLIBS_BY_VERSION, [v => $conv(d) for (v, d) in STDLIBS_BY_VERSION]);
+            merge!($T.UNREGISTERED_STDLIBS, $conv(UNREGISTERED_STDLIBS)); nothing)))
+        get(ENV, "HISTORICAL_STDLIB_VERSIONS_AUTO_REGISTER", "true") == "true" && Base.invokelatest(HSV.register!)
+        return
+    end
     function to_pkgwasm(ex)
         ex isa Expr || return ex
-        if ex.head === :using || ex.head === :import
+        if ex.head === :using && ex.args == [Expr(:., :HistoricalStdlibVersions)]
+            return Expr(:toplevel, ex, Expr(:call, retarget_hsv!, :HistoricalStdlibVersions))
+        elseif ex.head === :using || ex.head === :import
             return rewrite_import(ex)
         elseif ex.head === :call && length(ex.args) == 2 && ex.args[1] === :include
             return Expr(:call, :include, to_pkgwasm, ex.args[2])
@@ -163,7 +177,7 @@ module PkgTestsInner
     results = [
         Dict(
             "path" => join(path, " > "),
-            "source" => t isa Test.Broken ? "" : string(something(t.source, "?")),
+            "source" => hasproperty(t, :source) ? string(something(t.source, "?")) : "",
             "kind" => kind(t),
             "message" => message(t),
         ) for (path, t) in ts.nonpass

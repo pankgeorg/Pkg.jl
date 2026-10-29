@@ -144,10 +144,13 @@ function showerror_known(io::IO, @nospecialize(e))
         end
     elseif e isa SystemError
         errstring = Libc.strerror(e.errnum)
-        if e.extrainfo === nothing
+        extrainfo = e.extrainfo  # (Any: told apart by the types Base gives it, G3)
+        if extrainfo === nothing
             print(io, "SystemError: ", e.prefix, ": ", errstring)
+        elseif extrainfo isa String
+            print(io, "SystemError (with ", extrainfo, "): ", e.prefix, ": ", errstring)
         else
-            print(io, "SystemError (with ", typed_msg(string(e.extrainfo)), "): ", e.prefix, ": ", errstring)
+            print(io, "SystemError (with extra information this build of PkgWasm cannot print): ", e.prefix, ": ", errstring)
         end
     elseif e isa Host.HostError
         showerror(io, e)

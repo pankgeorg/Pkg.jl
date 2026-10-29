@@ -583,7 +583,16 @@ function resolve_versions!(
     # check compat
     for pkg in pkgs
         compat = get_compat_workspace(env, pkg.name)
-        v = intersect(pkg.version, compat)
+        # (the version narrowed to Types.VersionTypes: a String or nothing here is not a
+        # version to intersect; built for Wasm a PkgError, natively stock's call. G3 #48-49)
+        version = pkg.version
+        v = if version isa Types.VersionTypes
+            intersect(version, compat)
+        elseif WASM_TARGET
+            pkgerror("PkgWasm built for Wasm: package $(pkg.name) has no version to check against its compat ($(repr(version)))")
+        else
+            Base.inferencebarrier(intersect)(version, compat)
+        end
         if isempty(v)
             throw(
                 Resolve.ResolverError(

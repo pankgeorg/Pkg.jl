@@ -187,6 +187,19 @@ function showerror_known(io::IO, @nospecialize(e))
         showerror(io, e)
     elseif e isa Base.TOML.ParserError
         showerror(io, e)
+    elseif e isa Resolve.ResolverError
+        # stock `showerror(::IO, ::ResolverError)`: the message, then a nested exception
+        print(io, typed_msg(e.msg))
+        ex = e.ex
+        if ex isa CompositeException
+            for cex in ex
+                print(io, "\n=> ")
+                showerror_known(io, cex)
+            end
+        elseif ex !== nothing
+            print(io, "\n")
+            showerror_known(io, ex)
+        end
     else
         print(io, "an error that this build of PkgWasm cannot print")
     end

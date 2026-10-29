@@ -459,8 +459,8 @@ function download_verify(
         verbose::Bool = false,
         force::Bool = false,
         quiet_download::Bool = false,
-        progress::Union{Nothing, Function} = nothing, # (total, now) -> nothing
-    )
+        progress::P = nothing, # (total, now) -> nothing
+    ) where {P <: Union{Nothing, Function}} # (PkgWasm, trim: specialized on `progress`)
     # Whether the file existed in the first place
     file_existed = false
 

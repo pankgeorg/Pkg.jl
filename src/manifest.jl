@@ -111,20 +111,19 @@ read_apps(::Any) = pkgerror("Expected `apps` field to be a Dict")
 function read_apps(apps::Dict)
     appinfos = Dict{String, AppInfo}()
     for (appname, app) in apps
-        submodule = get(app, "submodule", nothing)
-        julia_flags_raw = get(app, "julia_flags", nothing)
-        julia_flags = if julia_flags_raw === nothing
-            String[]
-        else
-            String[flag::String for flag in julia_flags_raw]
-        end
-        appinfo = AppInfo(
-            appname::String,
-            app["julia_command"]::String,
-            submodule,
-            julia_flags,
-            app
-        )
+        # (each app's table, told apart by type: M4.2)
+        appinfo = with_toml_dict(app) do app
+            submodule = toml_string_or_nothing(get(app, "submodule", nothing))
+            julia_flags_raw = get(app, "julia_flags", nothing)
+            julia_flags = julia_flags_raw === nothing ? String[] : toml_strings(julia_flags_raw)
+            AppInfo(
+                appname::String,
+                app["julia_command"]::String,
+                submodule,
+                julia_flags,
+                app
+            )
+        end::AppInfo
         appinfos[appinfo.name] = appinfo
     end
     return appinfos
@@ -220,9 +219,9 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
     manifest_format = VersionNumber(raw["manifest_format"]::String)
     if !in(manifest_format.major, 1:2)
         if f_or_io isa IO
-            @warn "Unknown Manifest.toml format version detected in streamed manifest. Unexpected behavior may occur" manifest_format
+            @pkg_warn "Unknown Manifest.toml format version detected in streamed manifest. Unexpected behavior may occur" manifest_format
         else
-            @warn "Unknown Manifest.toml format version detected in file `$(f_or_io)`. Unexpected behavior may occur" manifest_format maxlog = 1 _id = Symbol(f_or_io)
+            @pkg_warn "Unknown Manifest.toml format version detected in file `$(f_or_io)`. Unexpected behavior may occur" manifest_format maxlog = 1 _id = Symbol(f_or_io)
         end
     end
     stage1 = Dict{String, Vector{Stage1}}()
@@ -261,7 +260,7 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
                     entry.exts = read_exts(get(info, "extensions", nothing)::Union{Nothing, Dict{String, Any}})
                 catch
                     # TODO: Should probably not unconditionally log something
-                    # @debug "Could not parse manifest entry for `$name`" f_or_io
+                    # @pkg_debug "Could not parse manifest entry for `$name`" f_or_io
                     rethrow()
                 end
                 entry.other = info
@@ -290,6 +289,18 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
     return validate_manifest(julia_version, project_hash, manifest_format, stage1, other, registries)
 end
 
+# `Base.is_v1_format_manifest(raw)`, its `mf isa Dict{String}` told apart by the type TOML's
+# parser makes (M4.2: static dispatch); others as Base natively
+function is_v1_format_manifest(raw::Dict{String, Any})
+    haskey(raw, "manifest_format") || return true
+    mf = raw["manifest_format"]
+    mf isa Dict{String, Any} && return haskey(mf, "uuid")
+    mf isa Dict{String} || return false
+    WASM_TARGET && error("PkgWasm: unsupported manifest_format table")
+    return Base.inferencebarrier(Base.is_v1_format_manifest)(raw)::Bool
+end
+is_v1_format_manifest(raw::Dict) = Base.is_v1_format_manifest(raw)
+
 function read_manifest(f_or_io::Union{String, IO})
     raw = try
         if f_or_io isa IO
@@ -303,7 +314,7 @@ function read_manifest(f_or_io::Union{String, IO})
         end
         rethrow()
     end
-    if Base.is_v1_format_manifest(raw)
+    if is_v1_format_manifest(raw)
         if isempty(raw) # treat an empty Manifest file as v2 format for convenience
             raw["manifest_format"] = "2.0.0"
         else
@@ -383,7 +394,8 @@ function destructure(manifest::Manifest)::Dict
         # https://github.com/JuliaLang/Pkg.jl/issues/4086
         @assert !(entry.tree_hash !== nothing && entry.path !== nothing)
 
-        new_entry = something(entry.other, Dict{String, Any}())
+        # (the entry's table: `other`, a `Dict`, told apart as a TOML table: M4.2)
+        new_entry = entry.other === nothing ? Dict{String, Any}() : with_toml_dict(identity, entry.other)
         new_entry["uuid"] = string(uuid)
         entry!(new_entry, "version", entry.version)
         entry!(new_entry, "git-tree-sha1", entry.tree_hash)
@@ -420,10 +432,11 @@ function destructure(manifest::Manifest)::Dict
                 if all(dep -> haskey(unique_name, first(dep)), deptype) && all(dep -> unique_name[first(dep)], deptype)
                     new_entry[depname] = sort(collect(keys(deptype)))
                 else
-                    new_entry[depname] = Dict{String, String}()
+                    depdict = Dict{String, String}()  # (built typed, then stored: M4.2)
                     for (name, uuid) in deptype
-                        new_entry[depname][name] = string(uuid)
+                        depdict[name] = string(uuid)
                     end
+                    new_entry[depname] = depdict
                 end
             end
         end
@@ -434,7 +447,8 @@ function destructure(manifest::Manifest)::Dict
         end
 
         if !isempty(entry.apps)
-            new_entry["apps"] = Dict{String, Any}()
+            apps_table = Dict{String, Any}()  # (built typed, then stored: M4.2)
+            new_entry["apps"] = apps_table
             for (appname, appinfo) in entry.apps
                 julia_command = @something appinfo.julia_command joinpath(Sys.BINDIR, "julia" * (Sys.iswindows() ? ".exe" : ""))
                 app_dict = Dict{String, Any}("julia_command" => julia_command)
@@ -444,13 +458,21 @@ function destructure(manifest::Manifest)::Dict
                 if !isempty(appinfo.julia_flags)
                     app_dict["julia_flags"] = appinfo.julia_flags
                 end
-                new_entry["apps"][appname] = app_dict
+                apps_table[appname] = app_dict
             end
         end
         if manifest.manifest_format.major == 1
-            push!(get!(raw, entry.name, Dict{String, Any}[]), new_entry)
+            raw1 = raw::Dict{String, Vector{Dict{String, Any}}}  # (as made above for format 1)
+            push!(get!(raw1, entry.name, Dict{String, Any}[]), new_entry)
         elseif manifest.manifest_format.major == 2
-            push!(get!(raw["deps"], entry.name, Dict{String, Any}[]), new_entry)
+            # (the deps table made above, typed: M4.2)
+            deps_table = raw["deps"]
+            if deps_table isa Dict{String, Vector{Dict{String, Any}}}
+                push!(get!(deps_table, entry.name, Dict{String, Any}[]), new_entry)
+            else
+                WASM_TARGET && error("PkgWasm: unexpected deps table in a manifest")
+                Base.inferencebarrier(push!)(Base.inferencebarrier(get!)(deps_table, entry.name, Dict{String, Any}[]), new_entry)
+            end
         end
     end
     return raw
@@ -465,7 +487,7 @@ function write_manifest(env::EnvCache)
 end
 function write_manifest(manifest::Manifest, manifest_file::AbstractString)
     if manifest.manifest_format.major == 1
-        @warn """The active manifest file at `$(manifest_file)` has an old format.
+        @pkg_warn """The active manifest file at `$(manifest_file)` has an old format.
         Any package operation (add, remove, update, etc.) will automatically upgrade it to format v2.1.""" maxlog = 1 _id = Symbol(manifest_file)
     end
     return write_manifest(destructure(manifest), manifest_file)
@@ -475,7 +497,7 @@ function write_manifest(io::IO, manifest::Manifest)
 end
 function write_manifest(io::IO, raw_manifest::Dict)
     print(io, "# This file is machine-generated - editing it directly is not advised\n\n")
-    TOML.print(io, raw_manifest, sorted = true) do x
+    TOMLWriter.print(io, raw_manifest, sorted = true) do x
         (typeof(x) in [String, Nothing, UUID, SHA1, VersionNumber]) && return string(x)
         error("unhandled type `$(typeof(x))`")
     end
@@ -499,7 +521,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
             return
         end
     end
@@ -510,7 +532,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
             return
         end
     end
@@ -520,7 +542,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
         end
     end
 end

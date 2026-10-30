@@ -1,19 +1,24 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module API
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Printf
 import Random
 using Dates
-import LibGit2
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 import Logging
 import FileWatching
 
 import Base: StaleCacheKey
 
 import ..depots, ..depots1, ..logdir, ..devdir, ..printpkgstyle, .._autoprecompilation_enabled_scoped, ..manifest_rel_path
-import ..Operations, ..GitTools, ..Pkg, ..Registry
+import ..Operations, ..GitTools, ..PkgWasm, ..Registry
+import ..PkgWasm: WASM_TARGET
+
+# PkgWasm (PLAN.md D4): public operations outside the supported set throw this.
+unsupported(op::String) = pkgerror(op, " is not supported in PkgWasm")
 import ..can_fancyprint, ..pathrepr, ..isurl, ..PREV_ENV_PATH, ..atomic_toml_write, ..safe_realpath
 using ..Types, ..TOML
 using ..Types: VersionTypes
@@ -67,7 +72,7 @@ function package_info(env::EnvCache, pkg::PackageSpec, entry::PackageEntry)::Pac
         safe_realpath(manifest_rel_path(env, pkg.repo.source::String))
     _source_path = Operations.source_path(env.manifest_file, pkg)
     if _source_path === nothing
-        @debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
+        @pkg_debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
         pkgerror("could not find source path for package $(err_rep(pkg)) based on $(env.manifest_file)")
     end
     info = PackageInfo(
@@ -166,12 +171,12 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
                 add_snapshot_to_undo(ctx.env)
                 saved_initial_snapshot[] = true
             end
-            kwargs = merge((; kwargs...), (:io => io,))
-            pkgs = deepcopy(pkgs) # don't mutate input
+            kwargs = merge((; kwargs...), (; io)) # (a NamedTuple: its names known statically)
+            pkgs = Types.copy_packagespecs(pkgs) # don't mutate input (deepcopy's, typed: M4.2)
             foreach(handle_package_input!, pkgs)
             ret = $f(ctx, pkgs; kwargs...)
-            $(f in (:up, :pin, :free, :build)) && Pkg._auto_precompile(ctx)
-            $(f in (:up, :pin, :free, :rm)) && Pkg._auto_gc(ctx)
+            $(f in (:up, :pin, :free, :build)) && PkgWasm._auto_precompile(ctx)
+            $(f in (:up, :pin, :free, :rm)) && PkgWasm._auto_gc(ctx)
             return ret
         end
         $f(ctx::Context; kwargs...) = $f(ctx, PackageSpec[]; kwargs...)
@@ -265,7 +270,7 @@ end
 
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool = true,
-        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = HostPlatform(), kwargs...
+        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = PkgWasm.host_platform(), kwargs...
     )
     require_not_empty(pkgs, :develop)
     Context!(ctx; kwargs...)
@@ -320,8 +325,8 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}; preserve::PreserveLevel = Operations.default_preserve(),
-        platform::AbstractPlatform = HostPlatform(), target::Symbol = :deps, allow_autoprecomp::Bool = true,
-        prefer_loaded_versions::Bool = Pkg.in_repl_mode(), kwargs...
+        platform::AbstractPlatform = PkgWasm.host_platform(), target::Symbol = :deps, allow_autoprecomp::Bool = true,
+        prefer_loaded_versions::Bool = PkgWasm.in_repl_mode(), kwargs...
     )
     require_not_empty(pkgs, :add)
     Context!(ctx; kwargs...)
@@ -570,6 +575,7 @@ function test(
         allow_reresolve::Bool = true,
         kwargs...
     )
+    unsupported("test")
     julia_args = Cmd(julia_args)
     test_args = Cmd(test_args)
     Context!(ctx; kwargs...)
@@ -609,6 +615,11 @@ function is_manifest_current(path::AbstractString)
 end
 
 const UsageDict = Dict{String, DateTime}
+
+# `DateTime(t)::DateTime` of a usage entry's `time` (PkgWasm, trim: the TOML value is a
+# `DateTime`, or a string from an older writer; `Types.usage_times` handles them alike)
+usage_time(@nospecialize(t)) = t isa DateTime ? t : t isa String ? DateTime(t) :
+    WASM_TARGET ? error("PkgWasm: unsupported usage time") : Base.inferencebarrier(DateTime)(t)::DateTime
 const UsageByDepotDict = Dict{String, UsageDict}
 
 """
@@ -628,7 +639,7 @@ Use verbose mode (`verbose=true`) for detailed output.
 function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = nothing, verbose = false, force = false, kwargs...)
     Context!(ctx; kwargs...)
     if collect_delay !== nothing
-        @warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
+        @pkg_warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
     end
     env = ctx.env
 
@@ -660,7 +671,11 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             end
 
             for (filename, infos) in parse_toml(usage_filepath)
-                f.(Ref(filename), infos)
+                # (PkgWasm, trim: stock broadcasts `f.(Ref(filename), infos)` over the entries
+                # of the TOML array, a Vector{Any})
+                for info in infos::Vector{Any}
+                    f(filename, info::Dict{String, Any})
+                end
             end
             return
         end
@@ -673,7 +688,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "manifest_usage.toml")) do filename, info
                 # For Manifest usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info["time"]))
             end
         end
         manifest_usage_by_depot[depot] = usage
@@ -682,7 +697,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "artifact_usage.toml")) do filename, info
                 # For Artifact usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info["time"]))
             end
         end
         artifact_usage_by_depot[depot] = usage
@@ -693,12 +708,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "scratch_usage.toml")) do filename, info
                 # For Artifact usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info["time"]))
                 if !haskey(parents, filename)
                     parents[filename] = Set{String}()
                 end
-                for parent in info["parent_projects"]
-                    push!(parents[filename], parent)
+                for parent in info["parent_projects"]::Vector{Any} # (PkgWasm, trim: a TOML array)
+                    push!(parents[filename], parent::String)
                 end
             end
         end
@@ -717,10 +732,10 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         end
     end
 
-    all_manifest_tomls = Set(filter(Pkg.isfile_nothrow, all_manifest_tomls))
-    all_artifact_tomls = Set(filter(Pkg.isfile_nothrow, all_artifact_tomls))
-    all_scratch_dirs = Set(filter(Pkg.isdir_nothrow, all_scratch_dirs))
-    all_scratch_parents = Set(filter(Pkg.isfile_nothrow, all_scratch_parents))
+    all_manifest_tomls = Set(filter(PkgWasm.isfile_nothrow, all_manifest_tomls))
+    all_artifact_tomls = Set(filter(PkgWasm.isfile_nothrow, all_artifact_tomls))
+    all_scratch_dirs = Set(filter(PkgWasm.isdir_nothrow, all_scratch_dirs))
+    all_scratch_parents = Set(filter(PkgWasm.isfile_nothrow, all_scratch_parents))
 
     # Immediately write these back as condensed toml files
     function write_condensed_toml(f::Function, usage_by_depot, fname)
@@ -769,7 +784,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             filter!(((k, v),) -> k in all_scratch_dirs, usage)
 
             # Expand it back into a dict-of-dicts
-            expanded_usage = Dict{String, Vector{Dict}}()
+            expanded_usage = Dict{String, Vector{Dict{String, Any}}}() # (PkgWasm, trim: stock's Vector{Dict})
             for (k, v) in usage
                 # Drop scratch spaces whose parents are all non-existent
                 parents = scratch_parents_by_depot[depot][k]
@@ -778,12 +793,11 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     continue
                 end
 
-                expanded_usage[k] = [
-                    Dict(
-                        "time" => v,
-                        "parent_projects" => collect(parents),
-                    ),
-                ]
+                # (PkgWasm, trim: filled by assignment; stock `Dict("time" => v, "parent_projects" => ...)`)
+                entry = Dict{String, Any}()
+                entry["time"] = v
+                entry["parent_projects"] = collect(parents)
+                expanded_usage[k] = [entry]
             end
             return expanded_usage
         end
@@ -794,7 +808,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         manifest = try
             read_manifest(path)
         catch e
-            @warn "Reading manifest file at $path failed with error" exception = e
+            @pkg_warn "Reading manifest file at $path failed with error" exception = e
             return nothing
         end
 
@@ -838,19 +852,20 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         artifact_dict = try
             parse_toml(path)
         catch e
-            @warn "Reading artifacts file at $path failed with error" exception = e
+            @pkg_warn "Reading artifacts file at $path failed with error" exception = e
             return nothing
         end
 
         artifact_path_list = String[]
         for name in keys(artifact_dict)
-            getpaths(meta) = artifact_paths(SHA1(hex2bytes(meta["git-tree-sha1"])))
+            # (PkgWasm, trim: the TOML values typed; arrays are Vector{Any})
+            getpaths(meta::Dict{String, Any}) = artifact_paths(SHA1(hex2bytes(meta["git-tree-sha1"]::String)))
             if isa(artifact_dict[name], Vector)
-                for platform_meta in artifact_dict[name]
-                    append!(artifact_path_list, getpaths(platform_meta))
+                for platform_meta in artifact_dict[name]::Vector{Any}
+                    append!(artifact_path_list, getpaths(platform_meta::Dict{String, Any}))
                 end
             else
-                append!(artifact_path_list, getpaths(artifact_dict[name]))
+                append!(artifact_path_list, getpaths(artifact_dict[name]::Dict{String, Any}))
             end
         end
         return artifact_path_list
@@ -1010,12 +1025,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     try
                         size += lstat(path).size
                     catch ex
-                        @error("Failed to calculate size of $path", exception = ex)
+                        @pkg_error("Failed to calculate size of $path", exception = ex)
                     end
                 end
             end
         catch ex
-            @error("Failed to calculate size of $path", exception = ex)
+            @pkg_error("Failed to calculate size of $path", exception = ex)
         end
         return size
     end
@@ -1026,7 +1041,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             try
                 lstat(path).size
             catch ex
-                @error("Failed to calculate size of $path", exception = ex)
+                @pkg_error("Failed to calculate size of $path", exception = ex)
                 0
             end
         else
@@ -1036,7 +1051,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             Base.Filesystem.prepare_for_deletion(path)
             Base.rm(path; recursive = true, force = true)
         catch e
-            @warn("Failed to delete $path", exception = e)
+            @pkg_warn("Failed to delete $path", exception = e)
             return 0
         end
         if verbose
@@ -1107,7 +1122,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     Base.rm(p; recursive = true, force = true, allow_delayed_delete = false)
                     Base.rm(f)
                 catch e
-                    @debug "Failed to delete $p" exception = e
+                    @pkg_debug "Failed to delete $p" exception = e
                 end
             end
             for dir in delayed_delete_dirs
@@ -1167,7 +1182,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                 catch e
                     # Silently ignore errors from git gc
                     if verbose
-                        @warn "git gc failed for registry $(reg_name)" exception = e
+                        @pkg_warn "git gc failed for registry $(reg_name)" exception = e
                     end
                 end
             end
@@ -1178,6 +1193,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
 end
 
 function build(ctx::Context, pkgs::Vector{PackageSpec}; verbose = false, allow_reresolve::Bool = true, kwargs...)
+    unsupported("build")
     Context!(ctx; kwargs...)
     Operations.ensure_manifest_registries!(ctx)
 
@@ -1221,10 +1237,11 @@ function precompile(
         _from_loading::Bool = false, configs::Union{Base.Precompilation.Config, Vector{Base.Precompilation.Config}} = (`` => Base.CacheFlags()),
         workspace::Bool = false, kwargs...
     )
+    unsupported("precompile")
     Context!(ctx; kwargs...)
     if !already_instantiated
         instantiate(ctx; allow_autoprecomp = false, workspace, kwargs...)
-        @debug "precompile: instantiated"
+        @pkg_debug "precompile: instantiated"
     end
 
     # TODO: Maybe this should be done in Base?
@@ -1255,7 +1272,7 @@ end
 function precompile(f, args...; kwargs...)
     return Base.ScopedValues.@with _autoprecompilation_enabled_scoped => false begin
         f()
-        Pkg.precompile(args...; kwargs...)
+        PkgWasm.precompile(args...; kwargs...)
     end
 end
 
@@ -1272,7 +1289,7 @@ instantiate(; kwargs...) = instantiate(Context(); kwargs...)
 function instantiate(
         ctx::Context; manifest::Union{Bool, Nothing} = nothing,
         update_registry::Bool = true, verbose::Bool = false,
-        platform::AbstractPlatform = HostPlatform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
+        platform::AbstractPlatform = PkgWasm.host_platform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
         workspace::Bool = false, julia_version_strict::Bool = false, kwargs...
     )
     Context!(ctx; kwargs...)
@@ -1281,7 +1298,7 @@ function instantiate(
     end
     Operations.ensure_manifest_registries!(ctx)
     if !isfile(ctx.env.project_file) && isfile(ctx.env.manifest_file)
-        _manifest = Pkg.Types.read_manifest(ctx.env.manifest_file)
+        _manifest = PkgWasm.Types.read_manifest(ctx.env.manifest_file)
         Types.check_manifest_julia_version_compat(_manifest, ctx.env.manifest_file; julia_version_strict)
         deps = Dict{String, String}()
         for (uuid, pkg) in _manifest
@@ -1298,7 +1315,7 @@ function instantiate(
         # given no manifest exists, only allow invoking a registry update if there are project deps
         allow_registry_update = isfile(ctx.env.project_file) && !isempty(ctx.env.project.deps)
         up(ctx; update_registry = update_registry && allow_registry_update)
-        allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
         return
     end
     if !isfile(ctx.env.manifest_file) && manifest == true
@@ -1307,18 +1324,24 @@ function instantiate(
     Types.check_manifest_julia_version_compat(ctx.env.manifest, ctx.env.manifest_file; julia_version_strict)
 
     if Operations.is_manifest_current(ctx.env) === false
-        resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
-        update_cmd = Pkg.in_repl_mode() ? "pkg> update" : "Pkg.update()"
-        @warn """The project dependencies or compat requirements have changed since the manifest was last resolved.
-        It is recommended to `$resolve_cmd` or consider `$update_cmd` if necessary."""
+        resolve_cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+        update_cmd = PkgWasm.in_repl_mode() ? "pkg> update" : "Pkg.update()"
+        # (G3 V166: the message printed piece by piece, the same text as the interpolation)
+        msg_io = IOBuffer()
+        print(msg_io, "The project dependencies or compat requirements have changed since the manifest was last resolved.\nIt is recommended to `")
+        print(msg_io, resolve_cmd)
+        print(msg_io, "` or consider `")
+        print(msg_io, update_cmd)
+        print(msg_io, "` if necessary.")
+        @pkg_warn String(take!(msg_io))
     end
 
     Operations.prune_manifest(ctx.env)
     for (name, uuid) in ctx.env.project.deps
         get(ctx.env.manifest, uuid, nothing) === nothing || continue
-        resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
-        rm_cmd = Pkg.in_repl_mode() ? "pkg> rm $name" : "Pkg.rm(\"$name\")"
-        instantiate_cmd = Pkg.in_repl_mode() ? "pkg> instantiate" : "Pkg.instantiate()"
+        resolve_cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+        rm_cmd = PkgWasm.in_repl_mode() ? "pkg> rm $name" : "Pkg.rm(\"$name\")"
+        instantiate_cmd = PkgWasm.in_repl_mode() ? "pkg> instantiate" : "Pkg.instantiate()"
         pkgerror(
             "`$name` is a direct dependency, but does not appear in the manifest.",
             " If you intend `$name` to be a direct dependency, run `$resolve_cmd` to populate the manifest.",
@@ -1328,7 +1351,10 @@ function instantiate(
     end
     # check if all source code and artifacts are downloaded to exit early
     if Operations.is_instantiated(ctx.env, workspace; platform)
-        allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+        # PkgWasm (PLAN.md D4): with nothing to install, still reject build scripts, as the
+        # full path below does
+        allow_build && Operations.build_versions(ctx, Set{UUID}(); verbose)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
         return
     end
 
@@ -1358,8 +1384,8 @@ function instantiate(
             # manifest entry has no recorded tree hash. This happens when a `[sources]`
             # entry is changed (e.g. from a `path` to a `url`) without re-resolving, so
             # the manifest is stale and we cannot determine which tree to check out.
-            resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
-            update_cmd = Pkg.in_repl_mode() ? "pkg> update" : "Pkg.update()"
+            resolve_cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+            update_cmd = PkgWasm.in_repl_mode() ? "pkg> update" : "Pkg.update()"
             pkgerror(
                 "The source of $(err_rep(pkg)) has changed but the manifest has not been updated to match.",
                 " Run `$resolve_cmd` (or `$update_cmd`) to update the manifest, then try again."
@@ -1400,7 +1426,7 @@ function instantiate(
     # Run build scripts
     allow_build && Operations.build_versions(ctx, union(new_apply, new_git); verbose = verbose)
 
-    return allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+    return allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
 end
 
 
@@ -1463,7 +1489,7 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         # 1. if path exists, activate that
         # 2. if path exists in deps, and the dep is deved, activate that path (`devpath` above)
         # 3. activate the non-existing directory (e.g. as in `pkg> activate .` for initing a new env)
-        if Pkg.isdir_nothrow(path)
+        if PkgWasm.isdir_nothrow(path)
             fullpath = abspath(path)
         else
             fullpath = _activate_dep(path)
@@ -1475,8 +1501,8 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         # initialize `fullpath` in case of empty `Pkg.depots()`
         fullpath = ""
         # loop over all depots to check if the shared environment already exists
-        for depot in Pkg.depots()
-            fullpath = joinpath(Pkg.envdir(depot), path)
+        for depot in PkgWasm.depots()
+            fullpath = joinpath(PkgWasm.envdir(depot), path)
             isdir(fullpath) && break
         end
         # this disallows names such as "Foo/bar", ".", "..", etc
@@ -1485,7 +1511,7 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         end
         # unless the shared environment already exists, place it in the first depots
         if !isdir(fullpath)
-            fullpath = joinpath(Pkg.envdir(Pkg.depots1()), path)
+            fullpath = joinpath(PkgWasm.envdir(PkgWasm.depots1()), path)
         end
     end
     if !isnothing(Base.active_project())

@@ -1,12 +1,13 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module REPLMode
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 @eval Base.Experimental.@compiler_options optimize = 1
 
 using Markdown, UUIDs, Dates
 
-import ..OFFLINE_MODE, ..linewrap, ..pathrepr, ..IN_REPL_MODE
+import ..OFFLINE_MODE, ..linewrap, ..pathrepr, ..IN_REPL_MODE, ..WASM_TARGET
 using ..Types, ..Operations, ..API, ..Registry, ..Resolve, ..Apps
 import ..stdout_f, ..stderr_f
 
@@ -397,7 +398,7 @@ do_cmds(input::String, io = stdout_f()) = do_cmds(prepare_cmd(input), io)
 
 function do_cmds(commands::Vector{Command}, io)
     if !isinteractive() && !TEST_MODE[] && !PRINTED_REPL_WARNING[]
-        @warn "The Pkg REPL mode is intended for interactive use only, and should not be used from scripts. It is recommended to use the functional API instead."
+        @pkg_warn "The Pkg REPL mode is intended for interactive use only, and should not be used from scripts. It is recommended to use the functional API instead."
         PRINTED_REPL_WARNING[] = true
     end
     xs = []
@@ -452,7 +453,7 @@ function do_help!(command::Command, io)
     elseif cmd isa CommandSpec
         push!(help_md.content, cmd.help)
     end
-    !isempty(command.arguments) && @warn "More than one command specified, only rendering help for first"
+    !isempty(command.arguments) && @pkg_warn "More than one command specified, only rendering help for first"
     return show(io, MIME("text/plain"), help_md)
 end
 

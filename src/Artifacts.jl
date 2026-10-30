@@ -1,11 +1,12 @@
 module PkgArtifacts
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Artifacts, Base.BinaryPlatforms, SHA
 using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 using FileWatching: FileWatching
 
-import ..set_readonly, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..mkpidlock, ..host_platform, ..CONCURRENT, ..WASM_TARGET, ..PkgWasm, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle, ..mv_temp_dir_retries, ..atomic_toml_write, ..create_cachedir_tag
 
 import Base: get, SHA1
@@ -326,20 +327,30 @@ function download_artifact(
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
-        progress::Union{Function, Nothing} = nothing,
-    )
+        progress::P = nothing,
+    ) where {P <: Union{Function, Nothing}} # (PkgWasm, trim: specialized on `progress`)
     _artifact_paths = artifact_paths(tree_hash)
     pidfile = _artifact_paths[1] * ".pid"
     mkpath(dirname(pidfile))
-    t_wait_msg = Timer(2) do t
-        if progress === nothing
-            @info "downloading $tarball_url ($hex) in another process"
-        else
-            progress(0, 0; status = "downloading in another process")
+    # PkgWasm (PLAN.md D3): the notice needs a Timer task, so only with `tasks = "jspi"`. With
+    # `tasks = "none"` there is none; `mkpidlock` never waits there, and stock closes the
+    # timer as soon as it holds the lock.
+    t_wait_msg = if CONCURRENT
+        Timer(2) do t
+            if progress === nothing
+                # (stock interpolates `hex`, a binding Pkg does not have: UndefVarError if the
+                # notice ever ran; here the tree hash. The notice never runs in PkgWasm, whose
+                # `mkpidlock` does not wait: the timer is closed right away)
+                @pkg_info "downloading $tarball_url ($(bytes2hex(tree_hash.bytes))) in another process"
+            else
+                progress(0, 0; status = "downloading in another process")
+            end
         end
+    else
+        nothing
     end
-    ret = FileWatching.mkpidlock(pidfile, stale_age = 20) do
-        close(t_wait_msg)
+    ret = mkpidlock(pidfile, stale_age = 20) do
+        t_wait_msg === nothing || close(t_wait_msg)
         if artifact_exists(tree_hash)
             return true
         end
@@ -382,7 +393,7 @@ function download_artifact(
                 ignore_hash_env_set = get(ENV, "JULIA_PKG_IGNORE_HASHES", "") != ""
                 if ignore_hash_env_set
                     ignore_hash = Base.get_bool_env("JULIA_PKG_IGNORE_HASHES", false)
-                    ignore_hash === nothing && @error(
+                    ignore_hash === nothing && @pkg_error(
                         "Invalid ENV[\"JULIA_PKG_IGNORE_HASHES\"] value",
                         ENV["JULIA_PKG_IGNORE_HASHES"],
                     )
@@ -399,7 +410,7 @@ function download_artifact(
                     msg *= "\n$desc: \
                     ignoring hash mismatch and moving \
                     artifact to the expected location"
-                    @error(msg)
+                    @pkg_error(msg)
                 else
                     error(msg)
                 end
@@ -408,7 +419,7 @@ function download_artifact(
             isnothing(progress) || progress(10000, 10000; status = "moving to artifact store")
             mv_temp_dir_retries(temp_dir, dst)
         catch err
-            @debug "download_artifact error" tree_hash tarball_url tarball_hash err
+            @pkg_debug "download_artifact error" tree_hash tarball_url tarball_hash err
             if isa(err, InterruptException)
                 rethrow(err)
             end
@@ -420,7 +431,7 @@ function download_artifact(
                 rm(temp_dir; recursive = true, force = true)
             catch e
                 e isa InterruptException && rethrow()
-                @warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e)
+                @pkg_warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e)
             end
         end
         return true
@@ -431,7 +442,7 @@ end
 
 """
     ensure_artifact_installed(name::String, artifacts_toml::String;
-                                platform::AbstractPlatform = HostPlatform(),
+                                platform::AbstractPlatform = host_platform(),
                                 pkg_uuid::Union{Base.UUID,Nothing}=nothing,
                                 verbose::Bool = false,
                                 quiet_download::Bool = false,
@@ -442,7 +453,7 @@ Ensures an artifact is installed, downloading it via the download information st
 """
 function ensure_artifact_installed(
         name::String, artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         pkg_uuid::Union{Base.UUID, Nothing} = nothing,
         pkg_server_eligible::Bool = true,
         verbose::Bool = false,
@@ -464,7 +475,7 @@ end
 function ensure_artifact_installed(
         name::String, meta::Dict, artifacts_toml::String;
         pkg_server_eligible::Bool = true,
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         verbose::Bool = false,
         quiet_download::Bool = false,
         progress::Union{Function, Nothing} = nothing,
@@ -486,19 +497,19 @@ end
 function try_artifact_download_sources(
         name::String, hash::SHA1, meta::Dict, artifacts_toml::String;
         pkg_server_eligible::Bool = true,
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
-        progress::Union{Function, Nothing} = nothing
-    )
+        progress::P = nothing
+    ) where {P <: Union{Function, Nothing}} # (PkgWasm, trim: specialized on `progress`)
 
-    errors = Any[]
+    errors = Tuple{String, String}[] # PkgWasm (trim): each error as its text (stock: the object)
     # first try downloading from Pkg server if the Pkg server knows about this package
     if pkg_server_eligible && (server = pkg_server()) !== nothing
         url = "$server/artifact/$hash"
         download_success = let url = url
-            @debug "Downloading artifact from Pkg server" name artifacts_toml platform url
+            @pkg_debug "Downloading artifact from Pkg server" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do
                 download_artifact(hash, url; verbose, quiet_download, io, progress)
             end
@@ -507,8 +518,8 @@ function try_artifact_download_sources(
         if download_success === true
             return artifact_path(hash)
         else
-            @debug "Failed to download artifact from Pkg server" download_success
-            push!(errors, (url, download_success))
+            @pkg_debug "Failed to download artifact from Pkg server" download_success
+            push!(errors, (url, download_error_text(download_success)))
         end
     end
 
@@ -519,11 +530,12 @@ function try_artifact_download_sources(
     end
 
     # Attempt to download from all sources
-    for entry in meta["download"]
-        url = entry["url"]
-        tarball_hash = entry["sha256"]
+    for entry in meta["download"]::Vector{Any} # (PkgWasm, trim: TOML arrays are Vector{Any})
+        entry = entry::Dict{String, Any}
+        url = entry["url"]::String
+        tarball_hash = entry["sha256"]::String
         download_success = let url = url
-            @debug "Downloading artifact" name artifacts_toml platform url
+            @pkg_debug "Downloading artifact" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do
                 download_artifact(hash, url, tarball_hash; verbose, quiet_download, io, progress)
             end
@@ -532,8 +544,8 @@ function try_artifact_download_sources(
         if download_success === true
             return artifact_path(hash)
         else
-            @debug "Failed to download artifact" download_success
-            push!(errors, (url, download_success))
+            @pkg_debug "Failed to download artifact" download_success
+            push!(errors, (url, download_error_text(download_success)))
         end
     end
     errmsg = """
@@ -542,11 +554,20 @@ function try_artifact_download_sources(
     """
     for (url, err) in errors
         errmsg *= "- $(url)\n"
-        errmsg *= "    Error: $(sprint(showerror, err))\n"
+        errmsg *= "    Error: $(err)\n"
     end
     error(errmsg)
 end
 
+
+# The text stock's error report shows for a failed download (`sprint(showerror, err)`; built
+# for Wasm, `showerror_known`)
+function download_error_text(@nospecialize(err))
+    WASM_TARGET || return sprint(showerror, err)
+    buf = IOBuffer()
+    PkgWasm.showerror_known(buf, err)
+    return String(take!(buf))
+end
 
 function with_show_download_info(f, io, name, quiet_download)
     fancyprint = can_fancyprint(io)
@@ -574,7 +595,7 @@ end
 
 """
     ensure_all_artifacts_installed(artifacts_toml::String;
-                                    platform = HostPlatform(),
+                                    platform = host_platform(),
                                     pkg_uuid = nothing,
                                     include_lazy = false,
                                     verbose = false,
@@ -599,7 +620,7 @@ This function is deprecated and should be replaced with the following snippet:
 """
 function ensure_all_artifacts_installed(
         artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         pkg_uuid::Union{Nothing, Base.UUID} = nothing,
         include_lazy::Bool = false,
         verbose::Bool = false,
@@ -622,7 +643,7 @@ end
 
 """
     extract_all_hashes(artifacts_toml::String;
-                        platform = HostPlatform(),
+                        platform = host_platform(),
                         pkg_uuid = nothing,
                         include_lazy = false)
 
@@ -633,7 +654,7 @@ If `include_lazy` is set to `true`, then lazy packages will be installed as well
 """
 function extract_all_hashes(
         artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         pkg_uuid::Union{Nothing, Base.UUID} = nothing,
         include_lazy::Bool = false
     )
@@ -681,5 +702,144 @@ ensure_all_artifacts_installed(artifacts_toml::AbstractString; kwargs...) =
     ensure_all_artifacts_installed(string(artifacts_toml)::String; kwargs...)
 extract_all_hashes(artifacts_toml::AbstractString; kwargs...) =
     extract_all_hashes(string(artifacts_toml)::String; kwargs...)
+
+
+# The `Platform` constructor's own `julia_version` strategy (an anonymous function of Base:
+# major and minor versions equal), taken from a Platform once
+const JULIA_VERSION_COMPARATOR = Platform("x86_64", "linux"; julia_version = v"1.0.0").compare_strategies["julia_version"]
+
+function call_compare_strategy(f::Function, a::String, b::String, a_requested::Bool, b_requested::Bool)::Bool
+    f === BinaryPlatforms.compare_default && return BinaryPlatforms.compare_default(a, b, a_requested, b_requested)
+    f === BinaryPlatforms.compare_version_cap && return BinaryPlatforms.compare_version_cap(a, b, a_requested, b_requested)
+    f === JULIA_VERSION_COMPARATOR && return JULIA_VERSION_COMPARATOR(a, b, a_requested, b_requested)::Bool
+    WASM_TARGET && error("PkgWasm built for Wasm: custom platform comparison strategies are not supported")
+    return (@invokelatest f(a, b, a_requested, b_requested))::Bool
+end
+
+# A Platform as a Dict/Set key, hashed and compared exactly as a `Platform`: Base hashes the
+# tags and the comparison strategies, i.e. each strategy function by its `objectid`. Those of
+# Base's three strategies are taken when PkgWasm is loaded (built for Wasm: when it is
+# compiled); they are stable across sessions of one Julia build.
+struct PlatformKey
+    p::Platform
+end
+Base.:(==)(a::PlatformKey, b::PlatformKey) = a.p == b.p
+Base.isequal(a::PlatformKey, b::PlatformKey) = isequal(a.p, b.p)
+const STRATEGY_OBJECTIDS = (objectid(BinaryPlatforms.compare_default), objectid(BinaryPlatforms.compare_version_cap),
+    objectid(JULIA_VERSION_COMPARATOR))
+function strategy_objectid(f::Function)::UInt
+    f === BinaryPlatforms.compare_default && return STRATEGY_OBJECTIDS[1]
+    f === BinaryPlatforms.compare_version_cap && return STRATEGY_OBJECTIDS[2]
+    f === JULIA_VERSION_COMPARATOR && return STRATEGY_OBJECTIDS[3]
+    WASM_TARGET && error("PkgWasm built for Wasm: custom platform comparison strategies are not supported")
+    return objectid(f)
+end
+function Base.hash(k::PlatformKey, h::UInt)
+    # Base.hash(::Platform, ::UInt), with `hash(f) == hash(objectid(f))` for each strategy
+    p = k.p
+    h ⊻= 0x506c6174666f726d % UInt
+    h = hash(p.tags, h)
+    ids = Dict{String, UInt}()
+    for (key, f) in p.compare_strategies
+        ids[key] = strategy_objectid(f)
+    end
+    return hash(ids, h)
+end
+
+# PkgWasm (for trim): `Artifacts.select_downloadable_artifacts(artifacts_toml; platform,
+# include_lazy)` and what it calls (`Artifacts.artifact_meta`, `BinaryPlatforms.select_platform`
+# and `platforms_match`), with the TOML values typed (TOML arrays are `Vector{Any}`) and the
+# platform comparison strategies called by identity. Base defines two strategies,
+# `compare_default` and `compare_version_cap`, the only ones a `Platform` gets unless code
+# calls `set_compare_strategy!`; another one is called through `invokelatest` natively, as by
+# Base, and rejected when built for Wasm. Same results and messages as the stdlib functions
+# (differential test: test/pkgwasm_m32.jl).
+function select_downloadable_artifacts_typed(
+        artifacts_toml::String; platform::Platform, include_lazy::Bool = false,
+        pkg_uuid::Union{Nothing, Base.UUID} = nothing
+    )
+    isfile(artifacts_toml) || return Dict{String, Any}()
+    artifact_dict = load_artifacts_toml(artifacts_toml; pkg_uuid = pkg_uuid)::Dict{String, Any}
+    artifacts = Dict{String, Any}()
+    for name in keys(artifact_dict)
+        meta = artifact_meta_typed(name, artifact_dict, artifacts_toml, platform)
+        if meta === nothing || !haskey(meta, "download") || (get(meta, "lazy", false) && !include_lazy)
+            continue
+        end
+        artifacts[name] = meta
+    end
+    return artifacts
+end
+
+function artifact_meta_typed(name::String, artifact_dict::Dict{String, Any}, artifacts_toml::String, platform::Platform)
+    haskey(artifact_dict, name) || return nothing
+    meta0 = artifact_dict[name]
+    local meta::Union{Nothing, Dict{String, Any}}
+    if meta0 isa Vector{Any}
+        # (stock: a Dict{Platform, ...}, keyed here by `PlatformKey`: the same hashes and
+        # equality, so the same entries in the same iteration order)
+        dl_dict = Dict{PlatformKey, Dict{String, Any}}()
+        for x in meta0
+            x = x::Dict{String, Any}
+            dl_dict[PlatformKey(unpack_platform(x, name, artifacts_toml)::Platform)] = x
+        end
+        meta = select_platform_typed(dl_dict, platform)
+    elseif meta0 isa Dict{String, Any}
+        meta = meta0
+    else
+        @pkg_error("Invalid artifacts file at $(artifacts_toml): artifact '$name' malformed, must be array or dict!")
+        return nothing
+    end
+    if meta !== nothing && !haskey(meta, "git-tree-sha1")
+        @pkg_error("Invalid artifacts file at $(artifacts_toml): artifact '$name' contains no `git-tree-sha1`!")
+        return nothing
+    end
+    return meta
+end
+
+function select_platform_typed(download_info::Dict{PlatformKey, Dict{String, Any}}, platform::Platform)
+    # (stock's calls, so ties after the sort below keep stock's order: the Set's)
+    ps = collect(filter(k -> platforms_match_typed(k.p, platform), keys(download_info)))
+    isempty(ps) && return nothing
+    function match_loss(a::Platform, b::Platform)
+        a_tags = Set(keys(tags(a)))
+        b_tags = Set(keys(tags(b)))
+        return length(union(a_tags, b_tags)) - length(intersect(a_tags, b_tags))
+    end
+    sort!(ps, lt = (ka, kb) -> begin
+        a, b = ka.p, kb.p
+        loss_a = match_loss(a, platform)
+        loss_b = match_loss(b, platform)
+        if loss_a != loss_b
+            return loss_a < loss_b
+        end
+        return triplet(a) > triplet(b)
+    end)
+    return download_info[first(ps)]
+end
+
+function platforms_match_typed(a::Platform, b::Platform)
+    ta, tb = tags(a)::Dict{String, String}, tags(b)::Dict{String, String}
+    for k in union(keys(ta), keys(tb))
+        ak = get(ta, k, nothing)
+        bk = get(tb, k, nothing)
+        if ak === nothing || bk === nothing
+            continue
+        end
+        a_comp = BinaryPlatforms.get_compare_strategy(a, k)
+        b_comp = BinaryPlatforms.get_compare_strategy(b, k)
+        if a_comp !== BinaryPlatforms.compare_default && b_comp !== BinaryPlatforms.compare_default && a_comp !== b_comp
+            throw(ArgumentError("Cannot compare Platform objects with two different non-default comparison strategies for the same key \"$(k)\""))
+        end
+        comparator = a_comp
+        if b_comp !== BinaryPlatforms.compare_default
+            comparator = b_comp
+        end
+        call_compare_strategy(comparator, ak, bk, a_comp === comparator, b_comp === comparator) || return false
+    end
+    return true
+end
+
+
 
 end # module PkgArtifacts

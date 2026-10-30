@@ -1,6 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-module Pkg
+module PkgWasm
 
 # In Pkg tests we want to avoid Pkg being re-precompiled by subprocesses, so this is enabled in the test suite
 if Base.get_bool_env("JULIA_PKG_DISALLOW_PKG_PRECOMPILATION", false) == true
@@ -25,13 +25,26 @@ export Registry, RegistrySpec, Apps
 public activate, add, build, compat, develop, free, gc, generate, instantiate,
     pin, precompile, readonly, redo, rm, resolve, status, test, undo, update, why
 
+# PkgWasm (PLAN.md D13, D8 class "runtime"): the host platform, used wherever stock Pkg calls
+# `HostPlatform()` (platform defaults, the `Julia-System` header, `platform_key_abi`). It is
+# answered by the host runtime through the seam `Host.platform()` once per session: in
+# `pkgwasm_init` (Wasm and native driver) and in `__init__` (native loading). Until then, and
+# in the emitted image, it holds a placeholder, and `host_platform()` throws.
+const HOST_PLATFORM_PLACEHOLDER = Base.BinaryPlatforms.Platform("x86_64", "linux"; pkgwasm_placeholder = "true")
+const HOST_PLATFORM = Ref{Base.BinaryPlatforms.Platform}(HOST_PLATFORM_PLACEHOLDER)
+function host_platform()
+    p = HOST_PLATFORM[]
+    p === HOST_PLATFORM_PLACEHOLDER && error("PkgWasm.HOST_PLATFORM is not initialised (pkgwasm_init has not run)")
+    return p
+end
+
 depots() = Base.DEPOT_PATH
 function depots1(depot_list::Union{String, Vector{String}} = depots())
     # Get the first depot from a list, with proper error handling
     if depot_list isa String
         return depot_list
     else
-        isempty(depot_list) && Pkg.Types.pkgerror("no depots provided")
+        isempty(depot_list) && PkgWasm.Types.pkgerror("no depots provided")
         return depot_list[1]
     end
 end
@@ -75,8 +88,68 @@ function unstableio(@nospecialize(io::IO))
         get(_io, :color, false) ? Base.ImmutableDict{Symbol, Any}(:color, true) : Base.ImmutableDict{Symbol, Any}()
     )
 end
-stderr_f() = something(DEFAULT_IO[], unstableio(stderr))
-stdout_f() = something(DEFAULT_IO[], unstableio(stdout))
+
+## The stream of Pkg's output (PLAN.md D9)
+#
+# Natively the output goes where stock Pkg sends it (`DEFAULT_IO[]`, else an `IOContext{IO}`
+# of `stdout`/`stderr`: `unstableio`), and `Context.io` is any `IO`. Built for Wasm (the
+# compile-time preference `target = "wasm"` of PkgWasm, set by the build project) the
+# output stream is one concrete type, so that the code printing to it is static:
+# `IOContext{StdStream}`, a stream to `Base.stdout` or `Base.stderr` (in the Wasm world the
+# runtime types these as its host streams). `DEFAULT_IO[]` (a test override, sanitised to
+# `nothing` in the Wasm image, D8) is then an error if set.
+
+const PKGWASM_UUID = Base.UUID("d562cdc0-5c7a-524d-b497-bb1ca2727331")
+Base.record_compiletime_preference(PKGWASM_UUID, "target")
+const TARGET = let t = get(Base.get_preferences(PKGWASM_UUID), "target", "native")
+    t in ("native", "wasm") || error("PkgWasm: invalid preference target = $(repr(t)) (\"native\" or \"wasm\")")
+    t::String
+end
+"Whether PkgWasm is built for Wasm (see `TargetIO`)."
+const WASM_TARGET = TARGET == "wasm"
+
+# Tasks (S2, lane s2-pkg): the compile-time preference `tasks` of PkgWasm. "none" (the
+# default; S1, PLAN.md D3) runs the download pool as a serial loop, for hosts without task
+# switching (wasmtime) and for a Wasm build with `Config(tasks = :none)`. "jspi" runs stock
+# Pkg's concurrent download pool (worker tasks and Channels); a Wasm build then needs
+# `Config(tasks = :jspi)` (Node, JSPI). Natively "jspi" runs the same pool on Julia's tasks.
+Base.record_compiletime_preference(PKGWASM_UUID, "tasks")
+const TASKS = let t = get(Base.get_preferences(PKGWASM_UUID), "tasks", "none")
+    t in ("none", "jspi") || error("PkgWasm: invalid preference tasks = $(repr(t)) (\"none\" or \"jspi\")")
+    t::String
+end
+"Whether stock Pkg's concurrent code runs (preference `tasks = \"jspi\"`), else the serial D3 paths."
+const CONCURRENT = TASKS == "jspi"
+
+"""
+    StdStream(fd)
+
+`Base.stdout` (`fd = 1`) or `Base.stderr` (`fd = 2`), as the global is when written to.
+"""
+struct StdStream <: IO
+    fd::Int32
+end
+# (G3 V2/V18/V39: through the Host seam, so the Wasm build's patch can return the runtime's
+# concrete stream; `Base.stdout`/`stderr` are bindings typed `IO`)
+std_stream(s::StdStream) = Host.std_stream(s.fd)
+Base.unsafe_write(s::StdStream, p::Ptr{UInt8}, n::UInt) = unsafe_write(std_stream(s), p, n)
+Base.write(s::StdStream, b::UInt8) = write(std_stream(s), b)
+Base.flush(s::StdStream) = flush(std_stream(s))
+Base.isopen(s::StdStream) = true
+Base.iswritable(s::StdStream) = true
+Base.displaysize(s::StdStream) = displaysize(std_stream(s))
+
+"The type of `Context.io`: any `IO` natively, `IOContext{StdStream}` built for Wasm."
+const TargetIO = WASM_TARGET ? IOContext{StdStream} : IO
+
+# (as `unstableio`: with `:color` if the stream has it)
+target_io(fd::Int32) = IOContext(StdStream(fd), :color => get(std_stream(StdStream(fd)), :color, false)::Bool)
+
+stderr_f() = WASM_TARGET ? (wasm_no_default_io(); target_io(Int32(2))) : something(DEFAULT_IO[], unstableio(stderr))
+stdout_f() = WASM_TARGET ? (wasm_no_default_io(); target_io(Int32(1))) : something(DEFAULT_IO[], unstableio(stdout))
+# (built for Wasm the output is the process's streams: an override is an error, not ignored)
+wasm_no_default_io() = DEFAULT_IO[] === nothing ||
+    error("PkgWasm built for Wasm: DEFAULT_IO[] is not supported (the output is stdout/stderr)")
 const PREV_ENV_PATH = Ref{String}("")
 
 usable_io(io) = (io isa Base.TTY) || (io isa IOContext{IO} && io.io isa Base.TTY)
@@ -102,11 +175,17 @@ end
 Check if we're currently executing in REPL mode. This is used to determine
 whether to show tips in REPL format (`pkg> add Foo`) or API format (`Pkg.add("Foo")`).
 """
-in_repl_mode() = @something(Base.ScopedValues.get(IN_REPL_MODE), false)
+# (built for Wasm there is no REPL mode: M4.2, no scoped value read)
+in_repl_mode() = WASM_TARGET ? false : @something(Base.ScopedValues.get(IN_REPL_MODE), false)
 
+include("logging.jl")
+include("toml_writer.jl")
 include("utils.jl")
+include("stdlib_data.jl")
 include("MiniProgressBars.jl")
+include("GitCLI.jl")
 include("GitTools.jl")
+include("Host.jl")
 include("PlatformEngines.jl")
 include("Versions.jl")
 include("Registry/Registry.jl")
@@ -119,6 +198,8 @@ include("Operations.jl")
 include("API.jl")
 include("Apps/Apps.jl")
 include("REPLMode/REPLMode.jl")
+include("wasm_entry.jl")
+include("wasm_request.jl")
 
 import .REPLMode: @pkg_str
 import .Types: UPLEVEL_MAJOR, UPLEVEL_MINOR, UPLEVEL_PATCH, UPLEVEL_FIXED
@@ -961,6 +1042,7 @@ true
 const readonly = API.readonly
 
 function __init__()
+    HOST_PLATFORM[] = Host.platform() # D13; in the Wasm image pkgwasm_init does this
     OFFLINE_MODE[] = Base.get_bool_env("JULIA_PKG_OFFLINE", false)
     _auto_gc_enabled[] = Base.get_bool_env("JULIA_PKG_GC_AUTO", true)
     return nothing
@@ -971,7 +1053,7 @@ end
 ################
 
 function installed()
-    @warn "`Pkg.installed()` is deprecated. Use `Pkg.dependencies()` instead." maxlog = 1
+    @pkg_warn "`Pkg.installed()` is deprecated. Use `Pkg.dependencies()` instead." maxlog = 1
     deps = dependencies()
     installs = Dict{String, VersionNumber}()
     for (uuid, dep) in deps
@@ -983,7 +1065,7 @@ function installed()
 end
 
 function dir(pkg::String, paths::AbstractString...)
-    @warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
+    @pkg_warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
     pkgid = Base.identify_package(pkg)
     pkgid === nothing && return nothing
     path = Base.locate_package(pkgid)
@@ -1017,30 +1099,28 @@ function _auto_gc(ctx::Types.Context)
     return if curr_time - DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] > delay_secs
         printpkgstyle(ctx.io, :Info, "We haven't cleaned this depot up for a bit, running Pkg.gc()...", color = Base.info_color())
         try
-            Pkg.gc(ctx)
+            PkgWasm.gc(ctx)
             DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = curr_time
         catch ex
-            @error("GC failed", exception = ex)
+            @pkg_error("GC failed", exception = ex)
         end
     end
 end
 
+# PkgWasm (PLAN.md D4): auto-precompilation after `add`/`instantiate` is removed, not thrown.
 
 ##################
 # Precompilation #
 ##################
 
-function _auto_precompile(ctx::Types.Context, pkgs::Vector{PackageSpec} = PackageSpec[]; warn_loaded = true, already_instantiated = false, workspace = false)
-    return if should_autoprecompile()
-        Pkg.precompile(ctx, pkgs; internal_call = true, warn_loaded = warn_loaded, already_instantiated = already_instantiated, workspace = workspace)
-    end
-end
+_auto_precompile(ctx::Types.Context, pkgs::Vector{PackageSpec} = PackageSpec[]; kwargs...) = nothing
 
-include("precompile.jl")
+# PkgWasm: the stock precompile workload (precompile.jl) is not included. It exercises
+# unsupported operations (develop, path adds, precompile) and the Downloads global state.
 
 # Reset globals that might have been mutated during precompilation.
 DEFAULT_IO[] = nothing
-Pkg.UPDATED_REGISTRY_THIS_SESSION[] = false
+PkgWasm.UPDATED_REGISTRY_THIS_SESSION[] = false
 PREV_ENV_PATH[] = ""
 Types.STDLIB[] = nothing
 empty!(Registry.REGISTRY_CACHE)

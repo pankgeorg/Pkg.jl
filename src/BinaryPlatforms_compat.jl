@@ -11,6 +11,7 @@ using Base.BinaryPlatforms: parse_dl_name_version,
     os, call_abi, select_platform, platforms_match,
     AbstractPlatform, Platform, HostPlatform
 
+import ..host_platform
 import Base.BinaryPlatforms: libgfortran_version, libstdcxx_version, platform_name,
     wordsize, platform_dlext, tags, arch, libc, call_abi,
     cxxstring_abi
@@ -126,7 +127,7 @@ This method is deprecated, import `Base.BinaryPlatforms` and use either `HostPla
 to get the current host platform, or `parse(Base.BinaryPlatforms.Platform, triplet)`
 to parse the triplet for some other platform instead.
 """
-platform_key_abi() = HostPlatform()
+platform_key_abi() = host_platform() # PkgWasm (D13): the host runtime's answer
 platform_key_abi(triplet::AbstractString) = parse(Platform, triplet)
 
 """

@@ -17,12 +17,26 @@ struct Subdir
     dir::String
 end
 
+# built for Wasm (G3): Base's default `show` of the tokens, typed (shown in the parser's error
+# messages); natively Base's own
+if WASM_TARGET
+    for T in (:PackageIdentifier, :VersionToken, :Rev, :Subdir)
+        @eval Base.show(io::IO, x::$T) = (show(io, $T); print(io, '('); show(io, getfield(x, 1)); print(io, ')'))
+    end
+end
+
 const PackageToken = Union{
     PackageIdentifier,
     VersionToken,
     Rev,
     Subdir,
 }
+
+# `"$args"` of a token vector, typed (PkgWasm, G3): Base's text, its element type prefix computed
+# when the module is loaded
+const TOKENS_ELTYPE = string(PackageToken)
+tokens_text(args::Vector{PackageToken}) = WASM_TARGET ?
+    string(TOKENS_ELTYPE, "[", join([sprint(show, t) for t in args], ", "), "]") : string(args)
 
 # Check if a string is a valid UUID
 function is_valid_uuid(str::String)
@@ -106,7 +120,7 @@ end
 
 # Extract subdir specifier from the end of input (rightmost : that's not a Windows drive letter)
 function extract_subdir(input::String)
-    colon_pos = findlast(':', input)
+    colon_pos = findlast_char(':', input)
     if colon_pos === nothing
         return input, nothing
     end
@@ -133,9 +147,19 @@ function extract_revision(input::String)
     return remaining, rev_part
 end
 
+# `findlast(c, s)`, as a loop (PkgWasm, G3: Base's goes through an untyped predicate)
+function findlast_char(c::Char, s::String)
+    i = lastindex(s)
+    while i > 0
+        s[i] == c && return i
+        i = prevind(s, i)
+    end
+    return nothing
+end
+
 # Extract version specifier from the end of input (rightmost @)
 function extract_version(input::String)
-    at_pos = findlast('@', input)
+    at_pos = findlast_char('@', input)
     if at_pos === nothing
         return input, nothing
     end
@@ -200,7 +224,7 @@ end
 
 # Extract subdir from URL, being careful about URL structure
 function extract_url_subdir(input::String)
-    colon_pos = findlast(':', input)
+    colon_pos = findlast_char(':', input)
     if colon_pos === nothing
         return input, nothing
     end
@@ -406,25 +430,25 @@ function parse_package_args(args::Vector{PackageToken}; add_or_dev = false)::Vec
                 return
             elseif modifier isa Subdir
                 if parsed_subdir
-                    pkgerror("Multiple subdir specifiers `$args` found.")
+                    pkgerror("Multiple subdir specifiers `$(tokens_text(args))` found.")
                 end
                 pkg.subdir = modifier.dir
                 parsed_subdir = true
                 (isempty(args) || args[1] isa PackageIdentifier) && return
             elseif modifier isa VersionToken
                 if parsed_version
-                    pkgerror("Multiple version specifiers `$args` found.")
+                    pkgerror("Multiple version specifiers `$(tokens_text(args))` found.")
                 end
                 pkg.version = modifier.version
                 parsed_version = true
             elseif modifier isa Rev
                 if parsed_rev
-                    pkgerror("Multiple revision specifiers `$args` found.")
+                    pkgerror("Multiple revision specifiers `$(tokens_text(args))` found.")
                 end
                 pkg.rev = modifier.rev
                 parsed_rev = true
             else
-                pkgerror("Package name/uuid must precede subdir specifier `$args`.")
+                pkgerror("Package name/uuid must precede subdir specifier `$(tokens_text(args))`.")
             end
         end
         return
@@ -461,7 +485,7 @@ function parse_package_identifier(pkg_id::PackageIdentifier; add_or_develop = fa
     word = pkg_id.val
     if add_or_develop
         if occursin(name_re, word) && isdir(expanduser(word))
-            @info "Use `./$word` to add or develop the local directory at `$(Base.contractuser(abspath(word)))`."
+            @pkg_info "Use `./$word` to add or develop the local directory at `$(Base.contractuser(abspath(word)))`."
         end
         if isurl(word)
             return PackageSpec(; url = word)

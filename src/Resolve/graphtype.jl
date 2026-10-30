@@ -21,8 +21,9 @@ mutable struct ResolveLogEntry
     journal::ResolveJournal # shared with all other entries
     pkg::UUID
     header::String
-    events::Vector{Tuple{Any, String}} # here Any should ideally be Union{ResolveLogEntry,Nothing}
-    ResolveLogEntry(journal::ResolveJournal, pkg::UUID, header::String = "") = new(journal, pkg, header, [])
+    events::Vector{Tuple{Union{ResolveLogEntry, Nothing}, String}}
+    ResolveLogEntry(journal::ResolveJournal, pkg::UUID, header::String = "") =
+        new(journal, pkg, header, Tuple{Union{ResolveLogEntry, Nothing}, String}[])
 end
 
 function Base.push!(entry::ResolveLogEntry, reason::Tuple{Union{ResolveLogEntry, Nothing}, String}, to_journal::Bool = true)
@@ -143,7 +144,9 @@ mutable struct GraphData
             d = Dict{InstState, Set{InstState}}()
             for v0 in 1:spp[p0]
                 let p0 = p0 # Due to https://github.com/JuliaLang/julia/issues/15276
-                    d[eq_vn(v0, p0)] = Set([eq_vn(v0, p0)])
+                    s = Set{InstState}() # PkgWasm (B23): typed, as Set{InstState}((x,))
+                    push!(s, eq_vn(v0, p0))
+                    d[eq_vn(v0, p0)] = s
                 end
             end
             eq_classes[pkgs[p0]] = d
@@ -471,9 +474,18 @@ function check_consistency(graph::Graph)
 
     @assert np ≥ 0
     @assert data.spp ≡ spp
-    for x in Any[spp, gadj, gmsk, gconstr, adjdict, ignored, rlog.pool, pkgs, pdict, pvers, vdict]
-        @assert length(x)::Int == np
-    end
+    # PkgWasm (G2 B23): one typed check per container (stock loops over an `Any[...]`)
+    @assert length(spp) == np
+    @assert length(gadj) == np
+    @assert length(gmsk) == np
+    @assert length(gconstr) == np
+    @assert length(adjdict) == np
+    @assert length(ignored) == np
+    @assert length(rlog.pool) == np
+    @assert length(pkgs) == np
+    @assert length(pdict) == np
+    @assert length(pvers) == np
+    @assert length(vdict) == np
     for p0 in 1:np
         @assert pdict[pkgs[p0]] == p0
         spp0 = spp[p0]
@@ -577,9 +589,12 @@ pkgID_color(pkgID) = CONFLICT_COLORS[mod1(hash(pkgID), end)]
 logstr(pkgID) = logstr(pkgID, pkgID)
 function logstr(pkgID, args...)
     # workout the string with the color codes, check stderr to decide if color is enabled
-    return sprint(args; context = stderr::IO) do io, iargs
-        printstyled(io, iargs...; color = pkgID_color(pkgID))
-    end
+    # PkgWasm (B23): a concrete IOContext carrying stderr's :color, as `sprint(...; context =
+    # stderr)` does for printstyled; built for Wasm the stream is the target's stderr
+    color = PkgWasm.WASM_TARGET ? get(stderr_f(), :color, false)::Bool : get(stderr, :color, false)::Bool
+    buf = IOBuffer()
+    printstyled(IOContext(buf, :color => color), args...; color = pkgID_color(pkgID))
+    return String(take!(buf))
 end
 
 """
@@ -636,7 +651,7 @@ function init_log!(data::GraphData)
             name = data.uuid_to_name[uuid]
             pkgid = Base.PkgId(uuid, name)
             msg = "possible versions are: $vers or uninstalled"
-            if Base.in_sysimage(pkgid)
+            if PkgWasm.Types.in_sysimage(pkgid) # (Types is loaded after Resolve on 1.12)
                 msg *= " (package in sysimage!)"
             end
         end
@@ -745,7 +760,7 @@ end
 
 function log_event_global!(graph::Graph, msg::String)
     rlog = graph.data.rlog
-    rlog.verbose && @info(msg)
+    rlog.verbose && @pkg_info(msg)
     return push!(rlog.globals, (nothing, msg))
 end
 
@@ -1270,7 +1285,7 @@ function validate_versions!(graph::Graph, sources::Set{Int} = Set{Int}(); skim::
                 # we'll trigger a failure by pinning the highest version
                 v0 = findlast(old_gconstr0[1:(end - 1)])
                 @assert v0 ≢ nothing # this should be ensured by a previous pruning
-                # @info "pinning $(logstr(id(p0))) to version $(pvers[p0][v0])"
+                # @pkg_info "pinning $(logstr(id(p0))) to version $(pvers[p0][v0])"
                 log_event_pin!(graph, pkgs[p0], pvers[p0][v0])
                 graph.gconstr[p0][v0] = true
                 err_msg_preamble = "Package $(logstr(id(p0))) has no possible versions; here is the log when trying to validate the highest version left until this point, $(logstr(id(p0), pvers[p0][v0]))):\n"
@@ -1427,7 +1442,16 @@ function build_eq_classes_soft1!(graph::Graph, p0::Int)
     gmsk0 = gmsk[p0]
     gconstr0 = gconstr[p0]
     eff_spp0 = count(gconstr0)
-    cvecs = BitVector[vcat(BitVector(), (gmsk0[j1][gconstr[gadj0[j1]], v0] for j1 in 1:length(gadj0) if !ignored[gadj0[j1]])...) for v0 in findall(gconstr0)]
+    # PkgWasm (B23): the same concatenation without splatting a generator into `vcat`
+    cvecs = BitVector[]
+    for v0 in findall(gconstr0)
+        cv = BitVector()
+        for j1 in 1:length(gadj0)
+            ignored[gadj0[j1]] && continue
+            append!(cv, gmsk0[j1][gconstr[gadj0[j1]], v0])
+        end
+        push!(cvecs, cv)
+    end
 
     @assert length(cvecs) == eff_spp0
 

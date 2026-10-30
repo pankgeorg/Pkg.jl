@@ -1,6 +1,8 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Resolve
+import ..PkgWasm
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using ..Versions
 import ..stdout_f, ..stderr_f
@@ -76,7 +78,24 @@ function resolve(graph::Graph)
     return compute_output_dict(sol, graph)
 end
 
+# PkgWasm (G2 B23): stock `_resolve` recurses into itself with the improved lower bound; the
+# recursion made inference widen the arguments to `Array` (dynamic calls in the Wasm build).
+# The same steps run in a loop here: `_resolve_step` is the stock body with the recursive call
+# replaced by returning the next lower bound.
 function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previous_sol::Union{Vector{Int}, Nothing})
+    # The first step with the caller's arguments (`nothing, nothing` from `resolve`), then each
+    # improvement step with two Vector{Int}s, as stock's recursive calls. Every call has concrete
+    # argument types (the Wasm build's inference does not split a call on two Union arguments).
+    sol, next_lower_bound = _resolve_step(graph, lower_bound, previous_sol)
+    while next_lower_bound !== nothing
+        sol, next_lower_bound = _resolve_step(graph, next_lower_bound::Vector{Int}, sol::Vector{Int})
+    end
+    return sol::Vector{Int}
+end
+
+# returns (sol, nothing) when done, or (sol, new_lower_bound) to run again from there
+function _resolve_step(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previous_sol::Union{Vector{Int}, Nothing})
+    local sol::Vector{Int} # the solver's and maxsum's solutions are Vector{Int}; typed for the Wasm build
     np = graph.np
     spp = graph.spp
     gconstr = graph.gconstr
@@ -132,7 +151,7 @@ function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previo
     @assert verify_solution(sol, graph)
     if greedy_ok
         log_event_global!(graph, "the solver found an optimal configuration")
-        return sol
+        return sol, nothing
     else
         enforce_optimality!(sol, graph)
         if lower_bound ≢ nothing
@@ -149,10 +168,10 @@ function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previo
                 new_lower_bound[lb_mask] = lower_bound[lb_mask]
                 @assert all(new_lower_bound .≥ lower_bound)
             end
-            return _resolve(graph, new_lower_bound, sol)
+            return sol, new_lower_bound
         else
             log_event_global!(graph, "the solver found a feasible configuration and can't improve it")
-            return sol
+            return sol, nothing
         end
     end
 end
@@ -167,13 +186,13 @@ function sanity_check(graph::Graph, sources::Set{UUID} = Set{UUID}(), verbose::B
 
     id(p) = pkgID(p, graph)
 
-    isempty(req_inds) || @warn("sanity check called on a graph with non-empty requirements")
+    isempty(req_inds) || @pkg_warn("sanity check called on a graph with non-empty requirements")
     if !any(is_julia(graph, fp0) for fp0 in fix_inds)
-        @warn("sanity check called on a graph without julia requirement, adding it")
+        @pkg_warn("sanity check called on a graph without julia requirement, adding it")
         add_fixed!(graph, Dict(uuid_julia => Fixed(VERSION)))
     end
     if length(fix_inds) ≠ 1
-        @warn("sanity check called on a graph with extra fixed requirements (besides julia)")
+        @pkg_warn("sanity check called on a graph with extra fixed requirements (besides julia)")
     end
 
     isources = isempty(sources) ?
@@ -402,11 +421,11 @@ function verify_solution(sol::Vector{Int}, graph::Graph)
     # verify constraints and dependencies
     for p0 in 1:np
         s0 = sol[p0]
-        gconstr[p0][s0] || (@warn("gconstr[$p0][$s0] fail"); return false)
+        gconstr[p0][s0] || (@pkg_warn("gconstr[$p0][$s0] fail"); return false)
         for (j1, p1) in enumerate(gadj[p0])
             msk = gmsk[p0][j1]
             s1 = sol[p1]
-            msk[s1, s0] || (@warn("gmsk[$p0][$p1][$s1,$s0] fail"); return false)
+            msk[s1, s0] || (@pkg_warn("gmsk[$p0][$p1][$s1,$s0] fail"); return false)
         end
     end
     return true

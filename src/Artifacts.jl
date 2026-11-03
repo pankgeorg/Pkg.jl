@@ -1,11 +1,12 @@
 module PkgArtifacts
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Artifacts, Base.BinaryPlatforms, SHA
 using ..MiniProgressBars, ..PlatformEngines
 using Tar: can_symlink
 using FileWatching: FileWatching
 
-import ..set_readonly, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
+import ..set_readonly, ..mkpidlock, ..host_platform, ..GitTools, ..TOML, ..pkg_server, ..can_fancyprint,
     ..stderr_f, ..printpkgstyle, ..mv_temp_dir_retries, ..atomic_toml_write, ..create_cachedir_tag
 
 import Base: get, SHA1
@@ -333,12 +334,12 @@ function download_artifact(
     mkpath(dirname(pidfile))
     t_wait_msg = Timer(2) do t
         if progress === nothing
-            @info "downloading $tarball_url ($hex) in another process"
+            @pkg_info "downloading $tarball_url ($hex) in another process"
         else
             progress(0, 0; status = "downloading in another process")
         end
     end
-    ret = FileWatching.mkpidlock(pidfile, stale_age = 20) do
+    ret = mkpidlock(pidfile, stale_age = 20) do
         close(t_wait_msg)
         if artifact_exists(tree_hash)
             return true
@@ -382,7 +383,7 @@ function download_artifact(
                 ignore_hash_env_set = get(ENV, "JULIA_PKG_IGNORE_HASHES", "") != ""
                 if ignore_hash_env_set
                     ignore_hash = Base.get_bool_env("JULIA_PKG_IGNORE_HASHES", false)
-                    ignore_hash === nothing && @error(
+                    ignore_hash === nothing && @pkg_error(
                         "Invalid ENV[\"JULIA_PKG_IGNORE_HASHES\"] value",
                         ENV["JULIA_PKG_IGNORE_HASHES"],
                     )
@@ -399,7 +400,7 @@ function download_artifact(
                     msg *= "\n$desc: \
                     ignoring hash mismatch and moving \
                     artifact to the expected location"
-                    @error(msg)
+                    @pkg_error(msg)
                 else
                     error(msg)
                 end
@@ -408,7 +409,7 @@ function download_artifact(
             isnothing(progress) || progress(10000, 10000; status = "moving to artifact store")
             mv_temp_dir_retries(temp_dir, dst)
         catch err
-            @debug "download_artifact error" tree_hash tarball_url tarball_hash err
+            @pkg_debug "download_artifact error" tree_hash tarball_url tarball_hash err
             if isa(err, InterruptException)
                 rethrow(err)
             end
@@ -420,7 +421,7 @@ function download_artifact(
                 rm(temp_dir; recursive = true, force = true)
             catch e
                 e isa InterruptException && rethrow()
-                @warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e)
+                @pkg_warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e)
             end
         end
         return true
@@ -431,7 +432,7 @@ end
 
 """
     ensure_artifact_installed(name::String, artifacts_toml::String;
-                                platform::AbstractPlatform = HostPlatform(),
+                                platform::AbstractPlatform = host_platform(),
                                 pkg_uuid::Union{Base.UUID,Nothing}=nothing,
                                 verbose::Bool = false,
                                 quiet_download::Bool = false,
@@ -442,7 +443,7 @@ Ensures an artifact is installed, downloading it via the download information st
 """
 function ensure_artifact_installed(
         name::String, artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         pkg_uuid::Union{Base.UUID, Nothing} = nothing,
         pkg_server_eligible::Bool = true,
         verbose::Bool = false,
@@ -469,7 +470,7 @@ end
 function ensure_artifact_installed(
         name::String, meta::Dict, artifacts_toml::String;
         pkg_server_eligible::Bool = true,
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         verbose::Bool = false,
         quiet_download::Bool = false,
         progress::Union{Function, Nothing} = nothing,
@@ -491,7 +492,7 @@ end
 function try_artifact_download_sources(
         name::String, hash::SHA1, meta::Dict, artifacts_toml::String;
         pkg_server_eligible::Bool = true,
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
@@ -503,7 +504,7 @@ function try_artifact_download_sources(
     if pkg_server_eligible && (server = pkg_server()) !== nothing
         url = "$server/artifact/$hash"
         download_success = let url = url
-            @debug "Downloading artifact from Pkg server" name artifacts_toml platform url
+            @pkg_debug "Downloading artifact from Pkg server" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do
                 download_artifact(hash, url; verbose, quiet_download, io, progress)
             end
@@ -512,7 +513,7 @@ function try_artifact_download_sources(
         if download_success === true
             return artifact_path(hash)
         else
-            @debug "Failed to download artifact from Pkg server" download_success
+            @pkg_debug "Failed to download artifact from Pkg server" download_success
             push!(errors, (url, download_success))
         end
     end
@@ -528,7 +529,7 @@ function try_artifact_download_sources(
         url = entry["url"]
         tarball_hash = entry["sha256"]
         download_success = let url = url
-            @debug "Downloading artifact" name artifacts_toml platform url
+            @pkg_debug "Downloading artifact" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do
                 download_artifact(hash, url, tarball_hash; verbose, quiet_download, io, progress)
             end
@@ -537,7 +538,7 @@ function try_artifact_download_sources(
         if download_success === true
             return artifact_path(hash)
         else
-            @debug "Failed to download artifact" download_success
+            @pkg_debug "Failed to download artifact" download_success
             push!(errors, (url, download_success))
         end
     end
@@ -579,7 +580,7 @@ end
 
 """
     ensure_all_artifacts_installed(artifacts_toml::String;
-                                    platform = HostPlatform(),
+                                    platform = host_platform(),
                                     pkg_uuid = nothing,
                                     include_lazy = false,
                                     verbose = false,
@@ -604,7 +605,7 @@ This function is deprecated and should be replaced with the following snippet:
 """
 function ensure_all_artifacts_installed(
         artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         pkg_uuid::Union{Nothing, Base.UUID} = nothing,
         include_lazy::Bool = false,
         verbose::Bool = false,
@@ -627,7 +628,7 @@ end
 
 """
     extract_all_hashes(artifacts_toml::String;
-                        platform = HostPlatform(),
+                        platform = host_platform(),
                         pkg_uuid = nothing,
                         include_lazy = false)
 
@@ -638,7 +639,7 @@ If `include_lazy` is set to `true`, then lazy packages will be installed as well
 """
 function extract_all_hashes(
         artifacts_toml::String;
-        platform::AbstractPlatform = HostPlatform(),
+        platform::AbstractPlatform = host_platform(),
         pkg_uuid::Union{Nothing, Base.UUID} = nothing,
         include_lazy::Bool = false
     )

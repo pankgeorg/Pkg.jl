@@ -1,19 +1,23 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module API
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Printf
 import Random
 using Dates
-import LibGit2
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 import Logging
 import FileWatching
 
 import Base: StaleCacheKey
 
 import ..depots, ..depots1, ..logdir, ..devdir, ..printpkgstyle, .._autoprecompilation_enabled_scoped, ..manifest_rel_path
-import ..Operations, ..GitTools, ..Pkg, ..Registry
+import ..Operations, ..GitTools, ..PkgWasm, ..Registry
+
+# PkgWasm (PLAN.md D4): public operations outside the supported set throw this.
+unsupported(op::String) = pkgerror(op, " is not supported in PkgWasm")
 import ..can_fancyprint, ..pathrepr, ..isurl, ..PREV_ENV_PATH, ..atomic_toml_write, ..safe_realpath
 using ..Types, ..TOML
 using ..Types: VersionTypes
@@ -67,7 +71,7 @@ function package_info(env::EnvCache, pkg::PackageSpec, entry::PackageEntry)::Pac
         safe_realpath(manifest_rel_path(env, pkg.repo.source::String))
     _source_path = Operations.source_path(env.manifest_file, pkg)
     if _source_path === nothing
-        @debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
+        @pkg_debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
         pkgerror("could not find source path for package $(err_rep(pkg)) based on $(env.manifest_file)")
     end
     info = PackageInfo(
@@ -167,13 +171,13 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
                 add_snapshot_to_undo()
                 saved_initial_snapshot[] = true
             end
-            kwargs = merge((; kwargs...), (:io => io,))
-            pkgs = deepcopy(pkgs) # don't mutate input
+            kwargs = merge((; kwargs...), (; io)) # (a NamedTuple: its names known statically)
+            pkgs = Types.copy_packagespecs(pkgs) # don't mutate input (deepcopy's, typed: M4.2)
             foreach(handle_package_input!, pkgs)
             ret = $f(ctx, pkgs; kwargs...)
             lazy = get(kwargs, :lazy, false)
-            $(f in (:up, :pin, :free, :build)) && !lazy && Pkg._auto_precompile(ctx)
-            $(f in (:up, :pin, :free, :rm)) && !lazy && Pkg._auto_gc(ctx)
+            $(f in (:up, :pin, :free, :build)) && !lazy && PkgWasm._auto_precompile(ctx)
+            $(f in (:up, :pin, :free, :rm)) && !lazy && PkgWasm._auto_gc(ctx)
             return ret
         end
         $f(ctx::Context; kwargs...) = $f(ctx, PackageSpec[]; kwargs...)
@@ -267,7 +271,7 @@ end
 
 function develop(
         ctx::Context, pkgs::Vector{PackageSpec}; shared::Bool = true,
-        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = HostPlatform(), kwargs...
+        preserve::PreserveLevel = Operations.default_preserve(), platform::AbstractPlatform = PkgWasm.host_platform(), kwargs...
     )
     require_not_empty(pkgs, :develop)
     Context!(ctx; kwargs...)
@@ -327,8 +331,8 @@ function project_ref_file(ref::String)
         # Not `Base.load_path_expand`, which creates a missing named environment.
         name = ref[2:end]
         path = nothing
-        for depot in Pkg.depots()
-            candidate = joinpath(Pkg.envdir(depot), name)
+        for depot in PkgWasm.depots()
+            candidate = joinpath(PkgWasm.envdir(depot), name)
             if isdir(candidate) && basename(abspath(candidate)) == name
                 path = candidate
                 break
@@ -370,20 +374,20 @@ function project_deps_specs(ctx::Context, refs::Vector{String}, pkgs::Vector{Pac
             manifestfile_path(env_dir; strict = true)
         manifest = manifest_file === nothing ? Manifest() : read_manifest(manifest_file)
         manifest_dir = manifest_file === nothing ? env_dir : dirname(manifest_file)
-        isempty(project.deps) && @warn "The environment at $(pathrepr(project_file)) has no dependencies"
+        isempty(project.deps) && @pkg_warn "The environment at $(pathrepr(project_file)) has no dependencies"
         for (name, uuid) in project.deps
             any(pkg -> pkg.uuid == uuid || pkg.name == name, pkgs) && continue
             pkg = PackageSpec(; name, uuid)
             entry = manifest_info(manifest, uuid)
             source_entry = get(project.sources, name, nothing)
             if entry !== nothing && entry.path !== nothing
-                @warn "Skipping $name which is tracked by path at $(pathrepr(abspath(manifest_dir, entry.path))) in $(pathrepr(project_file)), use `develop` to add it"
+                @pkg_warn "Skipping $name which is tracked by path at $(pathrepr(abspath(manifest_dir, entry.path))) in $(pathrepr(project_file)), use `develop` to add it"
                 continue
             elseif entry !== nothing && entry.repo.source !== nothing
                 pkg.repo = GitRepo(source = entry.repo.source, rev = entry.repo.rev, subdir = entry.repo.subdir)
                 base_dir = manifest_dir
             elseif source_entry !== nothing && haskey(source_entry, "path")
-                @warn "Skipping $name which is tracked by path at $(pathrepr(abspath(env_dir, source_entry["path"]))) in $(pathrepr(project_file)), use `develop` to add it"
+                @pkg_warn "Skipping $name which is tracked by path at $(pathrepr(abspath(env_dir, source_entry["path"]))) in $(pathrepr(project_file)), use `develop` to add it"
                 continue
             elseif source_entry !== nothing
                 pkg.repo = GitRepo(
@@ -405,8 +409,8 @@ end
 
 function add(
         ctx::Context, pkgs::Vector{PackageSpec}; preserve::PreserveLevel = Operations.default_preserve(),
-        platform::AbstractPlatform = HostPlatform(), target::Symbol = :deps, allow_autoprecomp::Bool = true,
-        prefer_loaded_versions::Bool = Pkg.in_repl_mode(), lazy::Bool = false,
+        platform::AbstractPlatform = PkgWasm.host_platform(), target::Symbol = :deps, allow_autoprecomp::Bool = true,
+        prefer_loaded_versions::Bool = PkgWasm.in_repl_mode(), lazy::Bool = false,
         from::Union{Nothing, AbstractString, AbstractVector{<:AbstractString}} = nothing, kwargs...
     )
     from === nothing && require_not_empty(pkgs, :add)
@@ -493,7 +497,7 @@ function remove_unused_checkouts(ctx::Context, repo_pkgs::Vector{PackageSpec}, n
         end
     catch err
         # don't hide the error of the failed `add`
-        @debug "Failed to remove new checkouts" exception = err
+        @pkg_debug "Failed to remove new checkouts" exception = err
     end
     return
 end
@@ -716,6 +720,7 @@ function test(
         allow_reresolve::Bool = true,
         kwargs...
     )
+    unsupported("test")
     julia_args = Cmd(julia_args)
     test_args = Cmd(test_args)
     Context!(ctx; kwargs...)
@@ -784,9 +789,10 @@ admin privileges depending on the setup).
 Use verbose mode (`verbose=true`) for detailed output.
 """
 function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = nothing, verbose = false, force = false, kwargs...)
+    unsupported("gc")
     Context!(ctx; kwargs...)
     if collect_delay !== nothing
-        @warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
+        @pkg_warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
     end
     env = ctx.env
 
@@ -877,10 +883,10 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         end
     end
 
-    all_manifest_tomls = Set(filter(Pkg.isfile_nothrow, all_manifest_tomls))
-    all_artifact_tomls = Set(filter(Pkg.isfile_nothrow, all_artifact_tomls))
-    all_scratch_dirs = Set(filter(Pkg.isdir_nothrow, all_scratch_dirs))
-    all_scratch_parents = Set(filter(Pkg.isfile_nothrow, all_scratch_parents))
+    all_manifest_tomls = Set(filter(PkgWasm.isfile_nothrow, all_manifest_tomls))
+    all_artifact_tomls = Set(filter(PkgWasm.isfile_nothrow, all_artifact_tomls))
+    all_scratch_dirs = Set(filter(PkgWasm.isdir_nothrow, all_scratch_dirs))
+    all_scratch_parents = Set(filter(PkgWasm.isfile_nothrow, all_scratch_parents))
 
     # Immediately write these back as condensed toml files
     function write_condensed_toml(f::Function, usage_by_depot, fname)
@@ -954,7 +960,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         manifest = try
             read_manifest(path)
         catch e
-            @warn "Reading manifest file at $path failed with error" exception = e
+            @pkg_warn "Reading manifest file at $path failed with error" exception = e
             return nothing
         end
 
@@ -998,7 +1004,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         artifact_dict = try
             parse_toml(path)
         catch e
-            @warn "Reading artifacts file at $path failed with error" exception = e
+            @pkg_warn "Reading artifacts file at $path failed with error" exception = e
             return nothing
         end
 
@@ -1170,12 +1176,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     try
                         size += lstat(path).size
                     catch ex
-                        @error("Failed to calculate size of $path", exception = ex)
+                        @pkg_error("Failed to calculate size of $path", exception = ex)
                     end
                 end
             end
         catch ex
-            @error("Failed to calculate size of $path", exception = ex)
+            @pkg_error("Failed to calculate size of $path", exception = ex)
         end
         return size
     end
@@ -1186,7 +1192,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             try
                 lstat(path).size
             catch ex
-                @error("Failed to calculate size of $path", exception = ex)
+                @pkg_error("Failed to calculate size of $path", exception = ex)
                 0
             end
         else
@@ -1196,7 +1202,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             Base.Filesystem.prepare_for_deletion(path)
             Base.rm(path; recursive = true, force = true)
         catch e
-            @warn("Failed to delete $path", exception = e)
+            @pkg_warn("Failed to delete $path", exception = e)
             return 0
         end
         if verbose
@@ -1267,7 +1273,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     Base.rm(p; recursive = true, force = true, allow_delayed_delete = false)
                     Base.rm(f)
                 catch e
-                    @debug "Failed to delete $p" exception = e
+                    @pkg_debug "Failed to delete $p" exception = e
                 end
             end
             for dir in delayed_delete_dirs
@@ -1327,7 +1333,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                 catch e
                     # Silently ignore errors from git gc
                     if verbose
-                        @warn "git gc failed for registry $(reg_name)" exception = e
+                        @pkg_warn "git gc failed for registry $(reg_name)" exception = e
                     end
                 end
             end
@@ -1338,6 +1344,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
 end
 
 function build(ctx::Context, pkgs::Vector{PackageSpec}; verbose = false, allow_reresolve::Bool = true, kwargs...)
+    unsupported("build")
     Context!(ctx; kwargs...)
     Operations.ensure_manifest_registries!(ctx)
 
@@ -1382,6 +1389,7 @@ function precompile(
         workspace::Bool = false, monitor::Bool = false, stop::Bool = false, cancel::Bool = false,
         skip_dependents::Bool = true, force::Bool = false, kwargs...
     )
+    unsupported("precompile")
     # Handle background precompilation control options via Base
     if monitor
         Base.Precompilation.monitor_background_precompile(ctx.io)
@@ -1407,7 +1415,7 @@ function precompile(
     Context!(ctx; kwargs...)
     if !already_instantiated
         instantiate(ctx; allow_autoprecomp = false, workspace, kwargs...)
-        @debug "precompile: instantiated"
+        @pkg_debug "precompile: instantiated"
     end
 
     # TODO: Maybe this should be done in Base?
@@ -1452,7 +1460,7 @@ end
 function precompile(f, args...; kwargs...)
     return Base.ScopedValues.@with _autoprecompilation_enabled_scoped => false begin
         f()
-        Pkg.precompile(args...; kwargs...)
+        PkgWasm.precompile(args...; kwargs...)
     end
 end
 
@@ -1469,7 +1477,7 @@ instantiate(; kwargs...) = instantiate(Context(); kwargs...)
 function instantiate(
         ctx::Context; manifest::Union{Bool, Nothing} = nothing,
         update_registry::Bool = true, verbose::Bool = false,
-        platform::AbstractPlatform = HostPlatform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
+        platform::AbstractPlatform = PkgWasm.host_platform(), allow_build::Bool = true, allow_autoprecomp::Bool = true,
         workspace::Bool = false, julia_version_strict::Bool = false,
         update_on_mismatch::Bool = false, kwargs...
     )
@@ -1479,7 +1487,7 @@ function instantiate(
     end
     Operations.ensure_manifest_registries!(ctx)
     if !isfile(ctx.env.project_file) && isfile(ctx.env.manifest_file)
-        _manifest = Pkg.Types.read_manifest(ctx.env.manifest_file)
+        _manifest = PkgWasm.Types.read_manifest(ctx.env.manifest_file)
         # Skip the version check when update_on_mismatch is set; the recursion below
         # will detect the mismatch via manifest_is_mismatched and fall back to update.
         update_on_mismatch || Types.check_manifest_julia_version_compat(_manifest, ctx.env.manifest_file; julia_version_strict)
@@ -1500,7 +1508,7 @@ function instantiate(
         # `up` always updates the registries; skip that if done earlier in this session
         update_registry && allow_registry_update && Operations.update_registries(ctx; force = false)
         up(ctx; update_registry = false)
-        allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
         return
     end
     if !isfile(ctx.env.manifest_file) && manifest == true
@@ -1519,25 +1527,31 @@ function instantiate(
         end
         printpkgstyle(ctx.io, :Update, "manifest does not match project or Julia version, falling back to `Pkg.update()`", color = Base.info_color())
         up(ctx; update_registry, mode = workspace ? PKGMODE_MANIFEST : PKGMODE_PROJECT)
-        allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
         return
     end
 
     Types.check_manifest_julia_version_compat(ctx.env.manifest, ctx.env.manifest_file; julia_version_strict)
 
     if Operations.is_manifest_current(ctx.env) === false
-        resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
-        update_cmd = Pkg.in_repl_mode() ? "pkg> update" : "Pkg.update()"
-        @warn """The project dependencies or compat requirements have changed since the manifest was last resolved.
-        It is recommended to `$resolve_cmd` or consider `$update_cmd` if necessary."""
+        resolve_cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+        update_cmd = PkgWasm.in_repl_mode() ? "pkg> update" : "Pkg.update()"
+        # (G3 V166: the message printed piece by piece, the same text as the interpolation)
+        msg_io = IOBuffer()
+        print(msg_io, "The project dependencies or compat requirements have changed since the manifest was last resolved.\nIt is recommended to `")
+        print(msg_io, resolve_cmd)
+        print(msg_io, "` or consider `")
+        print(msg_io, update_cmd)
+        print(msg_io, "` if necessary.")
+        @pkg_warn String(take!(msg_io))
     end
 
     Operations.prune_manifest(ctx.env)
     for (name, uuid) in ctx.env.project.deps
         get(ctx.env.manifest, uuid, nothing) === nothing || continue
-        resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
-        rm_cmd = Pkg.in_repl_mode() ? "pkg> rm $name" : "Pkg.rm(\"$name\")"
-        instantiate_cmd = Pkg.in_repl_mode() ? "pkg> instantiate" : "Pkg.instantiate()"
+        resolve_cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+        rm_cmd = PkgWasm.in_repl_mode() ? "pkg> rm $name" : "Pkg.rm(\"$name\")"
+        instantiate_cmd = PkgWasm.in_repl_mode() ? "pkg> instantiate" : "Pkg.instantiate()"
         pkgerror(
             "`$name` is a direct dependency, but does not appear in the manifest.",
             " If you intend `$name` to be a direct dependency, run `$resolve_cmd` to populate the manifest.",
@@ -1547,7 +1561,11 @@ function instantiate(
     end
     # check if all source code and artifacts are downloaded to exit early
     if Operations.is_instantiated(ctx.env, workspace; platform)
-        allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+        # PkgWasm (PLAN.md D4): with nothing to install, still report the source-only artifact
+        # omission and reject build scripts, as the full path below does
+        Operations.download_artifacts(ctx; platform, julia_version = ctx.julia_version)
+        allow_build && Operations.build_versions(ctx, Set{UUID}(); verbose)
+        allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
         return
     end
 
@@ -1577,8 +1595,8 @@ function instantiate(
             # manifest entry has no recorded tree hash. This happens when a `[sources]`
             # entry is changed (e.g. from a `path` to a `url`) without re-resolving, so
             # the manifest is stale and we cannot determine which tree to check out.
-            resolve_cmd = Pkg.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
-            update_cmd = Pkg.in_repl_mode() ? "pkg> update" : "Pkg.update()"
+            resolve_cmd = PkgWasm.in_repl_mode() ? "pkg> resolve" : "Pkg.resolve()"
+            update_cmd = PkgWasm.in_repl_mode() ? "pkg> update" : "Pkg.update()"
             pkgerror(
                 "The source of $(err_rep(pkg)) has changed but the manifest has not been updated to match.",
                 " Run `$resolve_cmd` (or `$update_cmd`) to update the manifest, then try again."
@@ -1619,7 +1637,7 @@ function instantiate(
     # Run build scripts
     allow_build && Operations.build_versions(ctx, union(new_apply, new_git); verbose = verbose)
 
-    return allow_autoprecomp && Pkg._auto_precompile(ctx; already_instantiated = true, workspace)
+    return allow_autoprecomp && PkgWasm._auto_precompile(ctx; already_instantiated = true, workspace)
 end
 
 
@@ -1687,7 +1705,7 @@ function _warn_loaded_module_path_mismatch(io::IO)
         # the same manifest can be read under two different paths (e.g.
         # `/var/...` vs `/private/var/...` on macOS), defeating the `maxlog=1`
         # `_id`-keyed suppression of the unknown-manifest-format warning.
-        manifest_file = Pkg.safe_realpath(manifest_file)
+        manifest_file = PkgWasm.safe_realpath(manifest_file)
         try
             manifest = read_manifest(manifest_file)
             for (uuid, entry) in manifest.deps
@@ -1802,7 +1820,7 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         # 1. if path exists, activate that
         # 2. if path exists in deps, and the dep is deved, activate that path (`devpath` above)
         # 3. activate the non-existing directory (e.g. as in `pkg> activate .` for initing a new env)
-        if Pkg.isdir_nothrow(path)
+        if PkgWasm.isdir_nothrow(path)
             fullpath = abspath(path)
         else
             fullpath = _activate_dep(path)
@@ -1814,8 +1832,8 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         # initialize `fullpath` in case of empty `Pkg.depots()`
         fullpath = ""
         # loop over all depots to check if the shared environment already exists
-        for depot in Pkg.depots()
-            fullpath = joinpath(Pkg.envdir(depot), path)
+        for depot in PkgWasm.depots()
+            fullpath = joinpath(PkgWasm.envdir(depot), path)
             isdir(fullpath) && break
         end
         # this disallows names such as "Foo/bar", ".", "..", etc
@@ -1824,7 +1842,7 @@ function activate(path::AbstractString; shared::Bool = false, temp::Bool = false
         end
         # unless the shared environment already exists, place it in the first depots
         if !isdir(fullpath)
-            fullpath = joinpath(Pkg.envdir(Pkg.depots1()), path)
+            fullpath = joinpath(PkgWasm.envdir(PkgWasm.depots1()), path)
         end
     end
     if !isnothing(Base.active_project())

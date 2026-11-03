@@ -366,10 +366,13 @@ function uncompress_registry(compressed_tar::AbstractString)
     data = Dict{String, String}()
     buf = Vector{UInt8}(undef, Tar.DEFAULT_BUFFER_SIZE)
     io = IOBuffer()
-    open(get_extract_cmd(compressed_tar)) do tar
-        read_tarball_simple(x -> true, tar; buf = buf) do hdr
-            Tar.read_data(tar, io; size = hdr.size, buf = buf)
-            data[hdr.path] = String(take!(io))
+    # PkgWasm (PLAN.md D2): decompressed through the Host seam, not a `zstd`/`7z` pipeline
+    with_decompressed(compressed_tar) do tar_path
+        open(tar_path) do tar
+            read_tarball_simple(x -> true, tar; buf = buf) do hdr
+                Tar.read_data(tar, io; size = hdr.size, buf = buf)
+                data[hdr.path] = String(take!(io))
+            end
         end
     end
     return data
@@ -504,7 +507,7 @@ function load_registry_cache(path::AbstractString, tree_hash::SHA1)
         end
     catch err
         err isa InterruptException && rethrow()
-        @debug "Failed to read registry cache" path exception = (err, catch_backtrace())
+        @pkg_debug "Failed to read registry cache" path exception = (err, catch_backtrace())
         return nothing
     end
     length(data) >= CACHE_HEADER_SIZE || return nothing
@@ -597,7 +600,7 @@ function build_registry_cache(compressed_tar::AbstractString, tree_hash::SHA1, c
             Base.rm(f; force = true)
         catch err
             err isa InterruptException && rethrow()
-            @debug "Failed to remove stale registry cache" f exception = (err, catch_backtrace())
+            @pkg_debug "Failed to remove stale registry cache" f exception = (err, catch_backtrace())
         end
     end
     return
@@ -615,7 +618,7 @@ function remove_registry_cache(compressed_tar::AbstractString)
         isempty(readdir(cache_dir)) && Base.rm(cache_dir)
     catch err
         err isa InterruptException && rethrow()
-        @debug "Failed to remove registry cache" cache_dir exception = (err, catch_backtrace())
+        @pkg_debug "Failed to remove registry cache" cache_dir exception = (err, catch_backtrace())
     end
     return
 end
@@ -631,7 +634,7 @@ function load_or_build_registry_cache(compressed_tar::AbstractString, tree_hash:
         cache_dir = dirname(cache_path)
         mkpath(cache_dir)
         lock_path = joinpath(cache_dir, ".$(registry_cache_name(compressed_tar)).pid")
-        cache = FileWatching.mkpidlock(lock_path, stale_age = 10) do
+        cache = PkgWasm.mkpidlock(lock_path, stale_age = 10) do # PkgWasm (D3)
             # Another process may have built the cache while we waited for the lock.
             locked_cache = load_registry_cache(cache_path, tree_hash)
             locked_cache === nothing || return locked_cache
@@ -645,7 +648,7 @@ function load_or_build_registry_cache(compressed_tar::AbstractString, tree_hash:
         err isa InterruptException && rethrow()
         # Another process may have built the cache in the meantime; that one is as good as ours
         cache = load_registry_cache(cache_path, tree_hash)
-        cache === nothing && @debug "Failed to build registry cache" cache_path exception = (err, catch_backtrace())
+        cache === nothing && @pkg_debug "Failed to build registry cache" cache_path exception = (err, catch_backtrace())
         return cache
     end
     return cache
@@ -702,6 +705,16 @@ function parse_pkg_file(registry::RegistryInstance, pkg::PkgEntry, fileno::Int)
     return parsefile(in_memory_registry, pkg.registry_path, file)
 end
 
+# a Versions.toml entry: `VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)`,
+# `v` told apart as a parsed TOML table (M4.2: static dispatch)
+function version_info_entry(@nospecialize(v))
+    if v isa Dict{String, Any}
+        return VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)
+    end
+    PkgWasm.WASM_TARGET && error("PkgWasm: expected a table in Versions.toml")
+    return Base.inferencebarrier(v -> VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool))(v)::VersionInfo
+end
+
 function init_package_info!(registry::RegistryInstance, pkg::PkgEntry)
     # Thread-safe lazy loading with double-check pattern
     # Use the registry's load_lock to protect lazy loading of package info
@@ -726,8 +739,7 @@ function init_package_info!(registry::RegistryInstance, pkg::PkgEntry)
         # Versions.toml
         d_v = something(parse_pkg_file(registry, pkg, 2), Dict{String, Any}())
         version_info = Dict{VersionNumber, VersionInfo}(
-            VersionNumber(k) =>
-                VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool) for (k, v) in d_v
+            VersionNumber(k) => version_info_entry(v) for (k, v) in d_v
         )
 
         # Deps.toml (load first to build name -> UUID mapping)
@@ -786,6 +798,9 @@ registry_info(registry::RegistryInstance, pkg::PkgEntry) = init_package_info!(re
         # Double-check pattern: if another thread loaded while we were waiting for the lock
         isdefined(r, :pkgs) && return r
 
+        # PkgWasm (registry-tar spike, approach (a)): a compressed registry (stock's default
+        # layout) is read as stock does; `uncompress_registry` decompresses it through the
+        # Host seam (`with_decompressed`), not a `zstd`/`7z` pipeline.
         compressed_file = getfield(r, :compressed_file)
         tree_info = getfield(r, :tree_info)
         r.cache = nothing
@@ -801,7 +816,7 @@ registry_info(registry::RegistryInstance, pkg::PkgEntry) = init_package_info!(re
                 catch err
                     err isa InterruptException && rethrow()
                     reg_toml = getfield(r, :path)
-                    Pkg.Types.pkgerror(
+                    PkgWasm.Types.pkgerror(
                         "failed to read the registry tarball `$(compressed_tar)`, it may be corrupt: ",
                         sprint(showerror, err), ". Remove `$(compressed_tar)` and `$(reg_toml)` ",
                         "and add the registry again with `Pkg.Registry.add`."
@@ -933,18 +948,18 @@ end
 function verify_compressed_registry_toml(path::String)
     d = TOML.tryparsefile(path)
     if d isa TOML.ParserError
-        @warn "Failed to parse registry TOML file at $(repr(path))" exception = d
+        @pkg_warn "Failed to parse registry TOML file at $(repr(path))" exception = d
         return false
     end
     for key in ("git-tree-sha1", "uuid", "path")
         if !haskey(d, key)
-            @warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
+            @pkg_warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
             return false
         end
     end
     compressed_file = joinpath(dirname(path), d["path"]::String)
     if !isfile(compressed_file)
-        @warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
+        @pkg_warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
         return false
     end
     return true

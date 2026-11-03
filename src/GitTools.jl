@@ -1,34 +1,23 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module GitTools
+import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
-using ..Pkg
+using ..PkgWasm
 using ..MiniProgressBars
 import ..can_fancyprint, ..printpkgstyle, ..stdout_f, ..ispath_nothrow
 using SHA
 import Base: SHA1
-import LibGit2
+import ..GitCLI as LibGit2 # PkgWasm (D14): LibGit2's API on the git command line
 using Printf
 
-use_cli_git() = Base.get_bool_env("JULIA_PKG_USE_CLI_GIT", false)
+# PkgWasm (D14): always the git command line (stock Pkg's `JULIA_PKG_USE_CLI_GIT=true` mode;
+# there is no LibGit2). The other operations go through `GitCLI`, bound as `LibGit2`.
+use_cli_git() = true
 const RESOLVING_DELTAS_HEADER = "Resolving Deltas:"
 
-# Check if LibGit2 supports shallow clones (requires LibGit2 >= 1.7.0)
-# We check both the LibGit2 version and the existence of `isshallow` to ensure
-# the shallow clone functionality is available
-function supports_shallow_clone()
-    # This seems buggy on Windows? Get some weird CI errors with it.
-    if Sys.iswindows()
-        return false
-    end
-    has_version = @static if isdefined(LibGit2, :VERSION)
-        LibGit2.VERSION >= v"1.7.0"
-    else
-        false
-    end
-    has_isshallow = isdefined(LibGit2, :isshallow)
-    return has_version && has_isshallow
-end
+# Shallow clones and fetches (stock: LibGit2 >= 1.7, which Julia 1.13 has; not on Windows)
+supports_shallow_clone() = !Sys.iswindows()
 
 # Check if a URL is a local path or file:// URL
 # Shallow clones are only supported for network protocols (HTTP, HTTPS, Git, SSH)
@@ -40,47 +29,15 @@ function is_local_repo(url::AbstractString)
     return false
 end
 
-# Some git servers (e.g. JGit-based ones such as Gerrit and googlesource.com) fail libgit2's
-# shallow negotiation with a `Net` error ("invalid packet line", see #4771) even though full
-# clones and fetches work fine. Such failures are retried without `depth`.
-function is_shallow_fallback_error(err)
-    return err isa LibGit2.GitError && err.class == LibGit2.Error.Net && err.code == LibGit2.Error.ERROR
-end
-
 # Check if a repository is a shallow clone
-function isshallow(repo::LibGit2.GitRepo)
-    if supports_shallow_clone() && isdefined(LibGit2, :isshallow)
-        return LibGit2.isshallow(repo)
-    else
-        # Fallback: check for the shallow file in the repository's git dir.
-        # LibGit2.path(repo) is the worktree path for non-bare repositories.
-        shallow_file = joinpath(LibGit2.gitdir(repo), "shallow")
-        return isfile(shallow_file)
-    end
-end
+isshallow(repo::LibGit2.GitRepo) = LibGit2.isshallow(repo)
 
-function transfer_progress(progress::Ptr{LibGit2.TransferProgress}, p::Any)
-    progress = unsafe_load(progress)
-    @assert haskey(p, :transfer_progress)
-    bar = p[:transfer_progress]
-    @assert typeof(bar) == MiniProgressBar
-    if progress.total_deltas != 0
-        if bar.header != RESOLVING_DELTAS_HEADER
-            bar.header = RESOLVING_DELTAS_HEADER
-            bar.prev = 0
-        end
-        bar.max = progress.total_deltas
-        bar.current = progress.indexed_deltas
-    else
-        bar.max = progress.total_objects
-        bar.current = progress.received_objects
-    end
-    show_progress(stdout_f(), bar)
-    return Cint(0)
-end
-
-const GIT_REGEX =
-    r"^(?:(?<proto>git|ssh|https)://)?(?:[\w\.\+\-:]+@)?(?<hostname>.+?)(?(<proto>)/|:)(?<path>.+?)(?:\.git)?$"
+# Stock's GIT_REGEX, r"^(?:(?<proto>git|ssh|https)://)?(?:[\w\.\+\-:]+@)?(?<hostname>.+?)(?(<proto>)/|:)(?<path>.+?)(?:\.git)?$",
+# as its two branches tried in PCRE's order (PkgWasm, D14: the Wasm regex translator has no
+# conditional groups): with a protocol, `/` after the host; without, `:` (scp-like)
+const GIT_REGEX_PROTO = r"^(?:(?<proto>git|ssh|https)://)(?:[\w\.\+\-:]+@)?(?<hostname>.+?)/(?<path>.+?)(?:\.git)?$"
+const GIT_REGEX_SCP = r"^(?:[\w\.\+\-:]+@)?(?<hostname>.+?):(?<path>.+?)(?:\.git)?$"
+git_url_match(url::AbstractString) = (m = match(GIT_REGEX_PROTO, url); m === nothing ? match(GIT_REGEX_SCP, url) : m)
 const GIT_PROTOCOLS = Dict{String, Union{Nothing, String}}()
 const GIT_USERS = Dict{String, Union{Nothing, String}}()
 
@@ -99,7 +56,7 @@ end
 function normalize_url(url::AbstractString)
     # LibGit2 is fussy about trailing slash. Make sure there is none.
     url = rstrip(url, '/')
-    m = match(GIT_REGEX, url)
+    m = git_url_match(url)
     m === nothing && return url
 
     host = m[:hostname]
@@ -126,28 +83,7 @@ function ensure_clone(io::IO, target_path, url; kwargs...)
 end
 
 function checkout_tree_to_path(repo::LibGit2.GitRepo, tree::LibGit2.GitObject, path::String)
-    # Compare against the empty tree rather than the repo's HEAD/index, which can make
-    # libgit2 fail with "null OID cannot exist" (#4842); `path` is a fresh directory anyway.
-    # libgit2 knows the empty tree without it being in the object database.
-    return LibGit2.with(LibGit2.GitTree(repo, "4b825dc642cb6eb9a060e54bf8d69288fbee4904")) do baseline
-        GC.@preserve path baseline begin
-            opts = LibGit2.CheckoutOptions(
-                checkout_strategy = LibGit2.Consts.CHECKOUT_FORCE,
-                target_directory = Base.unsafe_convert(Cstring, path),
-                baseline = baseline.ptr
-            )
-            try
-                LibGit2.checkout_tree(repo, tree, options = opts)
-            catch err
-                err isa LibGit2.GitError && err.class == LibGit2.Error.Submodule || rethrow()
-                Pkg.Types.pkgerror(
-                    "cannot check out a git tree that contains git submodules ($(err.msg)). ",
-                    "Packages with submodules cannot be added, only developed with `Pkg.develop`. ",
-                    "To make the package addable, replace the submodules with their content (e.g. with `git subtree`) or use artifacts."
-                )
-            end
-        end
-    end
+    return LibGit2.checkout_tree(repo, tree, path) # (stock: CHECKOUT_FORCE into target_directory)
 end
 
 # libgit2 does not show the message the server sends with an authentication failure (#2701)
@@ -166,7 +102,7 @@ function clone(io::IO, url, source_path; @nospecialize(header::Union{Nothing, Ab
     @assert !isdir(source_path) || isempty(readdir(source_path))
     url = normalize_url(url)
 
-    # Disable shallow clones for local repos (not supported) or if LibGit2 doesn't support it
+    # Disable shallow clones for local repos (not supported)
     if depth > 0 && (is_local_repo(url) || !supports_shallow_clone())
         depth = 0
     end
@@ -175,75 +111,53 @@ function clone(io::IO, url, source_path; @nospecialize(header::Union{Nothing, Ab
     bar = MiniProgressBar(header = "Cloning:", color = Base.info_color())
     fancyprint = can_fancyprint(io)
     fancyprint && start_progress(io, bar)
-    if credentials === nothing
-        credentials = LibGit2.CachedCredentials()
-    end
+    # (stock's JULIA_PKG_USE_CLI_GIT branch; credentials are git's own)
     return try
-        if use_cli_git()
-            args = ["--quiet"]
-            depth > 0 && push!(args, "--depth=$depth")
-            isbare && push!(args, "--bare")
-            push!(args, url, source_path)
-            cmd = `git clone $args`
-            try
-                run(pipeline(cmd; stdout = devnull))
-            catch err
-                Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
-            end
-            return LibGit2.GitRepo(source_path)
-        else
-            callbacks = if fancyprint
-                LibGit2.Callbacks(
-                    :transfer_progress => (
-                        @cfunction(transfer_progress, Cint, (Ptr{LibGit2.TransferProgress}, Any)),
-                        bar,
-                    )
-                )
-            else
-                LibGit2.Callbacks()
-            end
-            mkpath(source_path)
-            # Only pass depth if shallow clones are supported and depth > 0
-            if depth > 0
-                try
-                    # `LibGit2.clone` stores the credentials in `callbacks`, so pass a copy in case we retry
-                    return LibGit2.clone(url, source_path; callbacks = copy(callbacks), credentials, isbare, depth, kwargs...)
-                catch err
-                    is_shallow_fallback_error(err) || rethrow()
-                    @debug "Shallow clone of `$url` failed, retrying with a full clone" exception = err
-                    rm(source_path; force = true, recursive = true)
-                    mkpath(source_path)
-                end
-            end
-            return LibGit2.clone(url, source_path; callbacks, credentials, isbare, kwargs...)
+        args = ["--quiet"]
+        depth > 0 && push!(args, "--depth=$depth")
+        isbare && push!(args, "--bare")
+        push!(args, url, source_path)
+        cmd = `git clone $args`
+        try
+            run(pipeline(cmd; stdout = devnull))
+        catch err
+            PkgWasm.Types.pkgerror("The command $(cmd) failed, error: $(error_string(err))")
         end
+        return LibGit2.GitRepo(source_path)
     catch err
         rm(source_path; force = true, recursive = true)
         err isa LibGit2.GitError || err isa InterruptException || rethrow()
         if err isa InterruptException
-            Pkg.Types.pkgerror("git clone of `$url` interrupted")
+            PkgWasm.Types.pkgerror("git clone of `$url` interrupted")
         elseif (err.class == LibGit2.Error.Net && err.code == LibGit2.Error.EINVALIDSPEC) ||
                 (err.class == LibGit2.Error.Repository && err.code == LibGit2.Error.ENOTFOUND)
-            Pkg.Types.pkgerror("git repository not found at `$(url)`: ($(err.msg))")
+            PkgWasm.Types.pkgerror("git repository not found at `$(url)`: ($(err.msg))")
         else
-            Pkg.Types.pkgerror("failed to clone from $(url): ($(err.msg))", auth_hint(err))
+            PkgWasm.Types.pkgerror("failed to clone from $(url): ($(err.msg))", auth_hint(err))
         end
     finally
-        Base.shred!(credentials)
         fancyprint && end_progress(io, bar)
     end
 end
 
-function geturl(repo)
-    return LibGit2.with(LibGit2.get(LibGit2.GitRemote, repo, "origin")) do remote
-        LibGit2.url(remote)
+geturl(repo) = LibGit2.remote_url(repo, "origin")
+
+# `string(err)` of what `run` throws, typed (PkgWasm, G3): the same text as Base's default
+# `show` of ProcessFailedException and IOError; any other error as its message
+function error_string(@nospecialize(err))
+    PkgWasm.WASM_TARGET || return string(err)   # (natively stock's interpolation)
+    if err isa ProcessFailedException
+        return string("ProcessFailedException(Base.Process[", join([sprint(show, p) for p in err.procs], ", "), "])")
+    elseif err isa Base.IOError
+        return string("Base.IOError(", repr(err.msg), ", ", err.code, ")")
     end
+    return PkgWasm.error_text(err)
 end
 
 function fetch(io::IO, repo::LibGit2.GitRepo, @nospecialize(remoteurl::Union{Nothing, AbstractString} = nothing); @nospecialize(header::Union{Nothing, AbstractString} = nothing), credentials = nothing, refspecs::Vector{String} = [""], depth::Integer = 0, kwargs...)
     remoteurl = remoteurl === nothing ? geturl(repo) : String(remoteurl)::String
 
-    # Disable shallow fetches for local repos (not supported) or if LibGit2 doesn't support it
+    # Disable shallow fetches for local repos (not supported)
     if depth > 0 && (is_local_repo(remoteurl) || !supports_shallow_clone())
         depth = 0
     end
@@ -252,59 +166,32 @@ function fetch(io::IO, repo::LibGit2.GitRepo, @nospecialize(remoteurl::Union{Not
     remoteurl = normalize_url(remoteurl)
     printpkgstyle(io, :Updating, header === nothing ? "git-repo `$remoteurl`" : header)
     bar = MiniProgressBar(header = "Fetching:", color = Base.info_color())
-    callbacks = if fancyprint
-        LibGit2.Callbacks(
-            :transfer_progress => (
-                @cfunction(transfer_progress, Cint, (Ptr{LibGit2.TransferProgress}, Any)),
-                bar,
-            )
-        )
-    else
-        LibGit2.Callbacks()
-    end
     fancyprint && start_progress(io, bar)
-    if credentials === nothing
-        credentials = LibGit2.CachedCredentials()
-    end
+    # (stock's JULIA_PKG_USE_CLI_GIT branch)
     return try
-        if use_cli_git()
-            let remoteurl = remoteurl
-                args = ["-C", LibGit2.path(repo), "fetch", "-q"]
-                depth > 0 && push!(args, "--depth=$depth")
-                push!(args, remoteurl, only(refspecs))
-                cmd = `git $args`
-                errbuf = IOBuffer()
-                try
-                    run(pipeline(cmd; stdout = devnull, stderr = errbuf))
-                catch err
-                    git_err = strip(String(take!(errbuf)))
-                    msg = "The command $(cmd) failed, error: $err"
-                    isempty(git_err) || (msg *= "\n$(git_err)")
-                    Pkg.Types.pkgerror(msg)
-                end
+        let remoteurl = remoteurl
+            args = ["-C", LibGit2.path(repo), "fetch", "-q"]
+            depth > 0 && push!(args, "--depth=$depth")
+            push!(args, remoteurl, only(refspecs))
+            cmd = `git $args`
+            errbuf = IOBuffer()
+            try
+                run(pipeline(cmd; stdout = devnull, stderr = errbuf))
+            catch err
+                git_err = strip(String(take!(errbuf)))
+                msg = "The command $(cmd) failed, error: $(error_string(err))"
+                isempty(git_err) || (msg *= "\n$(git_err)")
+                PkgWasm.Types.pkgerror(msg)
             end
-        else
-            # Only pass depth if shallow clones are supported and depth > 0
-            if depth > 0
-                try
-                    # `LibGit2.fetch` stores the credentials in `callbacks`, so pass a copy in case we retry
-                    return LibGit2.fetch(repo; remoteurl, callbacks = copy(callbacks), credentials, refspecs, depth, kwargs...)
-                catch err
-                    is_shallow_fallback_error(err) || rethrow()
-                    @debug "Shallow fetch from `$remoteurl` failed, retrying with a full fetch" exception = err
-                end
-            end
-            return LibGit2.fetch(repo; remoteurl, callbacks, credentials, refspecs, kwargs...)
         end
     catch err
         err isa LibGit2.GitError || rethrow()
         if (err.class == LibGit2.Error.Repository && err.code == LibGit2.Error.ERROR)
-            Pkg.Types.pkgerror("Git repository not found at '$(remoteurl)': ($(err.msg))")
+            PkgWasm.Types.pkgerror("Git repository not found at '$(remoteurl)': ($(err.msg))")
         else
-            Pkg.Types.pkgerror("failed to fetch from $(remoteurl): ($(err.msg))", auth_hint(err))
+            PkgWasm.Types.pkgerror("failed to fetch from $(remoteurl): ($(err.msg))", auth_hint(err))
         end
     finally
-        Base.shred!(credentials)
         fancyprint && end_progress(io, bar)
     end
 end
@@ -371,7 +258,7 @@ function blob_hash(::Type{HashType}, path::AbstractString) where {HashType}
         if isa(e, InterruptException)
             rethrow(e)
         end
-        @warn("Unable to open $(path) for hashing; git-tree-sha1 likely suspect")
+        @pkg_warn("Unable to open $(path) for hashing; git-tree-sha1 likely suspect")
     end
 
     # Finish it off and return the digest!
@@ -404,7 +291,10 @@ Calculate the git tree hash of a given path.
 """
 function tree_hash(::Type{HashType}, root::AbstractString; debug_out::Union{IO, Nothing} = nothing, indent::Int = 0) where {HashType}
     entries = Tuple{String, Vector{UInt8}, GitMode}[]
-    for f in sort(readdir(root; join = true); by = f -> gitmode(f) == mode_dir ? f * "/" : f)
+    # The sort key of each entry, computed once (a `by` function would run per comparison)
+    sorted = map(f -> (gitmode(f) == mode_dir ? f * "/" : f, f), readdir(root; join = true))
+    sort!(sorted; by = first)
+    for (_, f) in sorted
         # Skip `.git` directories
         if basename(f) == ".git"
             continue
@@ -467,7 +357,7 @@ function check_valid_HEAD(repo)
         catch
             "(unknown url)"
         end
-        Pkg.Types.pkgerror("invalid git HEAD in $url ($(err.msg))")
+        PkgWasm.Types.pkgerror("invalid git HEAD in $url ($(err isa LibGit2.GitError ? err.msg : PkgWasm.error_text(err)))")
     end
 end
 

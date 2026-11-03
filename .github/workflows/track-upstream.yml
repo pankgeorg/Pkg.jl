@@ -1,0 +1,57 @@
+# Keeps the fork's copies of upstream branches (master, release-1.13, release-1.12) equal to
+# JuliaLang/Pkg.jl. Fast-forward only: a branch that has diverged from upstream is reported
+# as an error and left as it is. The PkgWasm branches (wasm/master, wasm/release-*) are not touched.
+#
+# Token: the default GITHUB_TOKEN can push branches, but GitHub refuses any push that adds or
+# changes a file under .github/workflows unless the token has the `workflows` permission,
+# which GITHUB_TOKEN never has. Upstream commits do change workflow files, so on those days
+# the push fails. To cover them, add a repository secret UPSTREAM_SYNC_TOKEN: a fine-grained
+# personal access token for pankgeorg/Pkg.jl only, with "Contents: Read and write" and
+# "Workflows: Read and write". It is used instead of GITHUB_TOKEN when present.
+name: Track upstream
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: track-upstream
+
+jobs:
+  fast-forward:
+    if: github.repository == 'pankgeorg/Pkg.jl'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fast-forward master, release-1.13 and release-1.12 from JuliaLang/Pkg.jl
+        env:
+          TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          git init -q sync && cd sync
+          git remote add upstream https://github.com/JuliaLang/Pkg.jl.git
+          git remote add fork "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          status=0
+          for b in master release-1.13 release-1.12; do
+            git fetch -q --no-tags upstream "+refs/heads/$b:refs/remotes/upstream/$b" || { echo "::error::$b: fetch from upstream failed"; status=1; continue; }
+            git fetch -q --no-tags fork "+refs/heads/$b:refs/remotes/fork/$b" || { echo "::error::$b: fetch from the fork failed"; status=1; continue; }
+            up=$(git rev-parse "upstream/$b"); ours=$(git rev-parse "fork/$b")
+            if [ "$up" = "$ours" ]; then
+              echo "$b: up to date at $up"
+            elif git merge-base --is-ancestor "$ours" "$up"; then
+              if git push -q fork "$up:refs/heads/$b"; then
+                echo "$b: $ours -> $up"
+              else
+                echo "::error::$b: push failed (a change under .github/workflows needs the UPSTREAM_SYNC_TOKEN secret, see the workflow file)"
+                status=1
+              fi
+            else
+              echo "::error::$b: the fork's $ours is not an ancestor of upstream $up; not rewriting it"
+              status=1
+            fi
+          done
+          exit $status

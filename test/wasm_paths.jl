@@ -1,0 +1,195 @@
+# e2e G2 B15-B18: the typed paths built for Wasm give what stock gives.
+# dropbuild and `julia_version === VERSION` through the version string (B15, B17); the TOML
+# writer's typed tables (B18) and destructure's typed copy (B16) in a process with the Wasm
+# preference, byte-identical to stock Pkg.
+
+module WasmPathsTests
+using Test
+import PkgWasm
+O = PkgWasm.Operations
+
+const EDGE = ["0.0.0", "1.2.3", "1.2.3-rc1", "2.0.1-rc1.21321", "1.0.0-alpha-1.2", "1.0.0-1", "1.0.0-1.2.3", "1.0.0-0",
+              "1.0.0+build", "1.0.0+b.1", "1.0.0-rc.1+b.2", "1.0.0-a.b.c+x-y.z", "1.0.0-x-y-z", "1.13.0-DEV.123",
+              "1.13.2-beta2.0", "4294967295.0.0", "1.0.0-18446744073709551615", "1.0.0-alpha.beta-gamma"]
+stock_dropbuild(v) = VersionNumber(v.major, v.minor, v.patch, isempty(v.prerelease) ? () : (v.prerelease[1],))
+
+@testset "B15/B17: version string paths" begin
+    vs = [VersionNumber.(EDGE); VERSION; VersionNumber(1, 2, 3, ("a", UInt64(1)), ("b",));
+          VersionNumber(1, 2, 3, (UInt64(7),), (UInt64(8), "x")); VersionNumber(1, 2, 3, ("a-b", "c")); VersionNumber(1, 2, 3, ("x",), ("a-b",))]
+    for v in vs
+        a, b = stock_dropbuild(v), O.dropbuild_typed(v)
+        @test a == b && typeof(a.prerelease) == typeof(b.prerelease) && string(a) == string(b)
+    end
+    n = 0
+    for a in vs, b in vs
+        @test (string(a) == string(b)) == (a === b)
+        n += a === b
+    end
+    @test n == length(vs)
+end
+
+@testset "B21: VersionRange printing" begin
+    stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
+    tuples = [(), (0,), (1,), (4294967295,), (0, 0), (2, 3), (1, 4294967295), (0, 0, 0), (1, 5, 9), (0, 0, 4294967295)]
+    n = 0
+    for lo in tuples, hi in tuples
+        a = stock.Versions.VersionRange(stock.Versions.VersionBound(lo...), stock.Versions.VersionBound(hi...))
+        b = PkgWasm.Versions.VersionRange(PkgWasm.Versions.VersionBound(lo...), PkgWasm.Versions.VersionBound(hi...))
+        @test string(a) == string(b) && sprint(show, a) == sprint(show, b)
+        n += occursin(" - ", string(b)) && occursin(".", string(b))
+    end
+    @test n > 10
+end
+
+@testset "G3: filtered status (review-19)" begin
+    stock = Base.require(Base.PkgId(Base.UUID("44cfe95a-1eb2-52ea-b672-e2afdf69b78f"), "Pkg"))
+    mktempdir() do dir
+        write(joinpath(dir, "Project.toml"), "[deps]\nDates = \"ade2ca70-3891-5945-98fb-dc099432e06a\"\nUUIDs = \"cf7118a7-6976-5b1a-9a39-7adc72f591a4\"\n")
+        out(mod, args...) = begin
+            old = Base.active_project()
+            try
+                mod.activate(dir; io = devnull)
+                buf = IOBuffer()
+                mod.status(args...; io = buf)
+                replace(String(take!(buf)), dir => "DIR")
+            finally
+                Base.ACTIVE_PROJECT[] = old
+            end
+        end
+        for args in (("Dates",), (["Dates", "UUIDs"],), ("NoSuchPackage",), ())
+            a, b = out(stock, args...), out(PkgWasm, args...)
+            @test a == b
+            args == ("Dates",) && @test occursin("Dates", b) && !occursin("UUIDs", b)
+        end
+    end
+end
+
+const CHILD = raw"""
+import Pkg; Pkg.instantiate(; io = devnull)
+using PkgWasm
+@assert PkgWasm.TARGET == "wasm"
+dir = mktempdir()
+write(joinpath(dir, "Project.toml"), '''
+name = "P"
+uuid = "8c9a2bd0-6b1e-4ac1-9d36-1d2f8a3b0c11"
+version = "0.1.0"
+stamp = 2026-10-28
+custom = [{a = 1}, {a = 2}]
+
+[deps]
+A = "11111111-1111-1111-1111-111111111111"
+B = "22222222-2222-2222-2222-222222222222"
+
+[weakdeps]
+W = "33333333-3333-3333-3333-333333333333"
+
+[extensions]
+E1 = "W"
+E2 = ["W", "B"]
+
+[sources]
+A = {path = "../A"}
+B = {url = "https://example.com/B.jl", rev = "main"}
+
+[compat]
+A = "1.2"
+julia = "1.10"
+
+[extras]
+X = "44444444-4444-4444-4444-444444444444"
+
+[targets]
+test = ["X"]
+''')
+write(joinpath(dir, "Manifest.toml"), '''
+julia_version = "1.13.2"
+manifest_format = "2.0"
+project_hash = "0123456789abcdef0123456789abcdef01234567"
+
+[[deps.A]]
+path = "../A"
+uuid = "11111111-1111-1111-1111-111111111111"
+version = "1.2.0"
+weakdeps = ["W"]
+
+    [deps.A.extensions]
+    E1 = "W"
+    E2 = ["W", "B"]
+
+[[deps.B]]
+deps = ["A"]
+git-tree-sha1 = "0123456789abcdef0123456789abcdef01234567"
+uuid = "22222222-2222-2222-2222-222222222222"
+version = "0.3.1"
+
+[[deps.W]]
+git-tree-sha1 = "89abcdef0123456789abcdef0123456789abcdef"
+uuid = "33333333-3333-3333-3333-333333333333"
+version = "2.0.0"
+''')
+# (G3) every frame of the writer's and toml_eq's recursions has a CodeInstance (an uncached
+# one, settled with limited accuracy, has no code for the trim verifier), and no dynamic call
+let T = PkgWasm.Types, W = PkgWasm.TOMLWriter
+    precompile(T.write_project, (IOBuffer, Dict{String, Any}))
+    precompile(T.write_manifest, (IOBuffer, Dict{String, Any}))
+    precompile(Core.kwcall, (@NamedTuple{sorted::Bool}, typeof(PkgWasm.atomic_toml_write), String, Dict{String, Any}))
+    precompile(T.toml_eq, (Any, Any))
+    total = 0; uncached = 0; dynamic = 0
+    for mod in (W, T), name in names(mod; all = true)
+        isdefined(mod, name) || continue
+        f = getfield(mod, name)
+        f isa Function || continue
+        mod === T && !startswith(string(name), "toml_") && continue
+        for m in methods(f), mi in Base.specializations(m)
+            mi isa Core.MethodInstance || continue
+            total += 1
+            isdefined(mi, :cache) || (uncached += 1; println(stderr, "UNCACHED ", mi.specTypes))
+        end
+    end
+    for (f, tt) in ((W.printvalue, (typeof(identity), IOBuffer, Any, Bool)), (W.printvector, (typeof(identity), IOBuffer, AbstractVector, Bool)),
+                    (W.print_inline_table, (typeof(identity), IOBuffer, AbstractDict, Bool)), (T.toml_eq, (Any, Any)), (T.toml_vec_eq, (Any, Any)))
+        ci, _ = only(code_typed(f, tt))
+        for st in ci.code
+            st isa Expr && st.head === :call || continue
+            g = st.args[1]; gv = g isa GlobalRef ? getglobal(g.mod, g.name) : g
+            (gv isa Core.Builtin || gv isa Core.IntrinsicFunction) && continue
+            dynamic += 1; println(stderr, "DYNAMIC ", f, " ", st)
+        end
+    end
+    println("CYCLES total=", total, " uncached=", uncached, " dynamic=", dynamic)
+end
+res(f) = try f() catch e; "ERR " * sprint(showerror, e) end
+for mod in (Pkg, PkgWasm)
+    T = mod.Types
+    println("P=", repr(res(() -> sprint(T.write_project, T.destructure(T.read_project(joinpath(dir, "Project.toml")))))))
+    println("M=", repr(res(() -> sprint(io -> T.write_manifest(io, T.destructure(T.read_manifest(joinpath(dir, "Manifest.toml"))))))))
+end
+"""
+
+@testset "B16/B18: writing built for Wasm" begin
+    fork = dirname(@__DIR__)
+    mktempdir() do env
+        write(joinpath(env, "Project.toml"), """
+            [deps]
+            PkgWasm = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
+            [sources]
+            PkgWasm = {path = "$(escape_string(fork))"}
+            [preferences.PkgWasm]
+            target = "wasm"
+            """)
+        script = joinpath(env, "script.jl")
+        write(script, replace(CHILD, "'''" => "\"\"\""))
+        out, err = IOBuffer(), IOBuffer()
+        cmd = addenv(`$(joinpath(Sys.BINDIR, Base.julia_exename())) --startup-file=no --project=$env $script`, "JULIA_PKG_PRECOMPILE_AUTO" => "0")
+        p = run(pipeline(ignorestatus(cmd); stdout = out, stderr = err))
+        p.exitcode == 0 || print(stderr, String(take!(err)))
+        lines = split(String(take!(out)), '\n')
+        ps = filter(startswith("P="), lines); ms = filter(startswith("M="), lines)
+        haskey(ENV, "WASM_PATHS_DEBUG") && foreach(println, ms)
+        @test length(ps) == 2 && ps[1] == ps[2] && !occursin("ERR", ps[1]) && occursin("[extensions]", ps[1]) && occursin("[sources]", ps[1])
+        @test length(ms) == 2 && ms[1] == ms[2] && !occursin("ERR", ms[1]) && occursin("deps.A.extensions", ms[1])
+        cyc = match(r"CYCLES total=(\d+) uncached=(\d+) dynamic=(\d+)", join(lines, '\n'))
+        @test cyc !== nothing && parse(Int, cyc[1]) > 20 && cyc[2] == "0" && cyc[3] == "0"
+    end
+end
+end # module

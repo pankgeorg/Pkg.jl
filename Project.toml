@@ -1,8 +1,8 @@
-name = "Pkg"
-uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+name = "PkgWasm"
+uuid = "d562cdc0-5c7a-524d-b497-bb1ca2727331"
 keywords = ["package management"]
 license = "MIT"
-desc = "The next-generation Julia package manager."
+desc = "Trimmed fork of Pkg master (21e9b9b14) for compilation to Wasm with WasmCodegen.jl."
 version = "1.14.0"
 
 [workspace]
@@ -30,12 +30,6 @@ Zstd_jll = "3161d3a3-bdf6-5164-811a-617609db77b4"
 libpicosat_jll = "6b231c3b-13f8-5ced-86ae-8860c7f75d86"
 p7zip_jll = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 
-[weakdeps]
-REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
-
-[extensions]
-REPLExt = "REPL"
-
 [compat]
 ArgTools = "1.2"
 Artifacts = "1.11"
@@ -48,7 +42,6 @@ Logging = "1.11"
 Markdown = "1.11"
 Mmap = "1.11"
 Printf = "1.11"
-REPL = "1.11"
 Random = "1.11"
 SHA = "0.7, 1"
 Serialization = "1.11"

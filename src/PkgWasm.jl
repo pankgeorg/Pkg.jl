@@ -179,7 +179,6 @@ whether to show tips in REPL format (`pkg> add Foo`) or API format (`Pkg.add("Fo
 in_repl_mode() = WASM_TARGET ? false : @something(Base.ScopedValues.get(IN_REPL_MODE), false)
 
 include("logging.jl")
-include("toml_writer.jl")
 include("utils.jl")
 include("stdlib_data.jl")
 include("MiniProgressBars.jl")

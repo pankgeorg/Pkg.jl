@@ -387,7 +387,7 @@ function write_project(io::IO, project::Dict)
             Base.inferencebarrier(collect_sources!)(sources)
         end
     end
-    TOMLWriter.print(io, project; inline_tables, sorted = true, by = key -> (project_key_order(key), key)) do x
+    TOML.print(io, project; inline_tables, sorted = true, by = key -> (project_key_order(key), key)) do x
         x isa UUID || x isa VersionNumber || pkgerror("unhandled type `$(typeof(x))`")
         return string(x)
     end

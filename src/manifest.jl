@@ -485,7 +485,7 @@ function write_manifest(io::IO, manifest::Manifest)
 end
 function write_manifest(io::IO, raw_manifest::Dict)
     print(io, "# This file is machine-generated - editing it directly is not advised\n\n")
-    TOMLWriter.print(io, raw_manifest, sorted = true) do x
+    TOML.print(io, raw_manifest, sorted = true) do x
         (typeof(x) in [String, Nothing, UUID, SHA1, VersionNumber]) && return string(x)
         error("unhandled type `$(typeof(x))`")
     end

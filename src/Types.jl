@@ -11,7 +11,7 @@ import Base.string
 
 using TOML
 import ..PkgWasm, ..Registry
-import ..PkgWasm: GitTools, TOMLWriter, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
+import ..PkgWasm: GitTools, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
 import Base.BinaryPlatforms: Platform
 using ..PkgWasm.Versions
 import FileWatching

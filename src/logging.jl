@@ -107,6 +107,13 @@ end
 
 log_suffix(mod::String, file::String, line::Int) = string("@ ", mod, " ", Base.contractuser(file), ":", line)
 
+# A source file of this package as the Wasm image names it: `@PkgWasm/<path in the package>`
+# (WasmCodegen's relocatable name for a package's sources), so that the module embeds no
+# directory of the build host (relocation, PLAN D8). Other files keep their names.
+const PKGWASM_SRC_ROOT = dirname(@__DIR__)
+log_file_name(file) = (f = string(file); startswith(f, PKGWASM_SRC_ROOT * "/") ?
+    string("@PkgWasm", SubString(f, ncodeunits(PKGWASM_SRC_ROOT) + 1)) : f)
+
 # the direct print of a log call (built for Wasm)
 function log_direct_expr(level::Symbol, mod::Module, src::LineNumberNode, args)
     level === :Debug && return :(nothing)
@@ -114,9 +121,9 @@ function log_direct_expr(level::Symbol, mod::Module, src::LineNumberNode, args)
     msg, kvs = args[1], args[2:end]
     prefix = level === :Warn ? "Warning:" : string(level, ":")
     suffix = level === :Info ? :("") :
-        :($(GlobalRef(@__MODULE__, :log_suffix))($(string(mod)), $(string(src.file)), $(src.line)))
+        :($(GlobalRef(@__MODULE__, :log_suffix))($(string(mod)), $(log_file_name(src.file)), $(src.line)))
     body = Any[:(lines = $(GlobalRef(@__MODULE__, :log_lines))($msg))]
-    maxlog, id = nothing, string(mod, ":", src.file, ":", src.line)
+    maxlog, id = nothing, string(mod, ":", log_file_name(src.file), ":", src.line)
     for kv in kvs
         # (as Base: `k = v`, a variable, or any expression under its own text)
         k, v = if kv isa Expr && kv.head === :(=)

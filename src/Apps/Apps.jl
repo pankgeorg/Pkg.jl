@@ -1,6 +1,7 @@
 module Apps
 
 using PkgWasm
+import PkgWasm as Pkg # (PkgWasm: the module renamed; `Pkg.` below is this package)
 using PkgWasm: atomic_toml_write, stdout_f
 using PkgWasm.Versions
 using PkgWasm.Types: AppInfo, PackageSpec, Context, EnvCache, PackageEntry, Manifest, handle_repo_add!, handle_repo_develop!, write_manifest, write_project,
@@ -28,11 +29,10 @@ const _apps_lock_held = Base.ScopedValues.ScopedValue(false)
 
 # Serialize operations that mutate the app environments and the AppManifest
 function with_apps_lock(f)
-    PkgWasm.API.unsupported("apps") # PkgWasm (D4): before any side effect
     # Operations can be nested (e.g. update calls add) so the lock is reentrant
     _apps_lock_held[] && return f()
     mkpath(app_env_folder())
-    return PkgWasm.mkpidlock(joinpath(app_env_folder(), ".pid"), stale_age = 10) do
+    return FileWatching.mkpidlock(joinpath(app_env_folder(), ".pid"), stale_age = 10) do
         Base.ScopedValues.@with _apps_lock_held => true f()
     end
 end
@@ -81,7 +81,7 @@ function get_project(sourcepath)
 
     isfile(project_file) || pkgerror("Project file not found: $project_file")
 
-    project = PkgWasm.Types.read_project(project_file)
+    project = Pkg.Types.read_project(project_file)
     isempty(project.apps) && pkgerror("No apps found in Project.toml for package $(project.name) at version $(project.version)")
     return project
 end
@@ -238,7 +238,7 @@ function _resolve(manifest::Manifest, pkgname = nothing)
             sources = get(project_data, "sources", nothing)
             if sources !== nothing
                 original_dir = nothing
-                if pkg.repo.source !== nothing && !PkgWasm.isurl(pkg.repo.source)
+                if pkg.repo.source !== nothing && !Pkg.isurl(pkg.repo.source)
                     original_dir = normpath(joinpath(app_env_folder(), pkg.repo.source))
                     if pkg.repo.subdir !== nothing
                         original_dir = joinpath(original_dir, pkg.repo.subdir)
@@ -268,10 +268,10 @@ function _resolve(manifest::Manifest, pkgname = nothing)
         end
 
         # Create a manifest with the manifest entry
-        PkgWasm.activate(app_env_dir(pkg.name)) do
+        Pkg.activate(app_env_dir(pkg.name)) do
             ctx = Context()
             ctx.env.manifest.deps[uuid] = pkg
-            PkgWasm.resolve(ctx)
+            Pkg.resolve(ctx)
         end
 
         # TODO: Julia path
@@ -299,7 +299,6 @@ Pkg.Apps.add(path = "path/to/Package")
 ```
 """
 function add(pkg::Vector{PackageSpec})
-    PkgWasm.API.unsupported("apps")
     require_not_empty(pkg, :add)
     for p in pkg
         add(p)
@@ -313,28 +312,28 @@ function _add(pkg::PackageSpec)
     handle_package_input!(pkg)
 
     # Must run before `app_context()` since `Context` loads the registries
-    PkgWasm.Registry.download_default_registries(PkgWasm.stderr_f())
+    Pkg.Registry.download_default_registries(Pkg.stderr_f())
 
     ctx = app_context()
 
-    PkgWasm.Operations.update_registries(ctx; force = false, update_cooldown = Day(1))
+    Pkg.Operations.update_registries(ctx; force = false, update_cooldown = Day(1))
 
     manifest = ctx.env.manifest
     new = false
 
     # Download package
     if pkg.repo.source !== nothing || pkg.repo.rev !== nothing
-        entry = PkgWasm.API.manifest_info(ctx.env.manifest, pkg.uuid)
+        entry = Pkg.API.manifest_info(ctx.env.manifest, pkg.uuid)
         pkg = update_package_add(ctx, pkg, entry, false)
         new = handle_repo_add!(ctx, pkg)
     else
         pkgs = [pkg]
-        PkgWasm.Operations.registry_resolve!(ctx.registries, pkgs)
-        PkgWasm.Operations.ensure_resolved(ctx, manifest, pkgs, registry = true)
+        Pkg.Operations.registry_resolve!(ctx.registries, pkgs)
+        Pkg.Operations.ensure_resolved(ctx, manifest, pkgs, registry = true)
 
         pkg.version, pkg.tree_hash = get_max_version_register(pkg, ctx.registries)
 
-        new = PkgWasm.Operations.download_source(ctx, pkgs)
+        new = Pkg.Operations.download_source(ctx, pkgs)
     end
 
     Base.rm(app_env_dir(pkg.name); force = true, recursive = true)
@@ -346,7 +345,7 @@ function _add(pkg::PackageSpec)
 
     _resolve(manifest, pkg.name)
     if new === true || (new isa Set{UUID} && pkg.uuid in new)
-        PkgWasm.Operations.build_versions(ctx, Set([pkg.uuid]); verbose = true)
+        Pkg.Operations.build_versions(ctx, Set([pkg.uuid]); verbose = true)
     end
     precompile(pkg.name)
 
@@ -368,7 +367,6 @@ Pkg.Apps.develop(path = "path/to/Package")
 ```
 """
 function develop(pkg::Vector{PackageSpec})
-    PkgWasm.API.unsupported("apps")
     require_not_empty(pkg, :develop)
     for p in pkg
         develop(p)
@@ -405,8 +403,8 @@ function _develop(pkg::PackageSpec)
 
     # The shims run with the dev'd project as the load path so it needs
     # a resolved manifest for the dependencies to be loadable
-    PkgWasm.activate(sourcepath) do
-        PkgWasm.instantiate()
+    Pkg.activate(sourcepath) do
+        Pkg.instantiate()
     end
 
     generate_shims_for_apps(pkg.name, project.apps, sourcepath, julia_executable())
@@ -425,7 +423,6 @@ For developed packages the dependencies of the project are updated instead.
 """
 update(pkgs_or_apps::String) = update([pkgs_or_apps])
 function update(pkgs_or_apps::Vector)
-    PkgWasm.API.unsupported("apps")
     if isempty(pkgs_or_apps)
         update(nothing)
     else
@@ -443,7 +440,7 @@ update(pkg::Union{PackageSpec, Nothing} = nothing) = with_apps_lock(() -> _updat
 function _update(pkg::Union{PackageSpec, Nothing})
     ctx = app_context()
     manifest = ctx.env.manifest
-    deps = PkgWasm.Operations.load_manifest_deps(manifest)
+    deps = Pkg.Operations.load_manifest_deps(manifest)
     updated = false
     for dep in deps
         info = manifest.deps[dep.uuid]
@@ -455,8 +452,8 @@ function _update(pkg::Union{PackageSpec, Nothing})
         if sourcepath !== nothing
             # Developed app: update the dependencies of the developed project
             # and refresh the app info from it
-            PkgWasm.activate(sourcepath) do
-                PkgWasm.update()
+            Pkg.activate(sourcepath) do
+                Pkg.update()
             end
             develop(PackageSpec(path = sourcepath))
         elseif info.repo.source !== nothing || info.repo.rev !== nothing
@@ -480,7 +477,6 @@ Show the installed apps, the version of their package, and the julia command
 used to run them. If `name` is given, limit the output to that app or package.
 """
 function status(pkgs_or_apps::Vector; io::IO = stdout_f())
-    PkgWasm.API.unsupported("apps")
     return if isempty(pkgs_or_apps)
         status(; io)
     else
@@ -494,11 +490,10 @@ function status(pkgs_or_apps::Vector; io::IO = stdout_f())
 end
 
 function status(pkg_or_app::Union{PackageSpec, Nothing} = nothing; io::IO = stdout_f())
-    PkgWasm.API.unsupported("apps")
     # TODO: Sort.
     pkg_or_app = pkg_or_app === nothing ? nothing : pkg_or_app.name
-    manifest = PkgWasm.Types.read_manifest(app_manifest_file())
-    deps = PkgWasm.Operations.load_manifest_deps(manifest)
+    manifest = Pkg.Types.read_manifest(app_manifest_file())
+    deps = Pkg.Operations.load_manifest_deps(manifest)
 
     is_pkg = pkg_or_app !== nothing && any(dep -> dep.name == pkg_or_app, values(manifest.deps))
 
@@ -529,9 +524,8 @@ function status(pkg_or_app::Union{PackageSpec, Nothing} = nothing; io::IO = stdo
 end
 
 function precompile(pkg::Union{Nothing, String} = nothing)
-    PkgWasm.API.unsupported("apps")
-    manifest = PkgWasm.Types.read_manifest(app_manifest_file())
-    deps = PkgWasm.Operations.load_manifest_deps(manifest)
+    manifest = Pkg.Types.read_manifest(app_manifest_file())
+    deps = Pkg.Operations.load_manifest_deps(manifest)
     for dep in deps
         # TODO: Parallel app compilation..?
         info = manifest.deps[dep.uuid]
@@ -541,9 +535,9 @@ function precompile(pkg::Union{Nothing, String} = nothing)
         # Developed apps run directly from their project, tracked ones from the app environment
         sourcepath = developed_source_path(app_manifest_file(), info)
         env_dir = sourcepath !== nothing ? sourcepath : app_env_dir(info.name)
-        PkgWasm.activate(env_dir) do
-            PkgWasm.instantiate()
-            PkgWasm.precompile()
+        Pkg.activate(env_dir) do
+            Pkg.instantiate()
+            Pkg.precompile()
         end
     end
     return
@@ -565,7 +559,6 @@ its app environment.
 """
 rm(pkgs_or_apps::String) = rm([pkgs_or_apps])
 function rm(pkgs_or_apps::Vector)
-    PkgWasm.API.unsupported("apps")
     for pkg_or_app in pkgs_or_apps
         if pkg_or_app isa String
             pkg_or_app = PackageSpec(pkg_or_app)
@@ -581,7 +574,7 @@ function _rm(pkg_or_app::Union{PackageSpec, Nothing})
 
     require_not_empty(pkg_or_app, :rm)
 
-    manifest = PkgWasm.Types.read_manifest(app_manifest_file())
+    manifest = Pkg.Types.read_manifest(app_manifest_file())
     dep_idx = findfirst(dep -> dep.name == pkg_or_app, manifest.deps)
     if dep_idx !== nothing
         dep = manifest.deps[dep_idx]

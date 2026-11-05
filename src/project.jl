@@ -369,7 +369,7 @@ end
 write_project(project::Project, project_file::AbstractString) =
     write_project(destructure(project), project_file)
 function write_project(io::IO, project::Dict)
-    inline_tables = Any[] # (compared by identity, as an IdSet)
+    inline_tables = Base.IdSet{Dict}()
     if haskey(project, "sources")
         # (the sources table, as destructure makes it or as parsed, told apart by type: M4.2)
         collect_sources!(sources) = for source in values(sources)

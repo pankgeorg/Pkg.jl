@@ -1,7 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Operations
-import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Base: CacheFlags
 using FileWatching: FileWatching
@@ -124,7 +123,7 @@ function ensure_manifest_registries!(ctx::Context)
             copy!(ctx.registries, Registry.reachable_registries())
         catch e
             # Warn but don't error - packages may still work with available registries
-            @pkg_warn "Failed to install some registries from manifest" exception = (e, catch_backtrace())
+            @warn "Failed to install some registries from manifest" exception = (e, catch_backtrace())
         end
     end
 
@@ -513,7 +512,7 @@ function check_stdlib_compat(name::String, uuid::UUID, compat::VersionSpec, proj
     compat_str = get_compat_str(project, name)
     if compat_str !== nothing
         suggested_compat = string(compat_str, ", ", stdlib_ver.major == 0 ? string(stdlib_ver.major, ".", stdlib_ver.minor) : string(stdlib_ver.major))
-        @pkg_warn """Ignoring incompatible compat entry `$name = $(repr(compat_str))` in $(repr(project_file)).
+        @warn """Ignoring incompatible compat entry `$name = $(repr(compat_str))` in $(repr(project_file)).
         $name is a non-upgradable standard library with version $stdlib_ver in the current Julia version.
         Fix by setting compat to $(repr(suggested_compat)) to mark support of the current version $stdlib_ver.""" maxlog = 1
     end
@@ -580,7 +579,7 @@ function collect_project(
         if project.version !== nothing
             pkg.version = project.version
         else
-            # @pkg_warn("project file for $(pkg.name) is missing a `version` entry")
+            # @warn("project file for $(pkg.name) is missing a `version` entry")
             pkg.version = VersionNumber(0)
         end
     end
@@ -808,7 +807,7 @@ function resolve_versions!(
         env.manifest.julia_version = dropbuild(julia_version)
         v = intersect(julia_version, get_compat_workspace(env, "julia"))
         if isempty(v)
-            @pkg_warn "julia version requirement for project not satisfied" _module = nothing _file = nothing
+            @warn "julia version requirement for project not satisfied" _module = nothing _file = nothing
         end
     end
 
@@ -1288,7 +1287,7 @@ function install_archive(
             unpack(path, dir; verbose = false)
         catch e
             e isa ProcessFailedException || e isa PkgWasm.Host.HostError || rethrow()
-            @pkg_warn "failed to extract archive downloaded from $(url)"
+            @warn "failed to extract archive downloaded from $(url)"
             url_success = false
         end
         url_success || continue
@@ -1304,7 +1303,7 @@ function install_archive(
         # Assert that the tarball unpacked to the tree sha we wanted
         computed_hash = GitTools.tree_hash(unpacked)
         if SHA1(computed_hash) != hash
-            @pkg_warn "tarball content of url $url does not match git-tree-sha1, expected $hash, got $computed_hash"
+            @warn "tarball content of url $url does not match git-tree-sha1, expected $hash, got $computed_hash"
             url_success = false
         end
         url_success || continue
@@ -2011,7 +2010,7 @@ function dependency_order_visit!(
         order::Dict{UUID, Int}, seen::Vector{UUID}, counter::Base.RefValue{Int},
         env::EnvCache, uuid::UUID
     )
-    uuid in seen && return @pkg_warn("Dependency graph not a DAG, linearizing anyway")
+    uuid in seen && return @warn("Dependency graph not a DAG, linearizing anyway")
     haskey(order, uuid) && return
     push!(seen, uuid)
     deps = if Types.is_project_uuid(env, uuid)
@@ -2238,7 +2237,7 @@ function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode::PackageMode)
                 pkg.uuid in drop || push!(drop, pkg.uuid)
             else
                 str = has_name(pkg) ? pkg.name : string(pkg.uuid)
-                @pkg_warn("`$str` not in manifest, ignoring")
+                @warn("`$str` not in manifest, ignoring")
             end
         end
     end
@@ -2270,7 +2269,7 @@ function rm(ctx::Context, pkgs::Vector{PackageSpec}; mode::PackageMode)
             end
             found && continue
             str = has_name(pkg) ? pkg.name : string(pkg.uuid)
-            @pkg_warn("`$str` not in project, ignoring")
+            @warn("`$str` not in project, ignoring")
         end
     end
     # delete drops from project
@@ -2436,31 +2435,31 @@ function tiered_resolve(
     )
     if try_all_installed
         try # do not modify existing subgraph and only add installed versions of the new packages
-            @pkg_debug "tiered_resolve: trying PRESERVE_ALL_INSTALLED"
+            @debug "tiered_resolve: trying PRESERVE_ALL_INSTALLED"
             return targeted_resolve(env, registries, pkgs, PRESERVE_ALL_INSTALLED, julia_version; preferred_versions)
         catch err
             err isa Resolve.ResolverError || rethrow()
         end
     end
     try # do not modify existing subgraph
-        @pkg_debug "tiered_resolve: trying PRESERVE_ALL"
+        @debug "tiered_resolve: trying PRESERVE_ALL"
         return targeted_resolve(env, registries, pkgs, PRESERVE_ALL, julia_version; preferred_versions)
     catch err
         err isa Resolve.ResolverError || rethrow()
     end
     try # do not modify existing direct deps
-        @pkg_debug "tiered_resolve: trying PRESERVE_DIRECT"
+        @debug "tiered_resolve: trying PRESERVE_DIRECT"
         return targeted_resolve(env, registries, pkgs, PRESERVE_DIRECT, julia_version; preferred_versions)
     catch err
         err isa Resolve.ResolverError || rethrow()
     end
     try
-        @pkg_debug "tiered_resolve: trying PRESERVE_SEMVER"
+        @debug "tiered_resolve: trying PRESERVE_SEMVER"
         return targeted_resolve(env, registries, pkgs, PRESERVE_SEMVER, julia_version; preferred_versions)
     catch err
         err isa Resolve.ResolverError || rethrow()
     end
-    @pkg_debug "tiered_resolve: trying PRESERVE_NONE"
+    @debug "tiered_resolve: trying PRESERVE_NONE"
     return targeted_resolve(env, registries, pkgs, PRESERVE_NONE, julia_version; preferred_versions)
 end
 
@@ -3138,11 +3137,11 @@ function sandbox_with_temp_env(
 
         try
             PkgWasm.resolve(temp_ctx; io = devnull, skip_writing_project = true)
-            @pkg_debug "Using _parent_ dep graph"
+            @debug "Using _parent_ dep graph"
         catch err # TODO
             err isa Resolve.ResolverError || rethrow()
             allow_reresolve || rethrow()
-            @pkg_debug err
+            @debug err
             msg = string(
                 "Could not use exact versions of packages in manifest, re-resolving. ",
                 "Note: if you do not check your manifest file into source control, ",
@@ -3154,7 +3153,7 @@ function sandbox_with_temp_env(
             printpkgstyle(ctx.io, :Test, msg, color = Base.warn_color())
             PkgWasm.update(temp_ctx; skip_writing_project = true, update_registry = false, io = ctx.io)
             printpkgstyle(ctx.io, :Test, "Successfully re-resolved")
-            @pkg_debug "Using _clean_ dep graph"
+            @debug "Using _clean_ dep graph"
         end
 
         reset_all_compat!(temp_ctx.env.project)
@@ -3215,7 +3214,7 @@ function sandbox(
                 working_manifest[uuid] = entry
             else # Check for collision between the sandbox manifest and the "parent" manifest
                 if entry_working != entry && (ctx.env.pkg !== nothing && ctx.env.pkg.uuid != uuid)
-                    @pkg_warn "Entry in manifest at \"$sandbox_path\" for package \"$(entry_working.name)\" differs from that in \"$(ctx.env.manifest_file)\""
+                    @warn "Entry in manifest at \"$sandbox_path\" for package \"$(entry_working.name)\" differs from that in \"$(ctx.env.manifest_file)\""
                 else
                     working_manifest[uuid] = entry
                 end
@@ -3270,7 +3269,7 @@ function gen_target_project(ctx::Context, pkg::PackageSpec, source_path::String,
         if target == "test"
             test_REQUIRE_path = joinpath(source_path, "test", "REQUIRE")
             if isfile(test_REQUIRE_path)
-                @pkg_warn "using test/REQUIRE files is deprecated and current support is lacking in some areas"
+                @warn "using test/REQUIRE files is deprecated and current support is lacking in some areas"
                 test_pkgs = parse_REQUIRE(test_REQUIRE_path)
                 package_specs = [PackageSpec(name = pkg) for pkg in test_pkgs]
                 registry_resolve!(registries, package_specs)
@@ -3517,7 +3516,7 @@ function subprocess_handler(cmd::Cmd, io::IO, error_msg::String)
     stderr = stderr_f()
     stdout isa IOContext{IO} && (stdout = stdout.io)
     stderr isa IOContext{IO} && (stderr = stderr.io)
-    @pkg_debug "Running command" cmd
+    @debug "Running command" cmd
     p = run(pipeline(ignorestatus(cmd); stdout, stderr), wait = false)
     interrupted = false
     try
@@ -4125,11 +4124,11 @@ function status(
         project_dir = dirname(env.project_file)
         git_repo_dir = discover_repo(project_dir)
         if git_repo_dir == nothing
-            @pkg_warn "diff option only available for environments in git repositories, ignoring."
+            @warn "diff option only available for environments in git repositories, ignoring."
         else
             old_env = git_head_env(env, git_repo_dir)
             if old_env === nothing
-                @pkg_warn "could not read project from HEAD, displaying absolute status instead."
+                @warn "could not read project from HEAD, displaying absolute status instead."
             end
         end
     elseif env_diff !== nothing
@@ -4242,7 +4241,7 @@ function apply_force_latest_compatible_version!(
     has_compat = haskey(ctx.env.project.compat, name)
     if !has_compat
         if name != target_name
-            @pkg_warn(
+            @warn(
                 "Dependency does not have a [compat] entry",
                 name, uuid, target_name,
             )

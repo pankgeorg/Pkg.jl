@@ -1052,7 +1052,7 @@ end
 ################
 
 function installed()
-    @pkg_warn "`Pkg.installed()` is deprecated. Use `Pkg.dependencies()` instead." maxlog = 1
+    @warn "`Pkg.installed()` is deprecated. Use `Pkg.dependencies()` instead." maxlog = 1
     deps = dependencies()
     installs = Dict{String, VersionNumber}()
     for (uuid, dep) in deps
@@ -1064,7 +1064,7 @@ function installed()
 end
 
 function dir(pkg::String, paths::AbstractString...)
-    @pkg_warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
+    @warn "`Pkg.dir(pkgname, paths...)` is deprecated; instead, do `import $pkg; joinpath(dirname(pathof($pkg)), \"..\", paths...)`." maxlog = 1
     pkgid = Base.identify_package(pkg)
     pkgid === nothing && return nothing
     path = Base.locate_package(pkgid)
@@ -1101,7 +1101,7 @@ function _auto_gc(ctx::Types.Context)
             PkgWasm.gc(ctx)
             DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = curr_time
         catch ex
-            @pkg_error("GC failed", exception = ex)
+            @error("GC failed", exception = ex)
         end
     end
 end

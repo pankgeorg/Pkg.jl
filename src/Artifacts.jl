@@ -1,5 +1,4 @@
 module PkgArtifacts
-import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using Artifacts, Base.BinaryPlatforms, SHA
 using ..MiniProgressBars, ..PlatformEngines
@@ -341,7 +340,7 @@ function download_artifact(
                 # (stock interpolates `hex`, a binding Pkg does not have: UndefVarError if the
                 # notice ever ran; here the tree hash. The notice never runs in PkgWasm, whose
                 # `mkpidlock` does not wait: the timer is closed right away)
-                @pkg_info "downloading $tarball_url ($(bytes2hex(tree_hash.bytes))) in another process"
+                @info "downloading $tarball_url ($(bytes2hex(tree_hash.bytes))) in another process"
             else
                 progress(0, 0; status = "downloading in another process")
             end
@@ -393,7 +392,7 @@ function download_artifact(
                 ignore_hash_env_set = get(ENV, "JULIA_PKG_IGNORE_HASHES", "") != ""
                 if ignore_hash_env_set
                     ignore_hash = Base.get_bool_env("JULIA_PKG_IGNORE_HASHES", false)
-                    ignore_hash === nothing && @pkg_error(
+                    ignore_hash === nothing && @error(
                         "Invalid ENV[\"JULIA_PKG_IGNORE_HASHES\"] value",
                         ENV["JULIA_PKG_IGNORE_HASHES"],
                     )
@@ -410,7 +409,7 @@ function download_artifact(
                     msg *= "\n$desc: \
                     ignoring hash mismatch and moving \
                     artifact to the expected location"
-                    @pkg_error(msg)
+                    @error(msg)
                 else
                     error(msg)
                 end
@@ -419,7 +418,7 @@ function download_artifact(
             isnothing(progress) || progress(10000, 10000; status = "moving to artifact store")
             mv_temp_dir_retries(temp_dir, dst)
         catch err
-            @pkg_debug "download_artifact error" tree_hash tarball_url tarball_hash err
+            @debug "download_artifact error" tree_hash tarball_url tarball_hash err
             if isa(err, InterruptException)
                 rethrow(err)
             end
@@ -431,7 +430,7 @@ function download_artifact(
                 rm(temp_dir; recursive = true, force = true)
             catch e
                 e isa InterruptException && rethrow()
-                @pkg_warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e)
+                @warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e)
             end
         end
         return true
@@ -509,7 +508,7 @@ function try_artifact_download_sources(
     if pkg_server_eligible && (server = pkg_server()) !== nothing
         url = "$server/artifact/$hash"
         download_success = let url = url
-            @pkg_debug "Downloading artifact from Pkg server" name artifacts_toml platform url
+            @debug "Downloading artifact from Pkg server" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do
                 download_artifact(hash, url; verbose, quiet_download, io, progress)
             end
@@ -518,7 +517,7 @@ function try_artifact_download_sources(
         if download_success === true
             return artifact_path(hash)
         else
-            @pkg_debug "Failed to download artifact from Pkg server" download_success
+            @debug "Failed to download artifact from Pkg server" download_success
             push!(errors, (url, download_error_text(download_success)))
         end
     end
@@ -535,7 +534,7 @@ function try_artifact_download_sources(
         url = entry["url"]::String
         tarball_hash = entry["sha256"]::String
         download_success = let url = url
-            @pkg_debug "Downloading artifact" name artifacts_toml platform url
+            @debug "Downloading artifact" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do
                 download_artifact(hash, url, tarball_hash; verbose, quiet_download, io, progress)
             end
@@ -544,7 +543,7 @@ function try_artifact_download_sources(
         if download_success === true
             return artifact_path(hash)
         else
-            @pkg_debug "Failed to download artifact" download_success
+            @debug "Failed to download artifact" download_success
             push!(errors, (url, download_error_text(download_success)))
         end
     end
@@ -787,11 +786,11 @@ function artifact_meta_typed(name::String, artifact_dict::Dict{String, Any}, art
     elseif meta0 isa Dict{String, Any}
         meta = meta0
     else
-        @pkg_error("Invalid artifacts file at $(artifacts_toml): artifact '$name' malformed, must be array or dict!")
+        @error("Invalid artifacts file at $(artifacts_toml): artifact '$name' malformed, must be array or dict!")
         return nothing
     end
     if meta !== nothing && !haskey(meta, "git-tree-sha1")
-        @pkg_error("Invalid artifacts file at $(artifacts_toml): artifact '$name' contains no `git-tree-sha1`!")
+        @error("Invalid artifacts file at $(artifacts_toml): artifact '$name' contains no `git-tree-sha1`!")
         return nothing
     end
     return meta

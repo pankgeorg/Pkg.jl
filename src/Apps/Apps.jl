@@ -1,5 +1,4 @@
 module Apps
-import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using PkgWasm
 using PkgWasm: atomic_toml_write, stdout_f
@@ -104,7 +103,7 @@ function check_apps_in_path(apps)
     for app_name in keys(apps)
         which_result = Sys.which(shim_filename(app_name))
         if which_result === nothing
-            @pkg_warn """
+            @warn """
             App '$app_name' was installed but is not available in PATH.
             Consider adding '$(julia_bin_path())' to your PATH environment variable.
             """ maxlog = 1
@@ -113,7 +112,7 @@ function check_apps_in_path(apps)
             # Check for collisions
             expected_path = shim_path(app_name)
             if which_result != expected_path
-                @pkg_warn """
+                @warn """
                 App '$app_name' collision detected:
                 Expected: $expected_path
                 Found: $which_result
@@ -187,7 +186,7 @@ function reconcile_shims(manifest::Manifest, pkg::PackageSpec, project)
         uuid == pkg.uuid && continue
         overlap = sort!(collect(intersect(keys(entry.apps), keys(project.apps))))
         if !isempty(overlap)
-            @pkg_warn "Overwriting apps $(join(overlap, ", ")) provided by package $(entry.name)"
+            @warn "Overwriting apps $(join(overlap, ", ")) provided by package $(entry.name)"
         end
     end
     return
@@ -253,7 +252,7 @@ function _resolve(manifest::Manifest, pkgname = nothing)
                     push!(candidates, normpath(joinpath(sourcepath, path)))
                     resolved = findfirst(isdir, candidates)
                     if resolved === nothing
-                        @pkg_warn "Ignoring source with relative path `$(path)` for dependency $(depname) of package $(pkg.name) since it does not exist relative to the installed package"
+                        @warn "Ignoring source with relative path `$(path)` for dependency $(depname) of package $(pkg.name) since it does not exist relative to the installed package"
                         delete!(source, "path")
                         isempty(source) && delete!(sources, depname)
                     else
@@ -351,7 +350,7 @@ function _add(pkg::PackageSpec)
     end
     precompile(pkg.name)
 
-    @pkg_info "For package: $(pkg.name) installed apps $(join(keys(project.apps), ","))"
+    @info "For package: $(pkg.name) installed apps $(join(keys(project.apps), ","))"
     return check_apps_in_path(project.apps)
 end
 
@@ -412,7 +411,7 @@ function _develop(pkg::PackageSpec)
 
     generate_shims_for_apps(pkg.name, project.apps, sourcepath, julia_executable())
 
-    @pkg_info "For package: $(pkg.name) installed apps: $(join(keys(project.apps), ","))"
+    @info "For package: $(pkg.name) installed apps: $(join(keys(project.apps), ","))"
     return check_apps_in_path(project.apps)
 end
 
@@ -586,10 +585,10 @@ function _rm(pkg_or_app::Union{PackageSpec, Nothing})
     dep_idx = findfirst(dep -> dep.name == pkg_or_app, manifest.deps)
     if dep_idx !== nothing
         dep = manifest.deps[dep_idx]
-        @pkg_info "Deleting all apps for package $(dep.name)"
+        @info "Deleting all apps for package $(dep.name)"
         delete!(manifest.deps, dep.uuid)
         for (appname, appinfo) in dep.apps
-            @pkg_info "Deleted $(appname)"
+            @info "Deleted $(appname)"
             rm_shim(appname; force = true)
         end
         if dep.path === nothing
@@ -602,7 +601,7 @@ function _rm(pkg_or_app::Union{PackageSpec, Nothing})
             app_idx === nothing && continue
             found = true
             app = pkg.apps[app_idx]
-            @pkg_info "Deleted app $(app.name)"
+            @info "Deleted app $(app.name)"
             delete!(pkg.apps, app.name)
             rm_shim(app.name; force = true)
             if isempty(pkg.apps)

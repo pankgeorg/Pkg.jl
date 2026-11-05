@@ -300,7 +300,7 @@ function get_metadata_headers(url::AbstractString)
 end
 
 # PkgWasm (PLAN.md D3): the stock DownloadCancellation machinery (Base.Event per download,
-# notify on cancel) is removed; downloads are serial calls into the Host seam.
+# notify on cancel) is removed: no cancellation event.
 
 function download(
         url::AbstractString,
@@ -321,109 +321,16 @@ function download(
         push!(headers, header)
     end
 
-    # PkgWasm (PLAN.md D2, D3): the transfer goes through the Host seam: one request, no
-    # Downloads.jl tasks, no cancellation events. As in stock Pkg, a non-2xx final status is an
-    # error and `dest` is not left behind; it is reported like the `Downloads.RequestError`
-    # stock Pkg throws.
-    response = Host.download(String(url), String(dest), headers)
-    if !(200 <= response.status < 300)
-        Base.rm(dest; force = true)
-        throw(HTTPStatusError(String(url), response.status))
+    # PkgWasm (PLAN.md D3): stock's transfer without its cancellation event. In the Wasm build,
+    # `Downloads.request` is WasmFetch's (the host's fetch, an overlay in WasmCodegen's method
+    # table); natively it is Downloads' own. (`throw = true`: never a RequestError returned.)
+    arg_write(dest) do output
+        response = Downloads.request(url; output, headers, progress)::Downloads.Response
+        Downloads.Curl.status_ok(response) && return output
+        throw(Downloads.RequestError(url, Downloads.Curl.CURLE_OK, "", response))
     end
-    # Downloads.jl calls `progress(total, now)` as the body arrives, `total` being the
-    # response's Content-Length (0 without one). The Host seam has no progress callbacks, so it
-    # is called once, with the complete transfer: what stock's last call reports (artifact
-    # downloads print their size from it).
-    progress === nothing || progress(content_length(response.headers), Int(filesize(dest)))
     return dest
 end
-
-function content_length(headers::Vector{Pair{String, String}})
-    for (k, v) in headers
-        if lowercase(k) == "content-length"
-            n = tryparse(Int, strip(v))
-            return n === nothing ? 0 : n
-        end
-    end
-    return 0
-end
-
-"""
-    HTTPStatusError(url, status)
-
-PkgWasm: a download whose final HTTP status is not 2xx, printed like stock Pkg's
-`Downloads.RequestError`, i.e. `RequestError: <status line> while requesting <url>`.
-
-The Host seam (ABI v2 `http_head`) carries the status code but not the status line, so the
-line is rebuilt as `HTTP/1.1 <code> <reason>` with the standard reason phrases (those of Node's
-`http.STATUS_CODES`). That is byte-identical to stock against an HTTP/1.1 server using the
-standard phrases, which includes the frozen Pkg-server proxy (runner/pkgserver.mjs). Against
-an HTTP/2 server stock prints `HTTP/2 <code>` instead; see lanes/pkg-fork/STATUS.md.
-"""
-struct HTTPStatusError <: Exception
-    url::String
-    status::Int
-end
-
-const HTTP_REASON_PHRASES = Dict{Int, String}(
-    300 => "Multiple Choices",
-    301 => "Moved Permanently",
-    302 => "Found",
-    303 => "See Other",
-    304 => "Not Modified",
-    305 => "Use Proxy",
-    307 => "Temporary Redirect",
-    308 => "Permanent Redirect",
-    400 => "Bad Request",
-    401 => "Unauthorized",
-    402 => "Payment Required",
-    403 => "Forbidden",
-    404 => "Not Found",
-    405 => "Method Not Allowed",
-    406 => "Not Acceptable",
-    407 => "Proxy Authentication Required",
-    408 => "Request Timeout",
-    409 => "Conflict",
-    410 => "Gone",
-    411 => "Length Required",
-    412 => "Precondition Failed",
-    413 => "Payload Too Large",
-    414 => "URI Too Long",
-    415 => "Unsupported Media Type",
-    416 => "Range Not Satisfiable",
-    417 => "Expectation Failed",
-    418 => "I'm a Teapot",
-    421 => "Misdirected Request",
-    422 => "Unprocessable Entity",
-    423 => "Locked",
-    424 => "Failed Dependency",
-    425 => "Too Early",
-    426 => "Upgrade Required",
-    428 => "Precondition Required",
-    429 => "Too Many Requests",
-    431 => "Request Header Fields Too Large",
-    451 => "Unavailable For Legal Reasons",
-    500 => "Internal Server Error",
-    501 => "Not Implemented",
-    502 => "Bad Gateway",
-    503 => "Service Unavailable",
-    504 => "Gateway Timeout",
-    505 => "HTTP Version Not Supported",
-    506 => "Variant Also Negotiates",
-    507 => "Insufficient Storage",
-    508 => "Loop Detected",
-    509 => "Bandwidth Limit Exceeded",
-    510 => "Not Extended",
-    511 => "Network Authentication Required",
-)
-
-function http_status_line(status::Int)
-    reason = get(HTTP_REASON_PHRASES, status, nothing)
-    return reason === nothing ? "HTTP/1.1 $status" : "HTTP/1.1 $status $reason"
-end
-
-Base.showerror(io::IO, err::HTTPStatusError) =
-    print(io, "RequestError: ", http_status_line(err.status), " while requesting ", err.url)
 
 """
     download_verify(

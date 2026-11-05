@@ -2,26 +2,14 @@
 #
 # These are the only operations whose implementation differs between native Julia and Wasm.
 # The methods below are the native implementations. For the Wasm build, the project patch file
-# `runner/patches/pkgwasm-host.jl` (owned by lane wcg-event) redefines `download` and
-# `decompress` on top of the WasmCodegen runtime, so the signatures here are part of the
-# contract and must not change.
+# `runner/patches/pkgwasm-host.jl` redefines `decompress`, `platform`, `std_stream` and
+# `init_runtime`, so the signatures here are part of the contract and must not change.
+# Downloads are no longer part of the seam: they are stock Pkg's `Downloads.request`, which a
+# Wasm build gets from WasmFetch's overlay (the host's fetch).
 
 module Host
 
-import Downloads
 import ..PkgWasm # PlatformEngines is included after Host; its helpers are looked up at call time
-
-"""
-    Host.Response(status, url, headers)
-
-Final response of a [`Host.download`](@ref): HTTP status, the URL after redirects and the
-response headers (names as sent by the server).
-"""
-struct Response
-    status::Int
-    url::String
-    headers::Vector{Pair{String, String}}
-end
 
 """
     Host.HostError(status, msg)
@@ -36,9 +24,6 @@ end
 
 const WASI_EIO = 29
 const WASI_EILSEQ = 25
-
-# ABI.md §4 `http_start` flags bit0: follow redirects, at most 10.
-const MAX_REDIRECTS = 10
 
 Base.showerror(io::IO, e::HostError) = print(io, "HostError: ", e.msg, " (errno ", e.status, ")")
 
@@ -61,20 +46,6 @@ function cleanup!(path::String, @nospecialize(err), what::String)
             "; additionally failed to remove ", path, ": ", sprint(PkgWasm.showerror_known, rm_err))))
     end
     throw(as_host_error(err, what))
-end
-
-const NATIVE_DOWNLOADER = Ref{Union{Nothing, Downloads.Downloader}}(nothing)
-
-# A private Downloader whose requests follow at most MAX_REDIRECTS redirects, as the Wasm side
-# does; created on first use so no Downloader exists at precompile/image time.
-function native_downloader()
-    d = NATIVE_DOWNLOADER[]
-    if d === nothing
-        d = Downloads.Downloader()
-        d.easy_hook = (easy, info) -> Downloads.Curl.setopt(easy, Downloads.Curl.CURLOPT_MAXREDIRS, MAX_REDIRECTS)
-        NATIVE_DOWNLOADER[] = d
-    end
-    return d
 end
 
 """
@@ -105,38 +76,6 @@ Wasm build the patch answers it from `julia_io.host_platform` (ABI v3) plus `jul
 Called once per session by `pkgwasm_init`/`__init__`; use `PkgWasm.host_platform()` elsewhere.
 """
 platform()::Base.BinaryPlatforms.Platform = Base.BinaryPlatforms.HostPlatform()
-
-"""
-    Host.download(url, dest, headers) -> Host.Response
-
-GET `url` into `dest`, following at most 10 redirects. The body is written to
-`dest * ".partial"` and renamed to `dest` only after a complete response with status < 400.
-On HTTP status ≥ 400, `dest` and the partial file are removed and the response is returned;
-the caller maps the status to the error stock Pkg reports. Any other failure (transport,
-too many redirects, filesystem) removes the partial file, leaves a previous complete `dest`
-untouched, and throws [`HostError`](@ref). A partial `dest` is never left behind.
-"""
-function download(url::String, dest::String, headers::Vector{Pair{String, String}})::Response
-    tmp = partial_path(dest)
-    what = "download $url"
-    try
-        rm(tmp; force = true)
-        resp = open(tmp, "w") do output
-            Downloads.request(url; output, headers, downloader = native_downloader())
-        end
-        if resp.status >= 400
-            rm(tmp; force = true)
-            rm(dest; force = true)
-        else
-            # one rename: an atomic replace or an error with the previous `dest` kept (`mv` with
-            # `force` deletes `dest` first and may fall back to copying)
-            Base.rename(tmp, dest)
-        end
-        return Response(resp.status, resp.url, Pair{String, String}[String(k) => String(v) for (k, v) in resp.headers])
-    catch err
-        cleanup!(tmp, err, what)
-    end
-end
 
 """
     Host.decompress(src, dst) -> nothing

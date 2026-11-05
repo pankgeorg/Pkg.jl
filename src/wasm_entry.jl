@@ -56,7 +56,6 @@ function sanitize_globals!()
     API.saved_initial_snapshot[] = false
     empty!(GitTools.GIT_PROTOCOLS)
     empty!(GitTools.GIT_USERS)
-    Host.NATIVE_DOWNLOADER[] = nothing
     PlatformEngines.EXE7Z[] = ""
     PlatformEngines.EXEZSTD[] = ""
     HOST_PLATFORM[] = HOST_PLATFORM_PLACEHOLDER # D13: set by init_globals! from Host.platform()

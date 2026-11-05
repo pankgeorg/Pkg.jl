@@ -43,7 +43,7 @@ function Base.getindex(t::RegistryTarIndex, k::String)
         return String(data)
     catch e
         # (the stock read of the compressed tarball, as if the cache had not been used)
-        @pkg_debug "registry cache read failed, reading $(t.compressed) in memory" exception = e
+        @debug "registry cache read failed, reading $(t.compressed) in memory" exception = e
         io = t.io
         io === nothing || close(io)
         t.io = nothing
@@ -622,7 +622,7 @@ function load_compressed_registry(compressed_tar::String, tree_info::Union{Base.
             built = write_registry_cache(dir, tree_info, source, path)
             built === nothing || return built
         catch e
-            @pkg_debug "registry cache unavailable, reading $(compressed_tar) in memory" exception = e
+            @debug "registry cache unavailable, reading $(compressed_tar) in memory" exception = e
         end
     end
     return uncompress_registry(compressed_tar)
@@ -876,18 +876,18 @@ end
 function verify_compressed_registry_toml(path::String)
     d = TOML.tryparsefile(path)
     if d isa TOML.ParserError
-        @pkg_warn "Failed to parse registry TOML file at $(repr(path))" exception = d
+        @warn "Failed to parse registry TOML file at $(repr(path))" exception = d
         return false
     end
     for key in ("git-tree-sha1", "uuid", "path")
         if !haskey(d, key)
-            @pkg_warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
+            @warn "Expected key $(repr(key)) to exist in registry TOML file at $(repr(path))"
             return false
         end
     end
     compressed_file = joinpath(dirname(path), d["path"]::String)
     if !isfile(compressed_file)
-        @pkg_warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
+        @warn "Expected the compressed registry for $(repr(path)) to exist at $(repr(compressed_file))"
         return false
     end
     return true

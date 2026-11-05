@@ -1,7 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module Types
-import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Random
@@ -11,7 +10,7 @@ import Base.string
 
 using TOML
 import ..PkgWasm, ..Registry
-import ..PkgWasm: GitTools, TOMLWriter, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
+import ..PkgWasm: GitTools, with_toml_type, with_toml_dict, toml_uuid, toml_string_or_nothing, toml_strings, toml_foreach, WASM_TARGET, depots, depots1, logdir, set_readonly, safe_realpath, pkg_server, stdlib_dir, stdlib_path, isurl, stderr_f, TargetIO, RESPECT_SYSIMAGE_VERSIONS, atomic_toml_write, create_cachedir_tag, normalize_path_for_toml
 import Base.BinaryPlatforms: Platform
 using ..PkgWasm.Versions
 import FileWatching
@@ -1009,7 +1008,7 @@ function usage_times(@nospecialize(entries), usage_filepath, k)
                 WASM_TARGET ? error("PkgWasm: unsupported usage time") : Base.inferencebarrier(Dates.DateTime)(t)
         else
             # if there's no time entry because of a write failure be conservative and mark it as being used now
-            @pkg_debug "Usage file `$usage_filepath` has a missing `time` entry for `$k`. Marking as used `now()`"
+            @debug "Usage file `$usage_filepath` has a missing `time` entry for `$k`. Marking as used `now()`"
             Dates.now()
         end
     # (a vector of `DateTime`s, as `map` makes them; empty, `maximum` throws the same error)
@@ -1038,7 +1037,7 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
             try
                 TOML.parsefile(usage_file)
             catch err
-                @pkg_warn "Failed to parse usage file `$usage_file`, ignoring." err = PkgWasm.log_value(err)
+                @warn "Failed to parse usage file `$usage_file`, ignoring." err
                 Dict{String, Any}()
             end
         else
@@ -1059,7 +1058,7 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
         try
             atomic_toml_write(usage_file, usage, sorted = true)
         catch err
-            @pkg_error "Failed to write valid usage file `$usage_file`" exception = err
+            @error "Failed to write valid usage file `$usage_file`" exception = err
         end
     end
     return
@@ -1108,7 +1107,7 @@ end
 function error_if_in_sysimage(pkg::PackageSpec)
     RESPECT_SYSIMAGE_VERSIONS[] || return false
     if pkg.uuid === nothing
-        @pkg_error "Expected package $(pkg.name) to have a set UUID, please file a bug report."
+        @error "Expected package $(pkg.name) to have a set UUID, please file a bug report."
         return false
     end
     pkgid = Base.PkgId(pkg.uuid, pkg.name)
@@ -1321,7 +1320,7 @@ function handle_repo_add!(ctx::Context, pkg::PackageSpec)
             let repo_source = repo_source
                 LibGit2.with(LibGit2.GitRepo(repo_source)) do repo
                     if LibGit2.isdirty(repo)
-                        @pkg_warn "The repository at `$(repo_source)` has uncommitted changes. Consider using `Pkg.develop` instead of `Pkg.add` if you want to work with the current state of the repository."
+                        @warn "The repository at `$(repo_source)` has uncommitted changes. Consider using `Pkg.develop` instead of `Pkg.add` if you want to work with the current state of the repository."
                     end
                 end
             end

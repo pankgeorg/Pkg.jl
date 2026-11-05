@@ -219,9 +219,9 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
     manifest_format = VersionNumber(raw["manifest_format"]::String)
     if !in(manifest_format.major, 1:2)
         if f_or_io isa IO
-            @pkg_warn "Unknown Manifest.toml format version detected in streamed manifest. Unexpected behavior may occur" manifest_format
+            @warn "Unknown Manifest.toml format version detected in streamed manifest. Unexpected behavior may occur" manifest_format
         else
-            @pkg_warn "Unknown Manifest.toml format version detected in file `$(f_or_io)`. Unexpected behavior may occur" manifest_format maxlog = 1 _id = Symbol(f_or_io)
+            @warn "Unknown Manifest.toml format version detected in file `$(f_or_io)`. Unexpected behavior may occur" manifest_format maxlog = 1 _id = Symbol(f_or_io)
         end
     end
     stage1 = Dict{String, Vector{Stage1}}()
@@ -260,7 +260,7 @@ function Manifest(raw::Dict{String, Any}, f_or_io::Union{String, IO})::Manifest
                     entry.exts = read_exts(get(info, "extensions", nothing)::Union{Nothing, Dict{String, Any}})
                 catch
                     # TODO: Should probably not unconditionally log something
-                    # @pkg_debug "Could not parse manifest entry for `$name`" f_or_io
+                    # @debug "Could not parse manifest entry for `$name`" f_or_io
                     rethrow()
                 end
                 entry.other = info
@@ -475,7 +475,7 @@ function write_manifest(env::EnvCache)
 end
 function write_manifest(manifest::Manifest, manifest_file::AbstractString)
     if manifest.manifest_format.major == 1
-        @pkg_warn """The active manifest file at `$(manifest_file)` has an old format.
+        @warn """The active manifest file at `$(manifest_file)` has an old format.
         Any package operation (add, remove, update, etc.) will automatically upgrade it to format v2.1.""" maxlog = 1 _id = Symbol(manifest_file)
     end
     return write_manifest(destructure(manifest), manifest_file)
@@ -485,7 +485,7 @@ function write_manifest(io::IO, manifest::Manifest)
 end
 function write_manifest(io::IO, raw_manifest::Dict)
     print(io, "# This file is machine-generated - editing it directly is not advised\n\n")
-    TOMLWriter.print(io, raw_manifest, sorted = true) do x
+    TOML.print(io, raw_manifest, sorted = true) do x
         (typeof(x) in [String, Nothing, UUID, SHA1, VersionNumber]) && return string(x)
         error("unhandled type `$(typeof(x))`")
     end
@@ -509,7 +509,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
             return
         end
     end
@@ -520,7 +520,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
             return
         end
     end
@@ -530,7 +530,7 @@ function check_manifest_julia_version_compat(manifest::Manifest, manifest_file::
         if julia_version_strict
             pkgerror(msg)
         else
-            @pkg_warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
+            @warn msg maxlog = 1 _file = manifest_file _line = 0 _module = nothing
         end
     end
 end

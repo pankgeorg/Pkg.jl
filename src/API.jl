@@ -1,7 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 module API
-import ..PkgWasm: @pkg_debug, @pkg_info, @pkg_warn, @pkg_error  # (logging: logging.jl)
 
 using UUIDs
 using Printf
@@ -72,7 +71,7 @@ function package_info(env::EnvCache, pkg::PackageSpec, entry::PackageEntry)::Pac
         safe_realpath(manifest_rel_path(env, pkg.repo.source::String))
     _source_path = Operations.source_path(env.manifest_file, pkg)
     if _source_path === nothing
-        @pkg_debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
+        @debug "Manifest file $(env.manifest_file) contents:\n$(read(env.manifest_file, String))"
         pkgerror("could not find source path for package $(err_rep(pkg)) based on $(env.manifest_file)")
     end
     info = PackageInfo(
@@ -639,7 +638,7 @@ Use verbose mode (`verbose=true`) for detailed output.
 function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = nothing, verbose = false, force = false, kwargs...)
     Context!(ctx; kwargs...)
     if collect_delay !== nothing
-        @pkg_warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
+        @warn "The `collect_delay` parameter is no longer used. Packages are now deleted immediately when they become unreachable."
     end
     env = ctx.env
 
@@ -808,7 +807,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         manifest = try
             read_manifest(path)
         catch e
-            @pkg_warn "Reading manifest file at $path failed with error" exception = e
+            @warn "Reading manifest file at $path failed with error" exception = e
             return nothing
         end
 
@@ -852,7 +851,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         artifact_dict = try
             parse_toml(path)
         catch e
-            @pkg_warn "Reading artifacts file at $path failed with error" exception = e
+            @warn "Reading artifacts file at $path failed with error" exception = e
             return nothing
         end
 
@@ -1025,12 +1024,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     try
                         size += lstat(path).size
                     catch ex
-                        @pkg_error("Failed to calculate size of $path", exception = ex)
+                        @error("Failed to calculate size of $path", exception = ex)
                     end
                 end
             end
         catch ex
-            @pkg_error("Failed to calculate size of $path", exception = ex)
+            @error("Failed to calculate size of $path", exception = ex)
         end
         return size
     end
@@ -1041,7 +1040,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             try
                 lstat(path).size
             catch ex
-                @pkg_error("Failed to calculate size of $path", exception = ex)
+                @error("Failed to calculate size of $path", exception = ex)
                 0
             end
         else
@@ -1051,7 +1050,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             Base.Filesystem.prepare_for_deletion(path)
             Base.rm(path; recursive = true, force = true)
         catch e
-            @pkg_warn("Failed to delete $path", exception = e)
+            @warn("Failed to delete $path", exception = e)
             return 0
         end
         if verbose
@@ -1122,7 +1121,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     Base.rm(p; recursive = true, force = true, allow_delayed_delete = false)
                     Base.rm(f)
                 catch e
-                    @pkg_debug "Failed to delete $p" exception = e
+                    @debug "Failed to delete $p" exception = e
                 end
             end
             for dir in delayed_delete_dirs
@@ -1182,7 +1181,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                 catch e
                     # Silently ignore errors from git gc
                     if verbose
-                        @pkg_warn "git gc failed for registry $(reg_name)" exception = e
+                        @warn "git gc failed for registry $(reg_name)" exception = e
                     end
                 end
             end
@@ -1241,7 +1240,7 @@ function precompile(
     Context!(ctx; kwargs...)
     if !already_instantiated
         instantiate(ctx; allow_autoprecomp = false, workspace, kwargs...)
-        @pkg_debug "precompile: instantiated"
+        @debug "precompile: instantiated"
     end
 
     # TODO: Maybe this should be done in Base?
@@ -1333,7 +1332,7 @@ function instantiate(
         print(msg_io, "` or consider `")
         print(msg_io, update_cmd)
         print(msg_io, "` if necessary.")
-        @pkg_warn String(take!(msg_io))
+        @warn String(take!(msg_io))
     end
 
     Operations.prune_manifest(ctx.env)

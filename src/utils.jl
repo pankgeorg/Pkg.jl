@@ -202,7 +202,7 @@ function atomic_toml_write(path::String, data; private::Bool = false, kws...)
     return mktempdir(dir) do temp_dir
         temp_path = joinpath(temp_dir, basename(path))
         open(temp_path, "w") do temp_io
-            TOMLWriter.print(temp_io, data; kws...)
+            TOML.print(temp_io, data; kws...)
         end
         if mode != -1
             chmod(temp_path, mode)

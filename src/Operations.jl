@@ -1653,11 +1653,14 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
 
     # Check what registries the current pkg server tracks
     # Disable if precompiling to not access internet
-    server_registry_info = if Base.JLOptions().incremental == 0
-        Registry.pkg_server_registry_info()
-    else
-        nothing
-    end
+    # (wrapped in `Some` so that the closures below capture a concrete type)
+    server_registry_info_some = Some{Union{Nothing, Tuple{SubString{String}, Dict{UUID, SHA1}}}}(
+        if Base.JLOptions().incremental == 0
+            Registry.pkg_server_registry_info()
+        else
+            nothing
+        end
+    )
 
     # use eager throw version
     Base.Experimental.@sync begin
@@ -1686,6 +1689,7 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                         archive_urls = Pair{String, Bool}[]
                         # Check if the current package is available in one of the registries being tracked by the pkg server
                         # In that case, download from the package server
+                        local server_registry_info = something(server_registry_info_some)
                         if Registry.is_pkg_in_pkgserver_registry(pkg.uuid, server_registry_info, ctx.registries)
                             server, registry_info = server_registry_info
                             url = "$server/package/$(pkg.uuid)/$(pkg.tree_hash)"
@@ -1717,7 +1721,9 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
             mode = :int, always_reprint = true
         )
         bar.max = length(pkgs_to_install)
-        fancyprint = can_fancyprint(ctx.io)
+        # `::Bool`: the closure below captures it, and `can_fancyprint` may have methods for other
+        # `IO` types (`max_methods` is 1 in Pkg, so a call with an abstract `IO` then infers as `Any`)
+        fancyprint = can_fancyprint(ctx.io)::Bool
         try
             for i in 1:length(pkgs_to_install)
                 pkg::eltype(pkgs), exc_or_success_or_nothing, bt_or_pathurls = take!(results)
@@ -2497,7 +2503,7 @@ function add(
         show_update(ctx.env, ctx.registries; io = ctx.io)
         build_versions(ctx, union(new_apply, new_git))
         if allow_autoprecomp
-            added = Set(pkg.uuid for pkg in pkgs)
+            added = Set{Union{Nothing, UUID}}(pkg.uuid for pkg in pkgs)
             affected = filter(pkg -> !(pkg.uuid in added), changed_packages_and_dependents(ctx.env))
             Pkg._auto_precompile(ctx, vcat(pkgs, affected))
         end
@@ -3024,7 +3030,7 @@ function sandbox(
         allow_earlier_backwards_compatible_versions::Bool = true,
         allow_reresolve::Bool = true
     )
-    sandbox_project = projectfile_path(sandbox_path)
+    sandbox_project = projectfile_path(sandbox_path)::String
 
     return mktempdir() do tmp
         sandbox_project_override_local = sandbox_project_override_in
@@ -4009,7 +4015,7 @@ end
 function print_compat(ctx::Context, pkgs_in::Vector{PackageSpec} = PackageSpec[]; io = nothing)
     io = something(io, ctx.io)
     printpkgstyle(io, :Compat, pathrepr(ctx.env.project_file))
-    names = [pkg.name for pkg in pkgs_in]
+    names = Union{Nothing, String}[pkg.name for pkg in pkgs_in]
     pkgs = isempty(pkgs_in) ? ctx.env.project.deps : filter(pkg -> in(first(pkg), names), ctx.env.project.deps)
     add_julia = isempty(pkgs_in) || any(p -> p.name == "julia", pkgs_in)
     longest_dep_len = isempty(pkgs) ? length("julia") : max(reduce(max, map(length, collect(keys(pkgs)))), length("julia"))

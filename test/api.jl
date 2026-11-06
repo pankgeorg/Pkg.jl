@@ -719,7 +719,7 @@ end
     end
 end
 
-@testset "API wrappers, gc and registry commands make static calls" begin
+@testset "API wrappers, gc, registry commands and the resolver make static calls" begin
     # Calls that are only resolved at run time can't be compiled ahead of time without
     # Julia's runtime (e.g. by `juliac --trim`): the keyword arguments of the API wrappers
     # are a concrete `NamedTuple`, and parsed TOML values are checked before use.
@@ -794,6 +794,12 @@ end
     DownloadJob = NamedTuple{(:pkg, :urls, :path), Tuple{Pkg.Operations.DownloadPkg, Set{String}, String}}
     calls = dynamic_calls(Pkg.Operations.download_source, (Pkg.Types.Context, Vector{DownloadJob}, Bool, Int, Symbol))
     @test !any(contains("indexed_iterate"), calls)
+    # the resolver's rounds are not specialized on widened argument types (e.g. `::Array`)
+    precompile(Pkg.Resolve.resolve, (Pkg.Resolve.Graph,))
+    @test isempty(dynamic_calls(Pkg.Resolve._resolve, (Pkg.Resolve.Graph, Nothing, Nothing)))
+    for mi in Base.specializations(only(methods(Pkg.Resolve._resolve)))
+        mi isa Core.MethodInstance && @test Base.isdispatchtuple(mi.specTypes)
+    end
 end
 
 end # module APITests

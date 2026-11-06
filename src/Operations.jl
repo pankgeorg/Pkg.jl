@@ -2068,14 +2068,14 @@ end
 # Copy the resolved environment and its workspace ancestors. The ancestors supply
 # preferences, but all projects must use the resolved manifest in the temporary tree.
 function selector_environment(env::EnvCache)
-    manifest = deepcopy(env.manifest)
+    manifest = Types.copy_manifest(env.manifest)
     abspath!(env, manifest)
     # Selectors don't depend on the environment's identity, and the id may be first written
     # after installation, so leave it out to keep the cached selection valid.
     manifest.environment_id = nothing
     manifest.environment_name = nothing
     projects = map(enumerate(Base.get_projects_workspace_to_root(env.project_file))) do (i, file)
-        project = deepcopy(i == 1 ? env.project : env.workspace[file])
+        project = Types.copy_project(i == 1 ? env.project : env.workspace[file])
         project.manifest = nothing
         empty!(project.workspace)
         i == 1 || (project.workspace["projects"] = ["child"])

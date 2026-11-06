@@ -121,9 +121,52 @@ PackageSpec(name::AbstractString, uuid::UUID) = PackageSpec(; name = name, uuid 
 PackageSpec(name::AbstractString, version::VersionTypes) = PackageSpec(; name = name, version = version)::PackageSpec
 PackageSpec(n::AbstractString, u::UUID, v::VersionTypes) = PackageSpec(; name = n, uuid = u, version = v)::PackageSpec
 
+# `==` of two version fields. Their `Union` has more types than inference splits a call on, so
+# `a == b` itself would be dispatched at run time: the types are told apart first.
+function version_eq(@nospecialize(a), @nospecialize(b))
+    a === nothing && return b === nothing
+    a isa VersionNumber && return b isa VersionNumber && a == b
+    a isa VersionSpec && return b isa VersionSpec && a == b
+    a isa UpgradeLevel && return b isa UpgradeLevel && a == b
+    a isa String && return b isa String && a == b
+    return other_eq(a, b)
+end
+
+# `==` of two values of parsed TOML tables, by the types the TOML parser makes: `==` of two
+# `Dict{String, Any}` would compare each pair of values with a call dispatched at run time.
+function toml_eq(@nospecialize(a), @nospecialize(b))
+    if a isa Dict{String, Any}
+        b isa Dict{String, Any} || return other_eq(a, b)
+        length(a) == length(b) || return false
+        for (k, v) in a
+            haskey(b, k) || return false
+            toml_eq(v, b[k]) || return false
+        end
+        return true
+    elseif a isa Vector{Any}
+        b isa Vector{Any} || return other_eq(a, b)
+        length(a) == length(b) || return false
+        for i in eachindex(a, b)
+            toml_eq(a[i], b[i]) || return false
+        end
+        return true
+    elseif a isa String
+        return b isa String ? a == b : other_eq(a, b)
+    elseif a isa Vector{String}
+        return b isa Vector{String} ? a == b : other_eq(a, b)
+    elseif a isa Int64
+        return b isa Int64 ? a == b : other_eq(a, b)
+    elseif a isa Bool
+        return b isa Bool ? a == b : other_eq(a, b)
+    end
+    return other_eq(a, b)
+end
+# (`==` of values of other types: dispatched at run time, in a function of its own)
+@noinline other_eq(@nospecialize(a), @nospecialize(b)) = (a == b)::Bool
+
 # XXX: These definitions are a bit fishy. It seems to be used in an `==` call in status printing
 function Base.:(==)(a::PackageSpec, b::PackageSpec)
-    return a.name == b.name && a.uuid == b.uuid && a.version == b.version &&
+    return a.name == b.name && a.uuid == b.uuid && version_eq(a.version, b.version) &&
         a.tree_hash == b.tree_hash && a.repo == b.repo && a.path == b.path &&
         a.pinned == b.pinned
 end
@@ -282,7 +325,16 @@ Base.@kwdef mutable struct Project
     readonly::Bool = false
 end
 const _project_comparison_fields = filter(!=(:comments), collect(fieldnames(Project)))
-Base.:(==)(t1::Project, t2::Project) = all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, _project_comparison_fields)
+# (all fields but `comments`, compared one by one with their own types: comparing
+# `getfield(t, name)` for each field name would be a call on a `Union` of all of them)
+Base.:(==)(t1::Project, t2::Project) =
+    toml_eq(t1.other, t2.other) && t1.name == t2.name && t1.uuid == t2.uuid &&
+    version_eq(t1.version, t2.version) && t1.manifest == t2.manifest && t1.entryfile == t2.entryfile &&
+    version_eq(t1.julia_syntax_version, t2.julia_syntax_version) &&
+    t1.deps == t2.deps && t1._deps_weak == t2._deps_weak && t1.weakdeps == t2.weakdeps &&
+    t1.exts == t2.exts && t1.extras == t2.extras && t1.targets == t2.targets && t1.apps == t2.apps &&
+    t1.compat == t2.compat && t1.compat_overrides == t2.compat_overrides && t1.sources == t2.sources &&
+    toml_eq(t1.workspace, t2.workspace) && t1.readonly == t2.readonly
 Base.hash(t::Project, h::UInt) = foldr(hash, [getfield(t, x) for x in _project_comparison_fields], init = h)
 
 
@@ -315,7 +367,7 @@ Base.:(==)(t1::PackageEntry, t2::PackageEntry) = t1.name == t2.name &&
     t1.exts == t2.exts &&
     t1.uuid == t2.uuid &&
     t1.apps == t2.apps &&
-    t1.julia_syntax_version == t2.julia_syntax_version &&
+    version_eq(t1.julia_syntax_version, t2.julia_syntax_version) &&
     t1.registries == t2.registries
 # omits `other`
 Base.hash(x::PackageEntry, h::UInt) = foldr(hash, [x.name, x.version, x.path, x.entryfile, x.pinned, x.repo, x.tree_hash, x.deps, x.weakdeps, x.exts, x.uuid, x.registries, x.julia_syntax_version], init = h)  # omits `other`
@@ -351,7 +403,11 @@ Base.@kwdef mutable struct Manifest
     registries::Dict{String, ManifestRegistryEntry} = Dict{String, ManifestRegistryEntry}()
     other::Dict{String, Any} = Dict{String, Any}()
 end
-Base.:(==)(t1::Manifest, t2::Manifest) = all(x -> (getfield(t1, x) == getfield(t2, x))::Bool, fieldnames(Manifest))
+Base.:(==)(t1::Manifest, t2::Manifest) =
+    t1.julia_version == t2.julia_version && t1.project_hash == t2.project_hash &&
+    t1.environment_id == t2.environment_id && t1.environment_name == t2.environment_name &&
+    t1.manifest_format == t2.manifest_format && t1.deps == t2.deps && t1.registries == t2.registries &&
+    toml_eq(t1.other, t2.other)
 Base.hash(m::Manifest, h::UInt) = foldr(hash, [getfield(m, x) for x in fieldnames(Manifest)], init = h)
 Base.getindex(m::Manifest, i_or_key) = getindex(m.deps, i_or_key)
 Base.get(m::Manifest, key, default) = get(m.deps, key, default)
@@ -427,6 +483,106 @@ mutable struct EnvCache
     original_manifest::Manifest
 end
 
+# Copies of a project, a manifest and package specs that share no mutable part with the
+# original, as `deepcopy` makes them. `deepcopy` goes through the fields by reflection, which
+# with the `Union`-typed fields of these types makes each step a call dispatched at run time;
+# these copy each field by its declared type. (Unlike `deepcopy`, a part referenced twice within
+# a value is copied twice; the copies are only read and compared.)
+copy_version(@nospecialize(v)) = v isa VersionSpec ? VersionSpec(copy(v.ranges)) : v
+copy_gitrepo(r::GitRepo) = GitRepo(r.source, r.rev, r.subdir)
+copy_appinfo(a::AppInfo) = AppInfo(a.name, a.julia_command, a.submodule, copy(a.julia_flags), deepcopy_toml(a.other))
+function copy_exts(exts::Dict{String, Union{Vector{String}, String}})
+    d = Dict{String, Union{Vector{String}, String}}()
+    for (k, v) in exts
+        d[k] = v isa Vector{String} ? copy(v) : v
+    end
+    return d
+end
+function copy_apps(apps::Dict{String, AppInfo})
+    d = Dict{String, AppInfo}()
+    for (k, v) in apps
+        d[k] = copy_appinfo(v)
+    end
+    return d
+end
+function copy_compats(compats::Dict{String, Compat})
+    d = Dict{String, Compat}()
+    for (k, v) in compats
+        d[k] = Compat(VersionSpec(copy(v.val.ranges)), v.str)
+    end
+    return d
+end
+function copy_comments(c::Union{Nothing, TOML.Comments})
+    c === nothing && return nothing
+    items = Dict{Vector{String}, Base.TOML.CommentBlock}()
+    for (k, v) in c.items
+        items[copy(k)] = Base.TOML.CommentBlock(copy(v.above), v.inline)
+    end
+    floating = Dict{Vector{String}, Vector{String}}()
+    for (k, v) in c.floating
+        floating[copy(k)] = copy(v)
+    end
+    return TOML.Comments(items, floating)
+end
+# (an `other` table that is not a parsed TOML table: copied by `deepcopy`, in a function of its own)
+@noinline copy_other(@nospecialize(x)) = x isa Dict{String, Any} ? deepcopy_toml(x) : deepcopy(x)
+
+function copy_project(p::Project)
+    targets = Dict{String, Vector{String}}()
+    for (k, v) in p.targets
+        targets[k] = copy(v)
+    end
+    sources = Dict{String, Dict{String, String}}()
+    for (k, v) in p.sources
+        sources[k] = copy(v)
+    end
+    return Project(;
+        other = deepcopy_toml(p.other), comments = copy_comments(p.comments),
+        name = p.name, uuid = p.uuid, version = copy_version(p.version),
+        manifest = p.manifest, entryfile = p.entryfile, julia_syntax_version = copy_version(p.julia_syntax_version),
+        deps = copy(p.deps), _deps_weak = copy(p._deps_weak), weakdeps = copy(p.weakdeps),
+        exts = copy_exts(p.exts), extras = copy(p.extras), targets, apps = copy_apps(p.apps),
+        compat = copy_compats(p.compat), compat_overrides = copy_compats(p.compat_overrides),
+        sources, workspace = deepcopy_toml(p.workspace), readonly = p.readonly,
+    )
+end
+
+function copy_entry(e::PackageEntry)
+    other = e.other
+    return PackageEntry(;
+        name = e.name, version = e.version, path = e.path, entryfile = e.entryfile, pinned = e.pinned,
+        repo = copy_gitrepo(e.repo), tree_hash = e.tree_hash, deps = copy(e.deps), weakdeps = copy(e.weakdeps),
+        exts = copy_exts(e.exts), uuid = e.uuid, apps = copy_apps(e.apps), registries = copy(e.registries),
+        julia_syntax_version = copy_version(e.julia_syntax_version),
+        other = other === nothing ? nothing : copy_other(other),
+    )
+end
+
+function copy_manifest(m::Manifest)
+    deps = Dict{UUID, PackageEntry}()
+    for (k, v) in m.deps
+        deps[k] = copy_entry(v)
+    end
+    registries = Dict{String, ManifestRegistryEntry}()
+    for (k, v) in m.registries
+        registries[k] = ManifestRegistryEntry(v.id, v.uuid, v.url)
+    end
+    return Manifest(;
+        julia_version = m.julia_version, project_hash = m.project_hash,
+        environment_id = m.environment_id, environment_name = m.environment_name,
+        manifest_format = m.manifest_format, deps, registries, other = deepcopy_toml(m.other),
+    )
+end
+
+copy_packagespec(p::PackageSpec) = PackageSpec(
+    p.name, p.uuid, copy_version(p.version), p.tree_hash, copy_gitrepo(p.repo), p.path, p.pinned, p.url, p.rev, p.subdir
+)
+# (`deepcopy` of package specs, e.g. of a `Vector{PackageSpec}`, goes through this)
+function Base.deepcopy_internal(p::PackageSpec, stackdict::IdDict)
+    haskey(stackdict, p) && return stackdict[p]::PackageSpec
+    return stackdict[p] = copy_packagespec(p)
+end
+
 function EnvCache(env::Union{Nothing, String} = nothing)
     # @show env
     project_file = find_project_file(env)
@@ -472,8 +628,8 @@ function EnvCache(env::Union{Nothing, String} = nothing)
         project,
         workspace,
         manifest,
-        deepcopy(project),
-        deepcopy(manifest),
+        copy_project(project),
+        copy_manifest(manifest),
     )
 
     return env′

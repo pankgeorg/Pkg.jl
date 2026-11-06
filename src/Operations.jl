@@ -3982,7 +3982,7 @@ function is_manifest_current(env::EnvCache)
     if haskey(env.manifest.other, "project_hash")
         recorded_hash = env.manifest.other["project_hash"]
         current_hash = Types.workspace_resolve_hash(env)
-        return recorded_hash == current_hash
+        return recorded_hash isa String && recorded_hash == current_hash
     else
         # Manifest doesn't have a hash of the source Project recorded
         return nothing

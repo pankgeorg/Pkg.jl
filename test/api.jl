@@ -794,6 +794,11 @@ end
     DownloadJob = NamedTuple{(:pkg, :urls, :path), Tuple{Pkg.Operations.DownloadPkg, Set{String}, String}}
     calls = dynamic_calls(Pkg.Operations.download_source, (Pkg.Types.Context, Vector{DownloadJob}, Bool, Int, Symbol))
     @test !any(contains("indexed_iterate"), calls)
+    # printing a `VersionRange`, the status indicators, and a git error
+    @test isempty(dynamic_calls(print, (IOBuffer, Pkg.Versions.VersionRange)))
+    @test sprint(print, Pkg.Versions.VersionRange("1.2-3.4.5")) == "1.2 - 3.4.5"
+    @test sprint(print, Pkg.Versions.VersionRange("1.2")) == "1.2"
+    @test isempty(dynamic_calls(Pkg.GitTools.check_valid_HEAD, (Pkg.GitTools.LibGit2.GitRepo,)))
     # the resolver's rounds are not specialized on widened argument types (e.g. `::Array`)
     precompile(Pkg.Resolve.resolve, (Pkg.Resolve.Graph,))
     @test isempty(dynamic_calls(Pkg.Resolve._resolve, (Pkg.Resolve.Graph, Nothing, Nothing)))

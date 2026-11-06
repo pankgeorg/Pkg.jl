@@ -156,6 +156,15 @@ function Base.isempty(r::VersionRange)
     return false
 end
 
+# `join(io, t[1:n], '.')`, without making a tuple whose length is only known at run time
+function print_components(io::IO, t::NTuple{3, UInt32}, n::Int)
+    for i in 1:n
+        i > 1 && print(io, '.')
+        print(io, t[i])
+    end
+    return
+end
+
 function Base.print(io::IO, r::VersionRange)
     m, n = r.lower.n, r.upper.n
     return if (m, n) == (0, 0)
@@ -167,10 +176,10 @@ function Base.print(io::IO, r::VersionRange)
         join(io, r.lower.t, '.')
         print(io, " - *")
     else
-        join(io, r.lower.t[1:m], '.')
+        print_components(io, r.lower.t, m)
         if r.lower != r.upper
             print(io, " - ")
-            join(io, r.upper.t[1:n], '.')
+            print_components(io, r.upper.t, n)
         end
     end
 end

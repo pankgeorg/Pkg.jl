@@ -462,6 +462,7 @@ function check_valid_HEAD(repo)
     return try
         LibGit2.head(repo)
     catch err
+        err isa LibGit2.GitError || rethrow()
         url = try
             geturl(repo)
         catch

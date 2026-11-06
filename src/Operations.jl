@@ -2409,7 +2409,9 @@ function download_source(
     # use eager throw version
     Base.Experimental.@sync begin
         jobs = Channel{eltype(pkgs_to_install)}(ctx.num_concurrent_downloads)
-        results = Channel(ctx.num_concurrent_downloads)
+        # (package, `true`/`false` for success, `nothing` if installed by another process, or the
+        # error; then the urls and path, or the backtrace)
+        results = Channel{Tuple{DownloadPkg, Any, Any}}(ctx.num_concurrent_downloads)
 
         @async begin
             for pkg in pkgs_to_install

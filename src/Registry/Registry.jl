@@ -421,7 +421,7 @@ function rm(regs::Vector{RegistrySpec}; io::IO = stderr_f())
         if isfile(registry.path)
             d = TOML.parsefile(registry.path)
             if haskey(d, "path")
-                compressed_tar = joinpath(dirname(registry.path), d["path"])
+                compressed_tar = joinpath(dirname(registry.path), d["path"]::String)
                 Base.rm(compressed_tar; force = true)
                 remove_registry_cache(compressed_tar)
             end
@@ -755,7 +755,7 @@ function status(io::IO = stderr_f())
             registry_type = get_registry_type(reg)
             print(io, "    ", registry_description(reg))
             update_time = get(registry_update_log, string(reg.uuid), nothing)
-            if !isnothing(update_time)
+            if update_time isa Dates.DateTime
                 time_string = Dates.format(update_time, dateformat"yyyy-mm-dd HH:MM:SS")
                 print(io, ", last updated $(time_string)")
             end

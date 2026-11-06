@@ -847,23 +847,14 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
             Dict{String, Any}()
         end
 
-        # record new usage
+        # record new usage, in the same form as a parsed entry
         for source_file in source_files
-            usage[source_file] = [Dict("time" => timestamp)]
+            usage[source_file] = Any[Dict{String, Any}("time" => timestamp)]
         end
 
         # keep only latest usage info
         for k in keys(usage)
-            times = map(usage[k]) do d
-                if haskey(d, "time")
-                    Dates.DateTime(d["time"])
-                else
-                    # if there's no time entry because of a write failure be conservative and mark it as being used now
-                    @debug "Usage file `$usage_file` has a missing `time` entry for `$k`. Marking as used `now()`"
-                    Dates.now()
-                end
-            end
-            usage[k] = [Dict("time" => maximum(times))]
+            usage[k] = [Dict("time" => latest_usage_time(usage[k], usage_file, k))]
         end
 
         try
@@ -873,6 +864,22 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
         end
     end
     return
+end
+
+# The latest time recorded in the usage entries `infos` of `k`. The entries come from a
+# parsed TOML file, so their types are checked here rather than assumed.
+function latest_usage_time(@nospecialize(infos), usage_file::String, k::String)
+    latest = nothing
+    for info in (infos isa Vector{Any} ? infos : Any[nothing])
+        time = info isa Dict{String, Any} ? get(info, "time", nothing) : nothing
+        if !(time isa Dates.DateTime)
+            # if there's no time entry because of a write failure be conservative and mark it as being used now
+            @debug "Usage file `$usage_file` has a missing `time` entry for `$k`. Marking as used `now()`"
+            time = Dates.now()
+        end
+        latest = latest === nothing ? time : max(latest, time)
+    end
+    return something(latest, Dates.now())
 end
 
 function read_package(path::String)

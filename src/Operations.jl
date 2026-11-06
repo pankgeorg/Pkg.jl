@@ -2301,8 +2301,8 @@ function check_artifacts_downloaded(
         return false
     end
     for (artifacts_toml, artifacts) in collected_artifacts
-        for name in keys(artifacts)
-            if !artifact_exists(Base.SHA1(artifacts[name]["git-tree-sha1"]))
+        for meta in values(artifacts)
+            if !artifact_exists(Base.SHA1((meta::Dict{String, Any})["git-tree-sha1"]::String))
                 return false
             end
         end

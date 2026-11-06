@@ -27,50 +27,66 @@ end
 ###########
 # READING #
 ###########
-read_project_uuid(::Nothing) = nothing
-function read_project_uuid(uuid::String)
+# The values of a parsed TOML table are untyped, so each reader takes the raw value as it is
+# and checks its type with `isa`, which keeps the calls on the values static.
+function read_project_uuid(@nospecialize(uuid))
+    uuid === nothing && return nothing
+    uuid isa String || pkgerror("Expected project UUID to be a string")
     try
-        uuid = UUID(uuid)
+        return UUID(uuid)
     catch err
         err isa ArgumentError || rethrow()
         pkgerror("Could not parse project UUID as a UUID")
     end
-    return uuid
 end
-read_project_uuid(uuid) = pkgerror("Expected project UUID to be a string")
 
-read_project_version(::Nothing) = nothing
-function read_project_version(version::String)
+function read_project_version(@nospecialize(version))
+    version === nothing && return nothing
+    version isa String || pkgerror("Expected project version to be a string")
     return try
-        version = VersionNumber(version)
+        VersionNumber(version)
     catch err
         err isa ArgumentError || rethrow()
         pkgerror("Could not parse project version as a version")
     end
 end
-read_project_version(version) = pkgerror("Expected project version to be a string")
 
-read_project_deps(::Nothing, section::String) = Dict{String, UUID}()
-function read_project_deps(raw::Dict{String, Any}, section_name::String)
+function read_project_deps(@nospecialize(raw), section_name::String)
     deps = Dict{String, UUID}()
+    raw === nothing && return deps
+    raw isa Dict{String, Any} || pkgerror("Expected `$(section_name)` section to be a key-value list")
     for (name, uuid) in raw
+        uuid isa String || pkgerror("Malformed value for `$name` in `$(section_name)` section.")
         try
-            uuid = UUID(uuid)
+            deps[name] = UUID(uuid)
         catch err
             err isa ArgumentError || rethrow()
             pkgerror("Malformed value for `$name` in `$(section_name)` section.")
         end
-        deps[name] = uuid
     end
     return deps
 end
-function read_project_deps(raw, section_name::String)
-    pkgerror("Expected `$(section_name)` section to be a key-value list")
+
+function read_project_exts(@nospecialize(raw))
+    exts = Dict{String, Union{Vector{String}, String}}()
+    raw === nothing && return exts
+    raw isa Dict{String, Any} || pkgerror("Expected `extensions` section to be a key-value list")
+    for (name, triggers) in raw
+        exts[name] = if triggers isa String || triggers isa Vector{String}
+            triggers
+        elseif triggers isa Vector{Any} && all(t -> t isa String, triggers)
+            String[t::String for t in triggers]
+        else
+            pkgerror("Expected value for extension `$name` to be a string or a list of strings")
+        end
+    end
+    return exts
 end
 
-read_project_targets(::Nothing, project::Project) = Dict{String, Vector{String}}()
-function read_project_targets(raw::Dict{String, Any}, project::Project)
+function read_project_targets(@nospecialize(raw), project::Project)
     targets = Dict{String, Vector{String}}()
+    raw === nothing && return targets
+    raw isa Dict{String, Any} || pkgerror("Expected `targets` section to be a key-value list")
     for (target, deps) in raw
         deps isa Vector{String} || pkgerror(
             """
@@ -81,13 +97,12 @@ function read_project_targets(raw::Dict{String, Any}, project::Project)
     end
     return targets
 end
-read_project_targets(raw, project::Project) =
-    pkgerror("Expected `targets` section to be a key-value list")
 
-read_project_apps(::Nothing, project::Project) = Dict{String, AppInfo}()
-function read_project_apps(raw::Dict{String, Any}, project::Project)
-    other = raw
+function read_project_apps(@nospecialize(raw), project::Project)
     appinfos = Dict{String, AppInfo}()
+    raw === nothing && return appinfos
+    raw isa Dict{String, Any} || pkgerror("Expected `apps` section to be a key-value list")
+    other = raw
     for (name, info) in raw
         info isa Dict{String, Any} || pkgerror(
             """
@@ -95,10 +110,13 @@ function read_project_apps(raw::Dict{String, Any}, project::Project)
             """
         )
         submodule = get(info, "submodule", nothing)
+        submodule isa Union{String, Nothing} || pkgerror("Expected `submodule` for app `$name` to be a string")
         julia_flags_raw = get(info, "julia_flags", nothing)
         julia_flags = if julia_flags_raw === nothing
             String[]
-        elseif julia_flags_raw isa Vector
+        elseif julia_flags_raw isa Vector{String}
+            copy(julia_flags_raw)
+        elseif julia_flags_raw isa Vector{Any}
             String[flag::String for flag in julia_flags_raw]
         else
             pkgerror("Expected `julia_flags` for app `$name` to be an array of strings")
@@ -108,9 +126,11 @@ function read_project_apps(raw::Dict{String, Any}, project::Project)
     return appinfos
 end
 
-read_project_compat(::Nothing, project::Project; file = nothing) = Dict{String, Compat}()
-function read_project_compat(raw::Dict{String, Any}, project::Project; file = nothing)
+function read_project_compat(@nospecialize(raw), project::Project; file::Union{String, Nothing} = nothing)
     compat = Dict{String, Compat}()
+    raw === nothing && return compat
+    raw isa Dict{String, Any} ||
+        pkgerror("Expected `compat` section to be a key-value list" * (file === nothing ? "" : " in $(repr(file))"))
     location_string = file === nothing ? "" : " in $(repr(file))"
     for (name, version) in raw
         version = version::String
@@ -122,15 +142,14 @@ function read_project_compat(raw::Dict{String, Any}, project::Project; file = no
     end
     return compat
 end
-read_project_compat(raw, project::Project; file = nothing) =
-    pkgerror("Expected `compat` section to be a key-value list" * (file === nothing ? "" : " in $(repr(file))"))
 
-read_project_sources(::Nothing, project::Project) = Dict{String, Dict{String, String}}()
-function read_project_sources(raw::Dict{String, Any}, project::Project)
+function read_project_sources(@nospecialize(raw), project::Project)
     valid_keys = ("path", "url", "rev", "subdir")
     sources = Dict{String, Dict{String, String}}()
+    raw === nothing && return sources
+    raw isa Dict{String, Any} || pkgerror("Expected `sources` section to be a key-value list")
     for (name, source) in raw
-        if !(source isa AbstractDict)
+        if !(source isa Dict{String, Any})
             pkgerror("Expected `source` section to be a table")
         end
         for key in keys(source)
@@ -139,19 +158,24 @@ function read_project_sources(raw::Dict{String, Any}, project::Project)
         if haskey(source, "path") && (haskey(source, "url") || haskey(source, "rev"))
             pkgerror("Both `path` and `url` or `rev` are specified in `source` section")
         end
-        sources[name] = source
+        typed_source = Dict{String, String}()
+        for (key, val) in source
+            val isa String || pkgerror("Expected `$key` in `source` section to be a string")
+            typed_source[key] = val
+        end
+        sources[name] = typed_source
     end
     return sources
 end
 
-read_project_workspace(::Nothing, project::Project) = Dict{String, Any}()
-function read_project_workspace(raw::Dict, project::Project)
+function read_project_workspace(@nospecialize(raw), project::Project)
     workspace_table = Dict{String, Any}()
+    raw === nothing && return workspace_table
+    raw isa Dict{String, Any} || pkgerror("Expected `workspace` section to be a key-value list")
     for (key, val) in raw
         if key == "projects"
-            for path in val
-                path isa String || pkgerror("Expected entry in `projects` to be strings")
-            end
+            val isa Vector{String} || (val isa Vector{Any} && all(path -> path isa String, val)) ||
+                pkgerror("Expected entry in `projects` to be strings")
         else
             pkgerror("Invalid key `$key` in `workspace`")
         end
@@ -159,9 +183,6 @@ function read_project_workspace(raw::Dict, project::Project)
     end
     return workspace_table
 end
-read_project_workspace(raw, project::Project) =
-    pkgerror("Expected `workspace` section to be a key-value list")
-
 
 function validate(project::Project; file = nothing)
     # deps
@@ -221,11 +242,11 @@ function validate(project::Project; file = nothing)
 end
 
 function Project(raw::Dict; file = nothing)
-    return parse_project(raw, file)
+    return parse_project(raw, file === nothing ? nothing : String(file))
 end
 
 # The filename is diagnostic context, not a reason to specialize the parser.
-@noinline function parse_project(raw::Dict, @nospecialize(file))
+@noinline function parse_project(raw::Dict, file::Union{String, Nothing})
     project = Project()
     project.other = raw
     project.name = get(raw, "name", nothing)::Union{String, Nothing}
@@ -238,7 +259,7 @@ end
     project.version = read_project_version(get(raw, "version", nothing))
     project.deps = read_project_deps(get(raw, "deps", nothing), "deps")
     project.weakdeps = read_project_deps(get(raw, "weakdeps", nothing), "weakdeps")
-    project.exts = get(Dict{String, String}, raw, "extensions")
+    project.exts = read_project_exts(get(raw, "extensions", nothing))
     project.sources = read_project_sources(get(raw, "sources", nothing), project)
     project.extras = read_project_deps(get(raw, "extras", nothing), "extras")
     project.compat = read_project_compat(get(raw, "compat", nothing), project; file)
@@ -247,7 +268,7 @@ end
     project.workspace = read_project_workspace(get(raw, "workspace", nothing), project)
     project.apps = read_project_apps(get(raw, "apps", nothing), project)
     project.readonly = get(raw, "readonly", false)::Bool
-    syntax = get(raw, "syntax", nothing)::Union{Dict, Nothing}
+    syntax = get(raw, "syntax", nothing)::Union{Dict{String, Any}, Nothing}
     project.julia_syntax_version = syntax === nothing ? nothing : read_project_version(get(syntax, "julia_version", nothing))
 
     # Handle deps in both [deps] and [weakdeps]
@@ -359,8 +380,14 @@ write_project(project::Project, project_file::AbstractString) =
     write_project(destructure(project), project_file; comments = project.comments)
 function write_project(io::IO, project::Dict; comments::Union{TOML.Comments, Nothing} = nothing)
     inline_tables = Base.IdSet{Dict}()
-    if haskey(project, "sources")
-        for source in values(project["sources"])
+    sources = get(project, "sources", nothing)
+    if sources isa Dict{String, Dict{String, String}}
+        for source in values(sources)
+            push!(inline_tables, source)
+        end
+    elseif sources !== nothing
+        sources isa Dict{String, Any} || error("Expected `sources` to be a table")
+        for source in values(sources)
             source isa Dict || error("Expected `sources` to be a table")
             push!(inline_tables, source)
         end

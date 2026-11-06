@@ -1,6 +1,6 @@
 module ProjectFilesTests
 
-using Test, UUIDs
+using Test, UUIDs, Dates
 import ..Pkg
 using Pkg.Types: PkgError
 using ..Utils
@@ -202,6 +202,126 @@ end
             @test targets == Pkg.Types.read_project("Project.toml").targets
         end
     end
+end
+
+@testset "TOML data is read and written with static calls" begin
+    # The values of a parsed TOML table are untyped. A call on such a value must check its
+    # type first, or the callee is only known at run time, which ahead-of-time compilation
+    # without Julia's runtime (e.g. `juliac --trim`) cannot handle.
+    # Returns the calls in the code of `f` for argument types `types` (and keyword argument
+    # types `kwtypes`, a `NamedTuple` type) that are dispatched at run time. The closures and
+    # keyword-argument bodies of `f` are included: those it calls, and the ones without
+    # arguments that it creates, e.g. for tasks, up to `maxdepth` levels.
+    function dynamic_calls(@nospecialize(f), @nospecialize(types); kwtypes = nothing, maxdepth = 10)
+        fname = String(nameof(f))
+        ofname(@nospecialize(T)) = (T = Base.unwrap_unionall(T); T isa DataType && occursin(fname, String(T.name.name)))
+        calls = String[]
+        seen = Set{Any}()
+        function visit(@nospecialize(tt), depth = 0)
+            (tt in seen || depth > maxdepth) && return
+            push!(seen, tt)
+            for (ci, _) in Base.code_typed_by_type(tt; optimize = true)
+                ci isa Core.CodeInfo || continue
+                for stmt in ci.code
+                    Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                    if Meta.isexpr(stmt, :invoke)
+                        mi = stmt.args[1]
+                        mi isa Core.CodeInstance && (mi = mi.def)
+                        isdefined(Core, :ABIOverride) && mi isa Core.ABIOverride && (mi = mi.def)
+                        m = mi.def
+                        if m isa Method && startswith(String(m.name), "#") && occursin(fname, String(m.name))
+                            visit(mi.specTypes, depth + 1)
+                        end
+                        continue
+                    elseif Meta.isexpr(stmt, :new)
+                        T = stmt.args[1]
+                        T isa Core.SSAValue && (T = ci.ssavaluetypes[T.id])
+                        T isa Core.Const && (T = T.val)
+                        T isa Type && T <: Function && ofname(T) && visit(Tuple{T}, depth + 1)
+                        continue
+                    end
+                    Meta.isexpr(stmt, :call) || continue
+                    callee = stmt.args[1]
+                    ft = if callee isa GlobalRef
+                        isdefined(callee.mod, callee.name) ? Core.Typeof(getglobal(callee.mod, callee.name)) : Any
+                    elseif callee isa QuoteNode
+                        Core.Typeof(callee.value)
+                    elseif callee isa Core.SSAValue
+                        Core.Compiler.widenconst(ci.ssavaluetypes[callee.id])
+                    elseif callee isa Core.Argument
+                        Core.Compiler.widenconst(ci.slottypes[callee.n])
+                    elseif isdefined(Core, :BindingPartition) && callee isa Core.BindingPartition
+                        Core.Typeof(callee.restriction)
+                    else
+                        Core.Typeof(callee)
+                    end
+                    # a builtin is called directly, unless it applies a function to splatted arguments
+                    ft <: Core.Builtin && !(ft <: typeof(Core._apply_iterate)) && continue
+                    push!(calls, string(stmt))
+                end
+            end
+            return
+        end
+        visit(kwtypes === nothing ? Tuple{Core.Typeof(f), types...} : Tuple{typeof(Core.kwcall), kwtypes, Core.Typeof(f), types...})
+        return calls
+    end
+    Types = Pkg.Types
+    @test isempty(dynamic_calls(Types.parse_project, (Dict{String, Any}, Nothing)))
+    @test isempty(dynamic_calls(Types.parse_project, (Dict{String, Any}, String)))
+    for reader in (Types.read_project_targets, Types.read_project_apps, Types.read_project_sources, Types.read_project_workspace)
+        @test isempty(dynamic_calls(reader, (Any, Types.Project)))
+    end
+    @test isempty(dynamic_calls(Types.read_project_deps, (Any, String)))
+    @test isempty(dynamic_calls(Types.read_project_exts, (Any,)))
+    @test isempty(dynamic_calls(Types.destructure, (Types.Manifest,)))
+    @test isempty(dynamic_calls(Types.write_project, (IOBuffer, Dict{String, Any})))
+    @test isempty(dynamic_calls(Types.latest_usage_time, (Any, String, String)))
+    @test isempty(dynamic_calls(Pkg.Operations.check_artifacts_downloaded, (String,)))
+
+    # the checks keep the behavior for well-formed and malformed values
+    read_toml(toml) = Types.read_project(IOBuffer(toml))
+    uuid = "7876af07-990d-54b4-ab0e-23690620f79a"
+    p = read_toml(
+        """
+        name = "A"
+        uuid = "$uuid"
+        version = "1.2.3"
+        [deps]
+        Example = "$uuid"
+        [weakdeps]
+        [extensions]
+        ExtA = "Example"
+        ExtB = ["Example"]
+        ExtC = []
+        [sources]
+        Example = {url = "https://example.com/Example.jl", rev = "main"}
+        [workspace]
+        projects = ["test"]
+        [apps.a]
+        julia_flags = ["--threads=2"]
+        """
+    )
+    @test p.uuid == UUID(uuid)
+    @test p.version == v"1.2.3"
+    @test p.deps == Dict("Example" => UUID(uuid))
+    @test p.exts == Dict("ExtA" => "Example", "ExtB" => ["Example"], "ExtC" => String[])
+    @test p.sources == Dict("Example" => Dict("url" => "https://example.com/Example.jl", "rev" => "main"))
+    @test p.workspace == Dict("projects" => ["test"])
+    @test p.apps["a"].julia_flags == ["--threads=2"]
+    @test_throws PkgError read_toml("uuid = 1")
+    @test_throws PkgError read_toml("version = 1")
+    @test_throws PkgError read_toml("deps = 1")
+    @test_throws PkgError read_toml("[deps]\nExample = 1")
+    @test_throws PkgError read_toml("[extensions]\nExtA = 1")
+    @test_throws PkgError read_toml("[sources]\nExample = {rev = 1}")
+    @test_throws PkgError read_toml("[workspace]\nprojects = [1]")
+    @test_throws PkgError read_toml("[apps.a]\nsubmodule = 1")
+
+    # the latest usage time is kept, and an entry without one counts as used now
+    t1, t2 = DateTime(2020), DateTime(2021)
+    @test Types.latest_usage_time(Any[Dict{String, Any}("time" => t1), Dict{String, Any}("time" => t2)], "", "") == t2
+    @test Types.latest_usage_time(Any[Dict{String, Any}()], "", "") > t2
+    @test Types.latest_usage_time("not a list", "", "") > t2
 end
 
 end # module

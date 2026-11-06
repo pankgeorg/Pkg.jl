@@ -1517,13 +1517,13 @@ end
             kwtypes = @NamedTuple{server_registry_info::Nothing, verbose::Bool, io::IOContext{IO}}
         )
     )
-    # (apart from showing the caught errors, which can be of any type)
-    @test filter(
-        !contains("showerror"), dynamic_calls(
+    # (showing the caught errors, which can be of any type, is left to `download_failed`)
+    @test isempty(
+        dynamic_calls(
             Pkg.Artifacts.try_artifact_download_sources, (String, SHA1, Dict{String, Any}, String);
             kwtypes = @NamedTuple{pkg_server_eligible::Bool, quiet_download::Bool, io::IOContext{IO}, progress::P}
         )
-    ) == []
+    )
     @test isempty(
         dynamic_calls(
             Pkg.Artifacts.download_artifact, (SHA1, String, String);

@@ -498,7 +498,7 @@ function try_artifact_download_sources(
         progress::P = nothing
     ) where {P <: Union{Function, Nothing}}
 
-    errors = Tuple{String, Any}[]
+    errors = Pair{String, Any}[]
     # first try downloading from Pkg server if the Pkg server knows about this package
     if pkg_server_eligible && (server = pkg_server()) !== nothing
         url = "$server/artifact/$hash"
@@ -513,7 +513,7 @@ function try_artifact_download_sources(
             return artifact_path(hash)
         else
             @debug "Failed to download artifact from Pkg server" download_success
-            push!(errors, (url, download_success))
+            push!(errors, Pair{String, Any}(url, download_success))
         end
     end
 
@@ -538,9 +538,14 @@ function try_artifact_download_sources(
             return artifact_path(hash)
         else
             @debug "Failed to download artifact" download_success
-            push!(errors, (url, download_success))
+            push!(errors, Pair{String, Any}(url, download_success))
         end
     end
+    return download_failed(name, artifacts_toml, errors)
+end
+
+# (in a function of its own: it shows errors of types known only at run time)
+@noinline function download_failed(name::String, artifacts_toml::String, errors::Vector{Pair{String, Any}})
     errmsg = """
     Unable to automatically download/install artifact '$(name)' from sources listed in '$(artifacts_toml)'.
     Sources attempted:

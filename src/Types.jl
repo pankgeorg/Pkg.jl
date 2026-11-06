@@ -825,7 +825,7 @@ function write_env_usage(source_files, usage_filepath::AbstractString)
         _write_env_usage(source_files, usage_file, timestamp)
     catch err
         err isa InterruptException && rethrow()
-        @noinline (() -> @warn "Failed to record usage in `$usage_file`, ignoring." exception = err maxlog = 1)()
+        @noinline ((err) -> @warn "Failed to record usage in `$usage_file`, ignoring." exception = err maxlog = 1)(err)
     end
     return
 end
@@ -840,7 +840,7 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
             try
                 TOML.parsefile(usage_file)
             catch err
-                @noinline (() -> @warn "Failed to parse usage file `$usage_file`, ignoring." err)()
+                @noinline ((err) -> @warn "Failed to parse usage file `$usage_file`, ignoring." err)(err)
                 Dict{String, Any}()
             end
         else
@@ -869,7 +869,7 @@ function _write_env_usage(source_files, usage_file::String, timestamp::DateTime)
         try
             atomic_toml_write(usage_file, usage, sorted = true)
         catch err
-            @noinline (() -> @error "Failed to write valid usage file `$usage_file`" exception = err)()
+            @noinline ((err) -> @error "Failed to write valid usage file `$usage_file`" exception = err)(err)
         end
     end
     return

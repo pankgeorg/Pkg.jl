@@ -420,7 +420,7 @@ function download_artifact(
                 rm(temp_dir; recursive = true, force = true)
             catch e
                 e isa InterruptException && rethrow()
-                @noinline (() -> @warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e))()
+                @noinline ((e) -> @warn("Failed to clean up temporary directory $(repr(temp_dir))", exception = e))(e)
             end
         end
         return true

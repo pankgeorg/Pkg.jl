@@ -151,7 +151,7 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     auth_info = try
         TOML.parsefile(auth_file)
     catch err
-        @noinline (() -> @error "malformed auth file" file = auth_file err = err)()
+        @noinline ((err) -> @error "malformed auth file" file = auth_file err = err)(err)
         return handle_auth_error(url, "malformed-file"; verbose = verbose)
     end
     # check for an auth token
@@ -193,14 +193,14 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     try
         download(refresh_url, FileSpec(tmp; mode = 0o600), auth_header = refresh_auth, verbose = verbose)
     catch err
-        @noinline (() -> @warn "token refresh failure" file = auth_file url = refresh_url err = err)()
+        @noinline ((err) -> @warn "token refresh failure" file = auth_file url = refresh_url err = err)(err)
         rm(tmp, force = true)
         return handle_auth_error(url, "token-refresh-failed"; verbose = verbose)
     end
     auth_info = try
         TOML.parsefile(tmp)
     catch err
-        @noinline (() -> @warn "discarding malformed auth file" url = refresh_url err = err)()
+        @noinline ((err) -> @warn "discarding malformed auth file" url = refresh_url err = err)(err)
         rm(tmp, force = true)
         return something(handle_auth_error(url, "malformed-file"; verbose = verbose), auth_header)
     end
@@ -876,7 +876,7 @@ function verify_archive_tree_hash(compressed_tar::AbstractString, expected_hash:
     calc_hash = try
         Base.SHA1(open(Tar.tree_hash, get_extract_cmd(compressed_tar)))
     catch err
-        @noinline (() -> @warn "unable to decompress and read archive" exception = err)()
+        @noinline ((err) -> @warn "unable to decompress and read archive" exception = err)(err)
         return false
     end
     if calc_hash != expected_hash

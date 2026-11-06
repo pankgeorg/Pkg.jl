@@ -960,7 +960,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         manifest = try
             read_manifest(path)
         catch e
-            @noinline (() -> @warn "Reading manifest file at $path failed with error" exception = e)()
+            @noinline ((e) -> @warn "Reading manifest file at $path failed with error" exception = e)(e)
             return nothing
         end
 
@@ -1004,7 +1004,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         artifact_dict = try
             parse_toml(path)
         catch e
-            @noinline (() -> @warn "Reading artifacts file at $path failed with error" exception = e)()
+            @noinline ((e) -> @warn "Reading artifacts file at $path failed with error" exception = e)(e)
             return nothing
         end
 
@@ -1192,7 +1192,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             try
                 lstat(path).size
             catch ex
-                @noinline (() -> @error("Failed to calculate size of $path", exception = ex))()
+                @noinline ((ex) -> @error("Failed to calculate size of $path", exception = ex))(ex)
                 0
             end
         else
@@ -1202,7 +1202,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             Base.Filesystem.prepare_for_deletion(path)
             Base.rm(path; recursive = true, force = true)
         catch e
-            @noinline (() -> @warn("Failed to delete $path", exception = e))()
+            @noinline ((e) -> @warn("Failed to delete $path", exception = e))(e)
             return 0
         end
         if verbose
@@ -1357,7 +1357,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                 catch e
                     # Silently ignore errors from git gc
                     if verbose
-                        @noinline (() -> @warn "git gc failed for registry $(reg_name)" exception = e)()
+                        @noinline ((e) -> @warn "git gc failed for registry $(reg_name)" exception = e)(e)
                     end
                 end
             end

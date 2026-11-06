@@ -11,7 +11,7 @@ import LibGit2, Dates, TOML
 using ..Types, ..Resolve, ..PlatformEngines, ..GitTools, ..MiniProgressBars
 import ..depots, ..depots1, ..devdir, ..set_readonly, ..Types.PackageEntry
 import ..Artifacts: ensure_artifact_installed, artifact_names, extract_all_hashes,
-    artifact_exists, select_downloadable_artifacts, mv_temp_dir_retries
+    artifact_exists, select_downloadable_artifacts, mv_temp_dir_retries, try_artifact_download_sources
 using Base.BinaryPlatforms
 import ...Pkg
 import ...Pkg: pkg_server, Registry, pathrepr, can_fancyprint, printpkgstyle, stderr_f, OFFLINE_MODE
@@ -1376,6 +1376,48 @@ mutable struct DownloadState
     const bar::MiniProgressBar
 end
 
+# An artifact download of `download_artifacts`
+struct ArtifactDownload
+    name::String
+    rname::String # `name`, padded for printing
+    hash::SHA1
+    meta::Dict{String, Any}
+    artifacts_toml::String
+    pkg_server_eligible::Bool
+    dstate::DownloadState
+end
+
+function run_artifact_download(job::ArtifactDownload, io::IO, fancyprint::Bool, print_lock::Base.ReentrantLock)
+    dstate = job.dstate
+    function progress(total, current; status = "")
+        local t = time_ns()
+        if isempty(status)
+            dstate.bar.max = total
+            dstate.bar.current = current
+        end
+        return lock(dstate.status_lock) do
+            dstate.status = status
+            dstate.status_update_time = t
+        end
+    end
+    try
+        dstate.state = :running
+        try_artifact_download_sources(
+            job.name, job.hash, job.meta, job.artifacts_toml;
+            job.pkg_server_eligible, quiet_download = true, io, progress
+        )
+        if !fancyprint && dstate.bar.max > 1 # if another process downloaded, then max is never set greater than 1
+            @lock print_lock printpkgstyle(io, :Installed, "artifact $(job.rname) $(MiniProgressBars.pkg_format_bytes(dstate.bar.max; sigdigits = 1))")
+        end
+    catch
+        dstate.state = :failed
+        rethrow()
+    else
+        dstate.state = :done
+    end
+    return
+end
+
 function download_artifacts(
         ctx::Context, pkgs;
         platform::AbstractPlatform = HostPlatform(),
@@ -1396,7 +1438,7 @@ function download_artifacts(
         pkg_root === nothing || push!(pkg_info, (pkg_root, uuid))
     end
     push!(pkg_info, (dirname(env.project_file), env.pkg !== nothing ? env.pkg.uuid : nothing))
-    download_jobs = Dict{SHA1, Function}()
+    download_jobs = Dict{SHA1, ArtifactDownload}()
 
     print_lock = Base.ReentrantLock() # for non-fancyprint printing
 
@@ -1411,12 +1453,12 @@ function download_artifacts(
     ansi_enablecursor = "\e[?25h"
     ansi_disablecursor = "\e[?25l"
 
-    all_collected_artifacts = reduce(
-        vcat, map(
-            ((pkg_root, pkg_uuid),) ->
-            map(ca -> (ca[1], ca[2], pkg_uuid), collect_artifacts(pkg_root; platform, include_lazy)), pkg_info
-        )
-    )
+    all_collected_artifacts = Tuple{String, Dict{String, Any}, Union{Base.UUID, Nothing}}[]
+    for (pkg_root, pkg_uuid) in pkg_info
+        for (artifacts_toml, artifacts) in collect_artifacts(pkg_root; platform, include_lazy)
+            push!(all_collected_artifacts, (artifacts_toml, artifacts, pkg_uuid))
+        end
+    end
     used_artifact_tomls = Set{String}(map(ca -> ca[1], all_collected_artifacts))
 
     # Check what registries the current pkg server tracks
@@ -1431,48 +1473,25 @@ function download_artifacts(
     end
     for (artifacts_toml, artifacts, pkg_uuid) in all_collected_artifacts
         # For each Artifacts.toml, install each artifact we've collected from it
-        for name in keys(artifacts)
-            local rname = rpad(name, longest_name_length)
-            local hash = SHA1(artifacts[name]["git-tree-sha1"]::String)
-            local bar = MiniProgressBar(; header = rname, main = false, indent = 2, color = Base.info_color()::Symbol, mode = :data, always_reprint = true)
-            local dstate = DownloadState(:ready, "", time_ns(), Base.ReentrantLock(), bar)
-            function progress(total, current; status = "")
-                local t = time_ns()
-                if isempty(status)
-                    dstate.bar.max = total
-                    dstate.bar.current = current
-                end
-                return lock(dstate.status_lock) do
-                    dstate.status = status
-                    dstate.status_update_time = t
-                end
-            end
+        for (name, artifact_meta) in artifacts
+            local meta = artifact_meta::Dict{String, Any}
+            local hash = SHA1(meta["git-tree-sha1"]::String)
             # Check if the current package is eligible for PkgServer artifact downloads
             local pkg_server_eligible = pkg_uuid !== nothing && Registry.is_pkg_in_pkgserver_registry(pkg_uuid, server_registry_info, ctx.registries)
-
-            # returns a string if exists, or function that downloads the artifact if not
-            local ret = ensure_artifact_installed(
-                name, artifacts[name], artifacts_toml;
-                pkg_server_eligible, verbose, quiet_download = !(usable_io(io)), io, progress
-            )
-            if ret isa Function
-                download_states[hash] = dstate
-                download_jobs[hash] =
-                    () -> begin
-                    try
-                        dstate.state = :running
-                        ret()
-                        if !fancyprint && dstate.bar.max > 1 # if another process downloaded, then max is never set greater than 1
-                            @lock print_lock printpkgstyle(io, :Installed, "artifact $rname $(MiniProgressBars.pkg_format_bytes(dstate.bar.max; sigdigits = 1))")
-                        end
-                    catch
-                        dstate.state = :failed
-                        rethrow()
-                    else
-                        dstate.state = :done
-                    end
-                end
+            if verbose
+                # installs the artifact right away, if it is not installed yet
+                ensure_artifact_installed(
+                    name, meta, artifacts_toml;
+                    pkg_server_eligible, verbose, quiet_download = !(usable_io(io)), io
+                )
+                continue
             end
+            artifact_exists(hash) && continue
+            local rname = rpad(name, longest_name_length)
+            local bar = MiniProgressBar(; header = rname, main = false, indent = 2, color = Base.info_color()::Symbol, mode = :data, always_reprint = true)
+            local dstate = DownloadState(:ready, "", time_ns(), Base.ReentrantLock(), bar)
+            download_states[hash] = dstate
+            download_jobs[hash] = ArtifactDownload(name, rname, hash, meta, artifacts_toml, pkg_server_eligible, dstate)
         end
     end
 
@@ -1530,11 +1549,11 @@ function download_artifacts(
         cancellation = PlatformEngines.DownloadCancellation()
         try
             PlatformEngines.with_download_cancellation(cancellation) do
-                @sync for f in values(download_jobs)
+                @sync for job in values(download_jobs)
                     interrupted[] && break
                     Base.acquire(sema)
                     Threads.@spawn try
-                        f()
+                        run_artifact_download(job, io, fancyprint, print_lock)
                     catch e
                         e isa InterruptException && (interrupted[] = true)
                         put!(errors, e)

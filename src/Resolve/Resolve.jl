@@ -79,84 +79,93 @@ function resolve(graph::Graph)
 end
 
 function _resolve(graph::Graph, lower_bound::Union{Vector{Int}, Nothing}, previous_sol::Union{Vector{Int}, Nothing})
-    np = graph.np
-    spp = graph.spp
-    gconstr = graph.gconstr
+    # Each round improves on the previous solution, until it can no longer be improved. A loop
+    # rather than a recursive call: the call would change the argument types (`Nothing` to
+    # `Vector{Int}`), and when this is inferred within a cycle (`trigger_failure!` calls `resolve`)
+    # inference widens such a call to `_resolve(::Graph, ::Array, ::Array)`, with dynamic calls in it.
+    while true
+        np = graph.np
+        spp = graph.spp
+        gconstr = graph.gconstr
 
-    if lower_bound ≢ nothing
-        for p0 in 1:np
-            v0 = lower_bound[p0]
-            @assert v0 ≠ spp[p0]
-            gconstr[p0][1:(v0 - 1)] .= false
-        end
-    end
-
-    # attempt trivial solution first
-    greedy_ok, sol = greedysolver(graph)
-
-    greedy_ok && @goto solved
-
-    log_event_global!(graph, "greedy solver failed")
-
-    # trivial solution failed, use maxsum solver
-    maxsum_result, sol, staged = maxsum(graph)
-
-    maxsum_result == :ok && @goto solved
-
-    if maxsum_result == :unsat
-        log_event_global!(graph, "maxsum solver failed")
-
-        @assert previous_sol ≡ nothing
-
-        # the problem is unsat, force-trigger a failure
-        # in order to produce a log - this will contain
-        # information about the best that the solver could
-        # achieve
-        trigger_failure!(graph, sol, staged)
-    else
-        @assert maxsum_result == :timedout
-        log_event_global!(graph, "maxsum solver timed out")
-        throw(
-            ResolverTimeoutError(
-                """
-                The resolution process timed out. This is likely due to unsatisfiable requirements.
-                You can increase the maximum resolution time via the environment variable JULIA_PKG_RESOLVE_MAX_TIME
-                (the current value is $(get(ENV, "JULIA_PKG_RESOLVE_MAX_TIME", DEFAULT_MAX_TIME))).
-                """
-            )
-        )
-    end
-
-
-    @label solved
-
-    # verify solution (debug code) and enforce its optimality
-    @assert verify_solution(sol, graph)
-    if greedy_ok
-        log_event_global!(graph, "the solver found an optimal configuration")
-        return sol
-    else
-        enforce_optimality!(sol, graph)
         if lower_bound ≢ nothing
-            @assert all(sol .≥ lower_bound)
-            @assert all((sol .≥ previous_sol) .| (previous_sol .== spp))
-        end
-        if sol ≠ previous_sol
-            log_event_global!(graph, "the solver found a feasible configuration and will try to improve it")
-            new_lower_bound = copy(sol)
-            uninst_mask = sol .== spp
-            new_lower_bound[uninst_mask] .= 1
-            if lower_bound ≢ nothing
-                lb_mask = uninst_mask .& (lower_bound .≠ spp)
-                new_lower_bound[lb_mask] = lower_bound[lb_mask]
-                @assert all(new_lower_bound .≥ lower_bound)
+            for p0 in 1:np
+                v0 = lower_bound[p0]
+                @assert v0 ≠ spp[p0]
+                gconstr[p0][1:(v0 - 1)] .= false
             end
-            return _resolve(graph, new_lower_bound, sol)
+        end
+
+        # attempt trivial solution first
+        greedy_ok, sol = greedysolver(graph)
+
+        greedy_ok && @goto solved
+
+        log_event_global!(graph, "greedy solver failed")
+
+        # trivial solution failed, use maxsum solver
+        maxsum_result, sol, staged = maxsum(graph)
+
+        maxsum_result == :ok && @goto solved
+
+        if maxsum_result == :unsat
+            log_event_global!(graph, "maxsum solver failed")
+
+            @assert previous_sol ≡ nothing
+
+            # the problem is unsat, force-trigger a failure
+            # in order to produce a log - this will contain
+            # information about the best that the solver could
+            # achieve
+            trigger_failure!(graph, sol, staged)
         else
-            log_event_global!(graph, "the solver found a feasible configuration and can't improve it")
+            @assert maxsum_result == :timedout
+            log_event_global!(graph, "maxsum solver timed out")
+            throw(
+                ResolverTimeoutError(
+                    """
+                    The resolution process timed out. This is likely due to unsatisfiable requirements.
+                    You can increase the maximum resolution time via the environment variable JULIA_PKG_RESOLVE_MAX_TIME
+                    (the current value is $(get(ENV, "JULIA_PKG_RESOLVE_MAX_TIME", DEFAULT_MAX_TIME))).
+                    """
+                )
+            )
+        end
+
+
+        @label solved
+
+        # verify solution (debug code) and enforce its optimality
+        @assert verify_solution(sol, graph)
+        if greedy_ok
+            log_event_global!(graph, "the solver found an optimal configuration")
             return sol
+        else
+            enforce_optimality!(sol, graph)
+            if lower_bound ≢ nothing
+                @assert all(sol .≥ lower_bound)
+                # (`previous_sol` is set whenever `lower_bound` is)
+                @assert all((sol .≥ previous_sol::Vector{Int}) .| (previous_sol .== spp))
+            end
+            if sol ≠ previous_sol
+                log_event_global!(graph, "the solver found a feasible configuration and will try to improve it")
+                new_lower_bound = copy(sol)
+                uninst_mask = sol .== spp
+                new_lower_bound[uninst_mask] .= 1
+                if lower_bound ≢ nothing
+                    lb_mask = uninst_mask .& (lower_bound .≠ spp)
+                    new_lower_bound[lb_mask] = lower_bound[lb_mask]
+                    @assert all(new_lower_bound .≥ lower_bound)
+                end
+                lower_bound, previous_sol = new_lower_bound, sol
+                continue
+            else
+                log_event_global!(graph, "the solver found a feasible configuration and can't improve it")
+                return sol
+            end
         end
     end
+    return
 end
 
 struct SanitySortKey{G, P}

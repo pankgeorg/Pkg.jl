@@ -1684,7 +1684,9 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
     # use eager throw version
     Base.Experimental.@sync begin
         jobs = Channel{eltype(pkgs_to_install)}(ctx.num_concurrent_downloads)
-        results = Channel(ctx.num_concurrent_downloads)
+        # (package, `true`/`false` for success, `nothing` if installed by another process, or the
+        # error; then the urls and path, or the backtrace)
+        results = Channel{Tuple{eltype(pkgs), Any, Any}}(ctx.num_concurrent_downloads)
 
         @async begin
             for pkg in pkgs_to_install
@@ -3636,9 +3638,9 @@ function print_status(
         uuids::Vector, names::Vector; manifest = true, diff = false, ignore_indent::Bool, workspace::Bool, outdated::Bool, deprecated::Bool, extensions::Bool, io::IO,
         mode::PackageMode, hidden_upgrades_info::Bool, show_usagetips::Bool = true
     )
-    not_installed_indicator = sprint((io, args) -> printstyled(io, args...; color = Base.error_color()), "→", context = io)
-    upgradable_indicator = sprint((io, args) -> printstyled(io, args...; color = :green), "⌃", context = io)
-    heldback_indicator = sprint((io, args) -> printstyled(io, args...; color = Base.warn_color()), "⌅", context = io)
+    not_installed_indicator = sprint((io, s) -> printstyled(io, s; color = Base.error_color()), "→", context = io)
+    upgradable_indicator = sprint((io, s) -> printstyled(io, s; color = :green), "⌃", context = io)
+    heldback_indicator = sprint((io, s) -> printstyled(io, s; color = Base.warn_color()), "⌅", context = io)
     filter = !isempty(uuids) || !isempty(names)
     # setup
     xs = diff_array(old_env, env; manifest, workspace)
@@ -3904,7 +3906,7 @@ function print_status(
 
     # Add warning for yanked packages
     if any_yanked_packages
-        yanked_str = sprint((io, args) -> printstyled(io, args...; color = :yellow), "[yanked]", context = io)
+        yanked_str = sprint((io, s) -> printstyled(io, s; color = :yellow), "[yanked]", context = io)
         printpkgstyle(io, :Warning, """Package versions marked with $yanked_str have been pulled from their registry. \
         It is recommended to update them to resolve a valid version.""", color = Base.warn_color(), ignore_indent)
     end
@@ -3914,7 +3916,7 @@ function print_status(
 
     # Add info for deprecated packages (only if not already in deprecated mode)
     if !deprecated && any_deprecated_packages
-        deprecated_str = sprint((io, args) -> printstyled(io, args...; color = :yellow), "[deprecated]", context = io)
+        deprecated_str = sprint((io, s) -> printstyled(io, s; color = :yellow), "[deprecated]", context = io)
         tipend = manifest ? " -m" : ""
         tip = show_usagetips ? " Use `status --deprecated$tipend` to see more information." : ""
         printpkgstyle(io, :Info, """Packages marked with $deprecated_str are no longer maintained.$tip""", color = Base.info_color(), ignore_indent)

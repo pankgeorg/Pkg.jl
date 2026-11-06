@@ -166,7 +166,7 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
                 add_snapshot_to_undo(ctx.env)
                 saved_initial_snapshot[] = true
             end
-            kwargs = merge((; kwargs...), (:io => io,))
+            kwargs = (; kwargs..., io)
             pkgs = deepcopy(pkgs) # don't mutate input
             foreach(handle_package_input!, pkgs)
             ret = $f(ctx, pkgs; kwargs...)
@@ -182,7 +182,7 @@ for f in (:develop, :add, :rm, :up, :pin, :free, :test, :build, :status, :why, :
             )
             pkg = PackageSpec(; name, uuid, version, url, rev, path, subdir)
             if $f === status || $f === rm || $f === up
-                kwargs = merge((; kwargs...), (:mode => mode,))
+                kwargs = (; kwargs..., mode)
             end
             # Handle $f() case
             return if all(isnothing, [name, uuid, version, url, rev, path, subdir])
@@ -625,6 +625,13 @@ admin privileges depending on the setup).
 
 Use verbose mode (`verbose=true`) for detailed output.
 """
+# The time of an entry of a usage file. TOML parses a date-time to a `DateTime`; a string
+# (written by hand, say) is parsed like `DateTime` does.
+function usage_time(info::Dict{String, Any})
+    time = info["time"]
+    return time isa DateTime ? time : DateTime(time::String)
+end
+
 function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = nothing, verbose = false, force = false, kwargs...)
     Context!(ctx; kwargs...)
     if collect_delay !== nothing
@@ -660,7 +667,9 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             end
 
             for (filename, infos) in parse_toml(usage_filepath)
-                f.(Ref(filename), infos)
+                for info in infos::Vector{Any}
+                    f(filename, info::Dict{String, Any})
+                end
             end
             return
         end
@@ -673,7 +682,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "manifest_usage.toml")) do filename, info
                 # For Manifest usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info))
             end
         end
         manifest_usage_by_depot[depot] = usage
@@ -682,7 +691,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "artifact_usage.toml")) do filename, info
                 # For Artifact usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info))
             end
         end
         artifact_usage_by_depot[depot] = usage
@@ -693,12 +702,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         let usage = usage
             reduce_usage!(joinpath(logdir(depot), "scratch_usage.toml")) do filename, info
                 # For Artifact usage, store only the last DateTime for each filename found
-                usage[filename] = max(get(usage, filename, DateTime(0)), DateTime(info["time"])::DateTime)
+                usage[filename] = max(get(usage, filename, DateTime(0)), usage_time(info))
                 if !haskey(parents, filename)
                     parents[filename] = Set{String}()
                 end
-                for parent in info["parent_projects"]
-                    push!(parents[filename], parent)
+                for parent in info["parent_projects"]::Union{Vector{String}, Vector{Any}}
+                    push!(parents[filename], parent::String)
                 end
             end
         end
@@ -843,14 +852,14 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         end
 
         artifact_path_list = String[]
-        for name in keys(artifact_dict)
-            getpaths(meta) = artifact_paths(SHA1(hex2bytes(meta["git-tree-sha1"])))
-            if isa(artifact_dict[name], Vector)
-                for platform_meta in artifact_dict[name]
+        for metas in values(artifact_dict)
+            getpaths(meta) = artifact_paths(SHA1(hex2bytes((meta::Dict{String, Any})["git-tree-sha1"]::String)))
+            if metas isa Vector{Any}
+                for platform_meta in metas
                     append!(artifact_path_list, getpaths(platform_meta))
                 end
             else
-                append!(artifact_path_list, getpaths(artifact_dict[name]))
+                append!(artifact_path_list, getpaths(metas))
             end
         end
         return artifact_path_list

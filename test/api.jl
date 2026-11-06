@@ -799,6 +799,42 @@ end
     @test sprint(print, Pkg.Versions.VersionRange("1.2-3.4.5")) == "1.2 - 3.4.5"
     @test sprint(print, Pkg.Versions.VersionRange("1.2")) == "1.2"
     @test isempty(dynamic_calls(Pkg.GitTools.check_valid_HEAD, (Pkg.GitTools.LibGit2.GitRepo,)))
+    # the keyword arguments of these calls have concrete types: no keywords' `NamedTuple` type is
+    # made at run time for `julia_version` (a `Union{Nothing, VersionNumber}`) or `preserve`
+    function runtime_keywords(@nospecialize(tt))
+        names = Any[]
+        tts = Any[tt]
+        while !isempty(tts)
+            for (ci, _) in Base.code_typed_by_type(pop!(tts); optimize = true)
+                for stmt in ci.code
+                    Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                    if Meta.isexpr(stmt, :invoke) && tt !== nothing
+                        mi = stmt.args[1]
+                        mi isa Core.CodeInstance && (mi = mi.def)
+                        isdefined(Core, :ABIOverride) && mi isa Core.ABIOverride && (mi = mi.def)
+                        # (the keyword-argument body)
+                        mi.def isa Method && startswith(String(mi.def.name), "#") && push!(tts, mi.specTypes)
+                    elseif Meta.isexpr(stmt, :call) && stmt.args[1] == GlobalRef(Core, :apply_type) &&
+                            length(stmt.args) >= 3 && stmt.args[2] == GlobalRef(Core, :NamedTuple)
+                        push!(names, stmt.args[3])
+                    end
+                end
+            end
+            tt = nothing
+        end
+        return names
+    end
+    T, Ops = Pkg.Types, Pkg.Operations
+    Context, Specs, Platform = T.Context, Vector{T.PackageSpec}, Base.BinaryPlatforms.Platform
+    kwcall(f, kw, args...) = Tuple{typeof(Core.kwcall), kw, typeof(f), args...}
+    for tt in (
+            kwcall(Ops.up, @NamedTuple{skip_writing_project::Bool, preserve::Union{Nothing, T.PreserveLevel}, lazy::Bool}, Context, Specs, T.UpgradeLevel),
+            kwcall(Ops.add, @NamedTuple{allow_autoprecomp::Bool, preserve::T.PreserveLevel, platform::Platform, target::Symbol, prefer_loaded_versions::Bool, lazy::Bool}, Context, Specs, Set{Base.UUID}),
+            kwcall(Ops.develop, @NamedTuple{preserve::T.PreserveLevel, platform::Platform}, Context, Specs, Set{Base.UUID}),
+            kwcall(Pkg.API.up, @NamedTuple{preserve::Union{Nothing, T.PreserveLevel}}, Context, Specs),
+        )
+        @test !any(n -> n isa Tuple && (:julia_version in n || :preserve in n), runtime_keywords(tt))
+    end
     # the resolver's rounds are not specialized on widened argument types (e.g. `::Array`)
     precompile(Pkg.Resolve.resolve, (Pkg.Resolve.Graph,))
     @test isempty(dynamic_calls(Pkg.Resolve._resolve, (Pkg.Resolve.Graph, Nothing, Nothing)))

@@ -602,7 +602,12 @@ function up(
     for pkg in pkgs
         update_source_if_set(ctx.env, pkg)
     end
-    Operations.up(ctx, pkgs, level; skip_writing_project, preserve, lazy)
+    # (a call for each case of `preserve`, so that the keyword arguments have concrete types)
+    if preserve === nothing
+        Operations.up(ctx, pkgs, level; skip_writing_project, preserve = nothing, lazy)
+    else
+        Operations.up(ctx, pkgs, level; skip_writing_project, preserve, lazy)
+    end
     return
 end
 

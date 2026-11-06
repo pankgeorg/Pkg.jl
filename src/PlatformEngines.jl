@@ -92,11 +92,16 @@ end
 
 const AUTH_ERROR_HANDLERS = Pair{Union{String, Regex}, Any}[]
 
+# A handler is registered at run time, so calling it is a dynamic call; it's kept in a
+# function of its own, out of `handle_auth_error`, which runs for every download from a server.
+@noinline call_auth_error_handler(@nospecialize(handler), url, err) =
+    handler(url, pkg_server(), err)::Tuple{Bool, Bool}
+
 function handle_auth_error(url, err; verbose::Bool = false)
     handled, should_retry = false, false
     for (scheme, handler) in AUTH_ERROR_HANDLERS
         occursin(scheme, url) || continue
-        handled, should_retry = handler(url, pkg_server(), err)
+        handled, should_retry = call_auth_error_handler(handler, url, err)
         handled && break
     end
     handled && should_retry && return get_auth_header(url; verbose = verbose)
@@ -137,6 +142,9 @@ function deregister_auth_error_handler(urlscheme::Union{String, Regex}, @nospeci
     return nothing
 end
 
+# A number in a parsed TOML file is an `Int64` or a `Float64`
+toml_float(@nospecialize(x)) = x isa Int64 ? Float64(x) : x::Float64
+
 function get_auth_header(url::AbstractString; verbose::Bool = false)
     server_dir = get_server_dir(url)
     server_dir === nothing && return
@@ -164,10 +172,10 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     # handle token expiration and refresh
     expires_at = Inf
     if haskey(auth_info, "expires_at")
-        expires_at = min(expires_at, Float64(auth_info["expires_at"])::Float64)
+        expires_at = min(expires_at, toml_float(auth_info["expires_at"]))
     end
     if haskey(auth_info, "expires_in")
-        expires_at = min(expires_at, mtime(auth_file) + Float64(auth_info["expires_in"])::Float64)
+        expires_at = min(expires_at, mtime(auth_file) + toml_float(auth_info["expires_in"]))
     end
     # if token is good until ten minutes from now, use it
     time_now = time()
@@ -214,8 +222,8 @@ function get_auth_header(url::AbstractString; verbose::Bool = false)
     end
     if haskey(auth_info, "expires_in")
         expires_in = auth_info["expires_in"]
-        if expires_in isa Number
-            expires_at = floor(time_now + Float64(expires_in)::Float64)
+        if expires_in isa Union{Int64, Float64}
+            expires_at = floor(time_now + Float64(expires_in))
             # overwrite expires_at (avoids clock skew issues)
             auth_info["expires_at"] = expires_at
         end
@@ -350,8 +358,8 @@ function download(
         headers::Vector{Pair{String, String}} = Pair{String, String}[],
         auth_header::Union{Pair{String, String}, Nothing} = nothing,
         io::IO = stderr_f(),
-        progress::Union{Nothing, Function} = nothing, # (total, now) -> nothing
-    )
+        progress::P = nothing, # (total, now) -> nothing
+    ) where {P <: Union{Function, Nothing}}
     if auth_header === nothing
         auth_header = get_auth_header(url, verbose = verbose)
     end
@@ -438,8 +446,8 @@ function download_verify(
         verbose::Bool = false,
         force::Bool = false,
         quiet_download::Bool = false,
-        progress::Union{Nothing, Function} = nothing, # (total, now) -> nothing
-    )
+        progress::P = nothing, # (total, now) -> nothing
+    ) where {P <: Union{Function, Nothing}}
     # Whether the file existed in the first place
     file_existed = false
 
@@ -652,8 +660,8 @@ function download_verify_unpack(
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
-        progress::Union{Nothing, Function} = nothing, # (total, now) -> nothing
-    )
+        progress::P = nothing, # (total, now) -> nothing
+    ) where {P <: Union{Function, Nothing}}
     # First, determine whether we should keep this tarball around
     remove_tarball = false
     if tarball_path === nothing

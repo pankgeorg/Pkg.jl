@@ -118,7 +118,7 @@ function pkg_server_registry_info()
         f()
         download_ok = true
     catch err
-        @warn "could not download $server/registries" exception = err
+        @noinline ((@nospecialize(err)) -> @warn "could not download $server/registries" exception = err)(err)
     end
     download_ok || return nothing
     open(tmp_path) do io
@@ -670,7 +670,7 @@ function update(regs::Vector{RegistrySpec}; io::IO = stderr_f(), force::Bool = t
                                 catch e
                                     attempts += 1
                                     if e isa LibGit2.GitError && e.code == LibGit2.Error.ELOCKED && attempts <= 3
-                                        @warn "Registry update attempt failed because repository is locked. Resetting and retrying." e
+                                        @noinline ((@nospecialize(e)) -> @warn "Registry update attempt failed because repository is locked. Resetting and retrying." e)(e)
                                         LibGit2.reset!(repo, LibGit2.head_oid(repo), LibGit2.Consts.RESET_HARD)
                                         sleep(1)
                                         @goto merge

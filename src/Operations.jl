@@ -1590,8 +1590,8 @@ end
 
 function check_artifacts_downloaded(pkg_root::String; platform::AbstractPlatform = HostPlatform())
     for (artifacts_toml, artifacts) in collect_artifacts(pkg_root; platform)
-        for name in keys(artifacts)
-            if !artifact_exists(Base.SHA1(artifacts[name]["git-tree-sha1"]))
+        for meta in values(artifacts)
+            if !artifact_exists(Base.SHA1((meta::Dict{String, Any})["git-tree-sha1"]::String))
                 return false
             end
             break
@@ -3791,10 +3791,11 @@ function print_status(
         if deprecated && !diff && pkg.deprecation_info !== nothing
             reason = get(pkg.deprecation_info, "reason", nothing)
             alternative = get(pkg.deprecation_info, "alternative", nothing)
-            if reason !== nothing
+            # (registry metadata, read from TOML: printed when it is a string)
+            if reason isa String
                 printstyled(io, " (reason: ", reason, ")"; color = :yellow)
             end
-            if alternative !== nothing
+            if alternative isa String
                 printstyled(io, " (alternative: ", alternative, ")"; color = :yellow)
             end
         end

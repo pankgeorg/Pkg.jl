@@ -433,10 +433,11 @@ function init_package_info!(registry::RegistryInstance, pkg::PkgEntry)
         # Versions.toml
         d_v = custom_isfile(in_memory_registry, pkg.registry_path, joinpath(pkg.path, "Versions.toml")) ?
             parsefile(in_memory_registry, pkg.registry_path, joinpath(pkg.path, "Versions.toml")) : Dict{String, Any}()
-        version_info = Dict{VersionNumber, VersionInfo}(
-            VersionNumber(k) =>
-                VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool) for (k, v) in d_v
-        )
+        version_info = Dict{VersionNumber, VersionInfo}()
+        for (k, v) in d_v
+            v = v::Dict{String, Any}
+            version_info[VersionNumber(k)] = VersionInfo(SHA1(v["git-tree-sha1"]::String), get(v, "yanked", false)::Bool)
+        end
 
         # Deps.toml (load first to build name -> UUID mapping)
         name_to_uuid = Dict{String, UUID}()

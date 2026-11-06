@@ -875,4 +875,29 @@ end
     end
 end
 
+
+@testset "error-path logging is out of line" begin
+    # Logging a caught exception (`@warn "..." exception = e`) builds a tuple of a value whose
+    # type is only known at run time. Such logging runs in a function of its own, so that the
+    # functions it is called from don't build such tuples on their normal path.
+    function tuples_of_any(@nospecialize(f), @nospecialize(types))
+        out = Any[]
+        for (ci, _) in code_typed(f, types; optimize = true)
+            for (i, stmt) in enumerate(ci.code)
+                Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                Meta.isexpr(stmt, :new) || (Meta.isexpr(stmt, :call) && stmt.args[1] == GlobalRef(Core, :tuple)) || continue
+                t = Core.Compiler.widenconst(ci.ssavaluetypes[i])
+                t <: NamedTuple && (t = Base.unwrap_unionall(t); t = t.parameters[2])
+                t isa DataType && t <: Tuple && any(p -> p === Any, t.parameters) && push!(out, stmt)
+            end
+        end
+        return out
+    end
+    Types = Pkg.Types
+    @test isempty(tuples_of_any(Pkg.Registry.pkg_server_registry_info, ()))
+    @test isempty(tuples_of_any(Pkg._auto_gc, (Types.Context,)))
+    @test isempty(tuples_of_any(Pkg.Operations.ensure_manifest_registries!, (Types.Context,)))
+    @test isempty(tuples_of_any(Types.write_env_usage, (Vector{String}, String)))
+end
+
 end # module

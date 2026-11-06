@@ -960,7 +960,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         manifest = try
             read_manifest(path)
         catch e
-            @warn "Reading manifest file at $path failed with error" exception = e
+            @noinline (() -> @warn "Reading manifest file at $path failed with error" exception = e)()
             return nothing
         end
 
@@ -1004,7 +1004,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
         artifact_dict = try
             parse_toml(path)
         catch e
-            @warn "Reading artifacts file at $path failed with error" exception = e
+            @noinline (() -> @warn "Reading artifacts file at $path failed with error" exception = e)()
             return nothing
         end
 
@@ -1176,12 +1176,12 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                     try
                         size += lstat(path).size
                     catch ex
-                        @error("Failed to calculate size of $path", exception = ex)
+                        @noinline ((path, ex) -> @error("Failed to calculate size of $path", exception = ex))(path, ex)
                     end
                 end
             end
         catch ex
-            @error("Failed to calculate size of $path", exception = ex)
+            @noinline ((path, ex) -> @error("Failed to calculate size of $path", exception = ex))(path, ex)
         end
         return size
     end
@@ -1192,7 +1192,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             try
                 lstat(path).size
             catch ex
-                @error("Failed to calculate size of $path", exception = ex)
+                @noinline (() -> @error("Failed to calculate size of $path", exception = ex))()
                 0
             end
         else
@@ -1202,7 +1202,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
             Base.Filesystem.prepare_for_deletion(path)
             Base.rm(path; recursive = true, force = true)
         catch e
-            @warn("Failed to delete $path", exception = e)
+            @noinline (() -> @warn("Failed to delete $path", exception = e))()
             return 0
         end
         if verbose
@@ -1357,7 +1357,7 @@ function gc(ctx::Context = Context(); collect_delay::Union{Period, Nothing} = no
                 catch e
                     # Silently ignore errors from git gc
                     if verbose
-                        @warn "git gc failed for registry $(reg_name)" exception = e
+                        @noinline (() -> @warn "git gc failed for registry $(reg_name)" exception = e)()
                     end
                 end
             end

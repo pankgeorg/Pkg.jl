@@ -188,7 +188,7 @@ function clone(io::IO, url, source_path; @nospecialize(header::Union{Nothing, Ab
             try
                 run(pipeline(cmd; stdout = devnull))
             catch err
-                Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
+                @noinline (() -> Pkg.Types.pkgerror("The command $(cmd) failed, error: $err"))()
             end
             return LibGit2.GitRepo(source_path)
         else
@@ -278,7 +278,7 @@ function fetch(io::IO, repo::LibGit2.GitRepo, @nospecialize(remoteurl::Union{Not
                     run(pipeline(cmd; stdout = devnull, stderr = errbuf))
                 catch err
                     git_err = strip(String(take!(errbuf)))
-                    msg = "The command $(cmd) failed, error: $err"
+                    msg = @noinline (() -> "The command $(cmd) failed, error: $err")()
                     isempty(git_err) || (msg *= "\n$(git_err)")
                     Pkg.Types.pkgerror(msg)
                 end

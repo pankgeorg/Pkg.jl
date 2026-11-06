@@ -92,11 +92,16 @@ end
 
 const AUTH_ERROR_HANDLERS = Pair{Union{String, Regex}, Any}[]
 
+# A handler is registered at run time, so calling it is a dynamic call; it's kept in a
+# function of its own, out of `handle_auth_error`, which runs for every download from a server.
+@noinline call_auth_error_handler(@nospecialize(handler), url, err) =
+    handler(url, pkg_server(), err)::Tuple{Bool, Bool}
+
 function handle_auth_error(url, err; verbose::Bool = false)
     handled, should_retry = false, false
     for (scheme, handler) in AUTH_ERROR_HANDLERS
         occursin(scheme, url) || continue
-        handled, should_retry = handler(url, pkg_server(), err)
+        handled, should_retry = call_auth_error_handler(handler, url, err)
         handled && break
     end
     handled && should_retry && return get_auth_header(url; verbose = verbose)

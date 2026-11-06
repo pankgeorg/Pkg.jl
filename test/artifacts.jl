@@ -1537,6 +1537,7 @@ end
         )
     )
     @test isempty(dynamic_calls(PE.get_auth_header, (String,)))
+    @test isempty(dynamic_calls(PE.handle_auth_error, (String, String)))
 end
 
 end # module

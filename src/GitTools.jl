@@ -163,7 +163,7 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
             try
                 run(pipeline(cmd; stdout = devnull))
             catch err
-                Pkg.Types.pkgerror("The command $(cmd) failed, error: $err")
+                @noinline ((@nospecialize(err)) -> Pkg.Types.pkgerror("The command $(cmd) failed, error: $err"))(err)
             end
             return LibGit2.GitRepo(source_path)
         else
@@ -180,15 +180,18 @@ function clone(io::IO, url, source_path; header = nothing, credentials = nothing
             mkpath(source_path)
             # Only pass depth if shallow clones are supported and depth > 0
             if depth > 0
+                # (the value is kept out of the `try` and returned after it)
+                shallow = nothing
                 try
                     # `LibGit2.clone` stores the credentials in `callbacks`, so pass a copy in case we retry
-                    return LibGit2.clone(url, source_path; callbacks = copy(callbacks), credentials, isbare, depth, kwargs...)
+                    shallow = LibGit2.clone(url, source_path; callbacks = copy(callbacks), credentials, isbare, depth, kwargs...)
                 catch err
                     is_shallow_fallback_error(err) || rethrow()
                     @debug "Shallow clone of `$url` failed, retrying with a full clone" exception = err
                     rm(source_path; force = true, recursive = true)
                     mkpath(source_path)
                 end
+                shallow === nothing || return shallow
             end
             return LibGit2.clone(url, source_path; callbacks, credentials, isbare, kwargs...)
         end
@@ -255,7 +258,7 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
                     run(pipeline(cmd; stdout = devnull, stderr = errbuf))
                 catch err
                     git_err = strip(String(take!(errbuf)))
-                    msg = "The command $(cmd) failed, error: $err"
+                    msg = @noinline ((@nospecialize(err)) -> "The command $(cmd) failed, error: $err")(err)
                     isempty(git_err) || (msg *= "\n$(git_err)")
                     Pkg.Types.pkgerror(msg)
                 end
@@ -263,13 +266,16 @@ function fetch(io::IO, repo::LibGit2.GitRepo, remoteurl = nothing; header = noth
         else
             # Only pass depth if shallow clones are supported and depth > 0
             if depth > 0
+                # (the value is kept out of the `try` and returned after it)
+                shallow = nothing
                 try
                     # `LibGit2.fetch` stores the credentials in `callbacks`, so pass a copy in case we retry
-                    return LibGit2.fetch(repo; remoteurl, callbacks = copy(callbacks), credentials, refspecs, depth, kwargs...)
+                    shallow = LibGit2.fetch(repo; remoteurl, callbacks = copy(callbacks), credentials, refspecs, depth, kwargs...)
                 catch err
                     is_shallow_fallback_error(err) || rethrow()
                     @debug "Shallow fetch from `$remoteurl` failed, retrying with a full fetch" exception = err
                 end
+                shallow === nothing || return shallow
             end
             return LibGit2.fetch(repo; remoteurl, callbacks, credentials, refspecs, kwargs...)
         end

@@ -718,4 +718,48 @@ end
     end
 end
 
+@testset "error-path logging is out of line" begin
+    # Logging a caught exception (`@warn "..." exception = e`) builds a tuple of a value whose
+    # type is only known at run time. Such logging runs in a function of its own, so that the
+    # functions it is called from don't build such tuples on their normal path.
+    function tuples_of_any(@nospecialize(f), @nospecialize(types))
+        out = Any[]
+        for (ci, _) in code_typed(f, types; optimize = true)
+            for (i, stmt) in enumerate(ci.code)
+                Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                Meta.isexpr(stmt, :new) || (Meta.isexpr(stmt, :call) && stmt.args[1] == GlobalRef(Core, :tuple)) || continue
+                t = Core.Compiler.widenconst(ci.ssavaluetypes[i])
+                t <: NamedTuple && (t = Base.unwrap_unionall(t); t = t.parameters[2])
+                t isa DataType && t <: Tuple && any(p -> p === Any, t.parameters) && push!(out, stmt)
+            end
+        end
+        return out
+    end
+    # (and the caught value is passed to the closure as an argument it doesn't specialize on,
+    # rather than captured, which would make the closure's type at run time, from the value's
+    # type; so the closure is made and called statically)
+    function closures_made_or_called_at_run_time(@nospecialize(tt))
+        n = 0
+        for (ci, _) in Base.code_typed_by_type(tt; optimize = true), stmt in ci.code
+            if Meta.isexpr(stmt, :invoke)
+                mi = stmt.args[1]
+                mi isa Core.CodeInstance && (mi = mi.def)
+                mi.def isa Method && mi.def.name === :_typeof_captured_variable && (n += 1)
+            elseif Meta.isexpr(stmt, :call) && stmt.args[1] isa Core.SSAValue
+                f = Core.Compiler.widenconst(ci.ssavaluetypes[stmt.args[1].id])
+                f isa DataType && f <: Function && startswith(String(f.name.name), "#") && (n += 1)
+            end
+        end
+        return n
+    end
+    Types = Pkg.Types
+    PE = Pkg.PlatformEngines
+    @test closures_made_or_called_at_run_time(Tuple{typeof(Base.bodyfunction(which(PE.get_auth_header, (String,)))), Bool, typeof(PE.get_auth_header), String}) == 0
+    @test closures_made_or_called_at_run_time(Tuple{typeof(Pkg._auto_gc), Types.Context}) == 0
+    @test isempty(tuples_of_any(Pkg.Registry.pkg_server_registry_info, ()))
+    @test isempty(tuples_of_any(Pkg._auto_gc, (Types.Context,)))
+    @test isempty(tuples_of_any(Pkg.Operations.ensure_manifest_registries!, (Types.Context,)))
+    @test isempty(tuples_of_any(Types.write_env_usage, (Vector{String}, String)))
+end
+
 end # module

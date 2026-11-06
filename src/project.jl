@@ -288,7 +288,7 @@ end
 # WRITING #
 ###########
 function destructure(project::Project)::Dict
-    raw = deepcopy(project.other)
+    raw = deepcopy_toml(project.other)
 
     # sanity check for consistency between compat value and string representation
     for (name, compat) in project.compat

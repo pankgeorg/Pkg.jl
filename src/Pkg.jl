@@ -1115,7 +1115,7 @@ function _auto_gc(ctx::Types.Context)
             Pkg.gc(ctx)
             DEPOT_ORPHANAGE_TIMESTAMPS[depots1()] = curr_time
         catch ex
-            @noinline ((ex) -> @error("GC failed", exception = ex))(ex)
+            @noinline ((@nospecialize(ex)) -> @error("GC failed", exception = ex))(ex)
         end
     end
 end

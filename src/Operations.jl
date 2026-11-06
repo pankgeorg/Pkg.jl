@@ -140,7 +140,7 @@ function ensure_manifest_registries!(ctx::Context)
             copy!(ctx.registries, Registry.reachable_registries())
         catch e
             # Warn but don't error - packages may still work with available registries
-            @noinline ((e) -> @warn "Failed to install some registries from manifest" exception = (e, catch_backtrace()))(e)
+            @noinline ((@nospecialize(e)) -> @warn "Failed to install some registries from manifest" exception = (e, catch_backtrace()))(e)
         end
     end
 
@@ -2472,7 +2472,7 @@ function download_source(
                 pkg::DownloadPkg, exc_or_success_or_nothing, bt_or_pathurls = take!(results)
                 if exc_or_success_or_nothing isa Exception
                     exc = exc_or_success_or_nothing
-                    @noinline ((exc) -> pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls)))(exc)
+                    @noinline ((@nospecialize(exc)) -> pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls)))(exc)
                 end
                 if exc_or_success_or_nothing === nothing
                     continue # represents when another process did the install

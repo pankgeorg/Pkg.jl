@@ -893,22 +893,27 @@ end
         end
         return out
     end
-    # (and the caught value is passed to the closure rather than captured, which would make the
-    # closure's type at run time, from the value's type)
-    function closures_made_at_run_time(@nospecialize(tt))
+    # (and the caught value is passed to the closure as an argument it doesn't specialize on,
+    # rather than captured, which would make the closure's type at run time, from the value's
+    # type; so the closure is made and called statically)
+    function closures_made_or_called_at_run_time(@nospecialize(tt))
         n = 0
         for (ci, _) in Base.code_typed_by_type(tt; optimize = true), stmt in ci.code
-            Meta.isexpr(stmt, :invoke) || continue
-            mi = stmt.args[1]
-            mi isa Core.CodeInstance && (mi = mi.def)
-            mi.def isa Method && mi.def.name === :_typeof_captured_variable && (n += 1)
+            if Meta.isexpr(stmt, :invoke)
+                mi = stmt.args[1]
+                mi isa Core.CodeInstance && (mi = mi.def)
+                mi.def isa Method && mi.def.name === :_typeof_captured_variable && (n += 1)
+            elseif Meta.isexpr(stmt, :call) && stmt.args[1] isa Core.SSAValue
+                f = Core.Compiler.widenconst(ci.ssavaluetypes[stmt.args[1].id])
+                f isa DataType && f <: Function && startswith(String(f.name.name), "#") && (n += 1)
+            end
         end
         return n
     end
     Types = Pkg.Types
     PE = Pkg.PlatformEngines
-    @test closures_made_at_run_time(Tuple{typeof(Base.bodyfunction(which(PE.get_auth_header, (String,)))), Bool, typeof(PE.get_auth_header), String}) == 0
-    @test closures_made_at_run_time(Tuple{typeof(Pkg._auto_gc), Types.Context}) == 0
+    @test closures_made_or_called_at_run_time(Tuple{typeof(Base.bodyfunction(which(PE.get_auth_header, (String,)))), Bool, typeof(PE.get_auth_header), String}) == 0
+    @test closures_made_or_called_at_run_time(Tuple{typeof(Pkg._auto_gc), Types.Context}) == 0
     @test isempty(tuples_of_any(Pkg.Registry.pkg_server_registry_info, ()))
     @test isempty(tuples_of_any(Pkg._auto_gc, (Types.Context,)))
     @test isempty(tuples_of_any(Pkg.Operations.ensure_manifest_registries!, (Types.Context,)))

@@ -1607,6 +1607,17 @@ function download_artifacts(
     return download_artifacts(ctx, values(ctx.env.manifest); platform, julia_version, verbose, io, include_lazy)
 end
 
+# `download_artifacts(ctx; kwargs..., julia_version = ctx.julia_version)`, with a call for each case of
+# the version (a `Union{Nothing, VersionNumber}`), so that the keyword arguments have concrete types
+function download_artifacts_julia_version(ctx::Context; kwargs...)
+    julia_version = ctx.julia_version
+    return if julia_version === nothing
+        download_artifacts(ctx; kwargs..., julia_version = nothing)
+    else
+        download_artifacts(ctx; kwargs..., julia_version)
+    end
+end
+
 function check_artifacts_downloaded(pkg_root::String; platform::AbstractPlatform = HostPlatform())
     for (artifacts_toml, artifacts) in collect_artifacts(pkg_root; platform)
         for meta in values(artifacts)
@@ -1633,6 +1644,19 @@ function find_urls(registries::Vector{Registry.RegistryInstance}, uuid::UUID)
     return urls
 end
 
+
+# A result of `download_source`'s downloads. `result` is `true` or `false` (installed from an
+# archive or not), `nothing` when another process installed it, or the error thrown, with its
+# `backtrace`. A struct rather than a tuple, so that its fields have declared types.
+struct SourceDownload{P}
+    pkg::P
+    result::Any
+    urls::Set{String}
+    path::String
+    backtrace::Vector{Union{Ptr{Nothing}, Base.InterpreterIP}}
+end
+SourceDownload(pkg, result, urls::Set{String}, path::String) =
+    SourceDownload(pkg, result, urls, path, Union{Ptr{Nothing}, Base.InterpreterIP}[])
 
 download_source(ctx::Context; readonly::Bool = true) = download_source(ctx, collect(values(ctx.env.manifest)); readonly)
 
@@ -1684,7 +1708,9 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
     # use eager throw version
     Base.Experimental.@sync begin
         jobs = Channel{eltype(pkgs_to_install)}(ctx.num_concurrent_downloads)
-        results = Channel(ctx.num_concurrent_downloads)
+        # (package, `true`/`false` for success, `nothing` if installed by another process, or the
+        # error; then the urls and path, or the backtrace)
+        results = Channel{SourceDownload{eltype(pkgs)}}(ctx.num_concurrent_downloads)
 
         @async begin
             for pkg in pkgs_to_install
@@ -1698,11 +1724,11 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                     mkpath(dirname(path)) # the `packages/Package` dir needs to exist for the pidfile to be created
                     FileWatching.mkpidlock(path * ".pid", stale_age = pidfile_stale_age) do
                         if ispath(path)
-                            put!(results, (pkg, nothing, (urls, path)))
+                            put!(results, SourceDownload(pkg, nothing, urls, path))
                             return
                         end
                         if ctx.use_git_for_all_downloads
-                            put!(results, (pkg, false, (urls, path)))
+                            put!(results, SourceDownload(pkg, false, urls, path))
                             return
                         end
                         archive_urls = Pair{String, Bool}[]
@@ -1726,9 +1752,9 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                             if ctx.use_only_tarballs_for_downloads && !success
                                 pkgerror("failed to get tarball from $(urls)")
                             end
-                            put!(results, (pkg, success, (urls, path)))
+                            put!(results, SourceDownload(pkg, success, urls, path))
                         catch err
-                            put!(results, (pkg, err, catch_backtrace()))
+                            put!(results, SourceDownload(pkg, err, urls, path, catch_backtrace()))
                         end
                     end
                 end
@@ -1745,7 +1771,10 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
         fancyprint = can_fancyprint(ctx.io)::Bool
         try
             for i in 1:length(pkgs_to_install)
-                pkg::eltype(pkgs), exc_or_success_or_nothing, bt_or_pathurls = take!(results)
+                download = take!(results)
+                pkg = download.pkg
+                exc_or_success_or_nothing = download.result
+                bt_or_pathurls = download.backtrace # (the backtrace of an error)
                 if exc_or_success_or_nothing isa Exception
                     exc = exc_or_success_or_nothing
                     pkgerror("Error when installing package $(pkg.name):\n", sprint(Base.showerror, exc, bt_or_pathurls))
@@ -1754,7 +1783,7 @@ function download_source(ctx::Context, pkgs; readonly::Bool = true)
                     continue # represents when another process did the install
                 end
                 success = exc_or_success_or_nothing::Bool
-                (urls, path) = bt_or_pathurls::Tuple{Set{String}, String}
+                urls, path = download.urls, download.path
                 success || push!(missed_packages, (; pkg, urls, path))
                 bar.current = i
                 str = sprint(; context = ctx.io) do io
@@ -2512,7 +2541,7 @@ function add(
 
         # After downloading resolutionary packages, search for (Julia)Artifacts.toml files
         # and ensure they are all downloaded and unpacked as well:
-        download_artifacts(ctx, platform = platform, julia_version = ctx.julia_version)
+        download_artifacts_julia_version(ctx; platform)
 
         # if env is a package add compat entries
         add_compat_entries!(ctx, pkgs)
@@ -2551,7 +2580,7 @@ function develop(
     update_manifest!(ctx.env, pkgs, deps_map, ctx.julia_version, ctx.registries)
     new_apply = download_source(ctx)
     fixups_from_projectfile!(ctx)
-    download_artifacts(ctx; platform = platform, julia_version = ctx.julia_version)
+    download_artifacts_julia_version(ctx; platform)
     write_env(ctx.env) # write env before building
     show_update(ctx.env, ctx.registries; io = ctx.io)
     return build_versions(ctx, union(new_apply, new_git))
@@ -2727,7 +2756,7 @@ function up(
     update_manifest!(ctx.env, pkgs, deps_map, ctx.julia_version, ctx.registries)
     new_apply = download_source(ctx)
     fixups_from_projectfile!(ctx)
-    download_artifacts(ctx, julia_version = ctx.julia_version)
+    download_artifacts_julia_version(ctx)
     write_env(ctx.env; skip_writing_project) # write env before building
     show_update(ctx.env, ctx.registries; io = ctx.io, hidden_upgrades_info = true)
 
@@ -2802,7 +2831,7 @@ function pin(ctx::Context, pkgs::Vector{PackageSpec})
     update_manifest!(ctx.env, pkgs, deps_map, ctx.julia_version, ctx.registries)
     new = download_source(ctx)
     fixups_from_projectfile!(ctx)
-    download_artifacts(ctx; julia_version = ctx.julia_version)
+    download_artifacts_julia_version(ctx)
     write_env(ctx.env) # write env before building
     show_update(ctx.env, ctx.registries; io = ctx.io)
     return build_versions(ctx, new)
@@ -3636,9 +3665,9 @@ function print_status(
         uuids::Vector, names::Vector; manifest = true, diff = false, ignore_indent::Bool, workspace::Bool, outdated::Bool, deprecated::Bool, extensions::Bool, io::IO,
         mode::PackageMode, hidden_upgrades_info::Bool, show_usagetips::Bool = true
     )
-    not_installed_indicator = sprint((io, args) -> printstyled(io, args...; color = Base.error_color()), "→", context = io)
-    upgradable_indicator = sprint((io, args) -> printstyled(io, args...; color = :green), "⌃", context = io)
-    heldback_indicator = sprint((io, args) -> printstyled(io, args...; color = Base.warn_color()), "⌅", context = io)
+    not_installed_indicator = sprint((io, s) -> printstyled(io, s; color = Base.error_color()), "→", context = io)
+    upgradable_indicator = sprint((io, s) -> printstyled(io, s; color = :green), "⌃", context = io)
+    heldback_indicator = sprint((io, s) -> printstyled(io, s; color = Base.warn_color()), "⌅", context = io)
     filter = !isempty(uuids) || !isempty(names)
     # setup
     xs = diff_array(old_env, env; manifest, workspace)
@@ -3696,7 +3725,8 @@ function print_status(
             end
         end
         # Sort stdlibs and _jlls towards the end in status output
-        xs = sort!(xs, by = (x -> (is_stdlib(x[1]), endswith(something(x[3], x[2]).name, "_jll"), something(x[3], x[2]).name, x[1])))
+        # (a key of concrete types: the listed packages have a name and a uuid)
+        xs = sort!(xs, by = (x -> (is_stdlib(x[1]::UUID), endswith(something(x[3], x[2]).name::String, "_jll"), something(x[3], x[2]).name::String, x[1]::UUID)))
     end
 
     all_packages_downloaded = true
@@ -3904,7 +3934,7 @@ function print_status(
 
     # Add warning for yanked packages
     if any_yanked_packages
-        yanked_str = sprint((io, args) -> printstyled(io, args...; color = :yellow), "[yanked]", context = io)
+        yanked_str = sprint((io, s) -> printstyled(io, s; color = :yellow), "[yanked]", context = io)
         printpkgstyle(io, :Warning, """Package versions marked with $yanked_str have been pulled from their registry. \
         It is recommended to update them to resolve a valid version.""", color = Base.warn_color(), ignore_indent)
     end
@@ -3914,7 +3944,7 @@ function print_status(
 
     # Add info for deprecated packages (only if not already in deprecated mode)
     if !deprecated && any_deprecated_packages
-        deprecated_str = sprint((io, args) -> printstyled(io, args...; color = :yellow), "[deprecated]", context = io)
+        deprecated_str = sprint((io, s) -> printstyled(io, s; color = :yellow), "[deprecated]", context = io)
         tipend = manifest ? " -m" : ""
         tip = show_usagetips ? " Use `status --deprecated$tipend` to see more information." : ""
         printpkgstyle(io, :Info, """Packages marked with $deprecated_str are no longer maintained.$tip""", color = Base.info_color(), ignore_indent)

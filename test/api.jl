@@ -523,4 +523,127 @@ end
     end
 end
 
+@testset "API wrappers, gc, registry commands and the resolver make static calls" begin
+    # Calls that are only resolved at run time can't be compiled ahead of time without
+    # Julia's runtime (e.g. by `juliac --trim`): the keyword arguments of the API wrappers
+    # are a concrete `NamedTuple`, and parsed TOML values are checked before use.
+    # Returns the calls in the code of `f` for argument types `types` (and keyword argument
+    # types `kwtypes`, a `NamedTuple` type) that are dispatched at run time. The closures and
+    # keyword-argument bodies of `f` are included: those it calls, and the ones without
+    # arguments that it creates, e.g. for tasks, up to `maxdepth` levels.
+    function dynamic_calls(@nospecialize(f), @nospecialize(types); kwtypes = nothing, maxdepth = 10)
+        fname = String(nameof(f))
+        ofname(@nospecialize(T)) = (T = Base.unwrap_unionall(T); T isa DataType && occursin(fname, String(T.name.name)))
+        calls = String[]
+        seen = Set{Any}()
+        function visit(@nospecialize(tt), depth = 0)
+            (tt in seen || depth > maxdepth) && return
+            push!(seen, tt)
+            for (ci, _) in Base.code_typed_by_type(tt; optimize = true)
+                ci isa Core.CodeInfo || continue
+                for stmt in ci.code
+                    Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                    if Meta.isexpr(stmt, :invoke)
+                        mi = stmt.args[1]
+                        mi isa Core.CodeInstance && (mi = mi.def)
+                        isdefined(Core, :ABIOverride) && mi isa Core.ABIOverride && (mi = mi.def)
+                        m = mi.def
+                        if m isa Method && startswith(String(m.name), "#") && occursin(fname, String(m.name))
+                            visit(mi.specTypes, depth + 1)
+                        end
+                        continue
+                    elseif Meta.isexpr(stmt, :new)
+                        T = stmt.args[1]
+                        T isa Core.SSAValue && (T = ci.ssavaluetypes[T.id])
+                        T isa Core.Const && (T = T.val)
+                        T isa Type && T <: Function && ofname(T) && visit(Tuple{T}, depth + 1)
+                        continue
+                    end
+                    Meta.isexpr(stmt, :call) || continue
+                    callee = stmt.args[1]
+                    ft = if callee isa GlobalRef
+                        isdefined(callee.mod, callee.name) ? Core.Typeof(getglobal(callee.mod, callee.name)) : Any
+                    elseif callee isa QuoteNode
+                        Core.Typeof(callee.value)
+                    elseif callee isa Core.SSAValue
+                        Core.Compiler.widenconst(ci.ssavaluetypes[callee.id])
+                    elseif callee isa Core.Argument
+                        Core.Compiler.widenconst(ci.slottypes[callee.n])
+                    elseif isdefined(Core, :BindingPartition) && callee isa Core.BindingPartition
+                        Core.Typeof(callee.restriction)
+                    else
+                        Core.Typeof(callee)
+                    end
+                    # a builtin is called directly, unless it applies a function to splatted arguments
+                    ft <: Core.Builtin && !(ft <: typeof(Core._apply_iterate)) && continue
+                    push!(calls, string(stmt))
+                end
+            end
+            return
+        end
+        visit(kwtypes === nothing ? Tuple{Core.Typeof(f), types...} : Tuple{typeof(Core.kwcall), kwtypes, Core.Typeof(f), types...})
+        return calls
+    end
+    for f in (Pkg.API.add, Pkg.API.rm, Pkg.API.up, Pkg.API.status, Pkg.API.develop)
+        @test isempty(dynamic_calls(f, (Vector{Pkg.PackageSpec},); kwtypes = @NamedTuple{io::IOBuffer}, maxdepth = 1))
+        @test isempty(dynamic_calls(f, (); kwtypes = @NamedTuple{io::IOBuffer}, maxdepth = 1))
+    end
+    @test isempty(dynamic_calls(Pkg.API.usage_time, (Dict{String, Any},)))
+    @test Pkg.API.usage_time(Dict{String, Any}("time" => Pkg.Dates.DateTime(2020))) == Pkg.Dates.DateTime(2020)
+    @test Pkg.API.usage_time(Dict{String, Any}("time" => "2020-01-02T03:04:05")) == Pkg.Dates.DateTime(2020, 1, 2, 3, 4, 5)
+    RegistrySpec = Pkg.Registry.RegistrySpec
+    @test isempty(dynamic_calls(Pkg.Registry.rm, (Vector{RegistrySpec},); kwtypes = @NamedTuple{io::IOBuffer}))
+    @test isempty(dynamic_calls(Pkg.Registry.status, (IOBuffer,)))
+    # the results of the download tasks are a concrete tuple type
+    calls = dynamic_calls(Pkg.Operations.download_source, (Pkg.Types.Context, Vector{Pkg.PackageSpec}))
+    @test !any(contains("indexed_iterate"), calls)
+    # printing a `VersionRange`, the status indicators, and a git error
+    @test isempty(dynamic_calls(print, (IOBuffer, Pkg.Versions.VersionRange)))
+    @test sprint(print, Pkg.Versions.VersionRange("1.2-3.4.5")) == "1.2 - 3.4.5"
+    @test sprint(print, Pkg.Versions.VersionRange("1.2")) == "1.2"
+    @test isempty(dynamic_calls(Pkg.GitTools.check_valid_HEAD, (Pkg.GitTools.LibGit2.GitRepo,)))
+    # the keyword arguments of these calls have concrete types: no keywords' `NamedTuple` type is
+    # made at run time for `julia_version` (a `Union{Nothing, VersionNumber}`) or `preserve`
+    function runtime_keywords(@nospecialize(tt))
+        names = Any[]
+        tts = Any[tt]
+        while !isempty(tts)
+            for (ci, _) in Base.code_typed_by_type(pop!(tts); optimize = true)
+                for stmt in ci.code
+                    Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                    if Meta.isexpr(stmt, :invoke) && tt !== nothing
+                        mi = stmt.args[1]
+                        mi isa Core.CodeInstance && (mi = mi.def)
+                        isdefined(Core, :ABIOverride) && mi isa Core.ABIOverride && (mi = mi.def)
+                        # (the keyword-argument body)
+                        mi.def isa Method && startswith(String(mi.def.name), "#") && push!(tts, mi.specTypes)
+                    elseif Meta.isexpr(stmt, :call) && stmt.args[1] == GlobalRef(Core, :apply_type) &&
+                            length(stmt.args) >= 3 && stmt.args[2] == GlobalRef(Core, :NamedTuple)
+                        push!(names, stmt.args[3])
+                    end
+                end
+            end
+            tt = nothing
+        end
+        return names
+    end
+    T, Ops = Pkg.Types, Pkg.Operations
+    Context, Specs, Platform = T.Context, Vector{T.PackageSpec}, Base.BinaryPlatforms.Platform
+    kwcall(f, kw, args...) = Tuple{typeof(Core.kwcall), kw, typeof(f), args...}
+    for tt in (
+            kwcall(Ops.up, @NamedTuple{skip_writing_project::Bool, preserve::Union{Nothing, T.PreserveLevel}}, Context, Specs, T.UpgradeLevel),
+            kwcall(Ops.add, @NamedTuple{allow_autoprecomp::Bool, preserve::T.PreserveLevel, platform::Platform, target::Symbol, prefer_loaded_versions::Bool}, Context, Specs, Set{Base.UUID}),
+            kwcall(Ops.develop, @NamedTuple{preserve::T.PreserveLevel, platform::Platform}, Context, Specs, Set{Base.UUID}),
+            kwcall(Pkg.API.up, @NamedTuple{preserve::Union{Nothing, T.PreserveLevel}}, Context, Specs),
+        )
+        @test !any(n -> n isa Tuple && (:julia_version in n || :preserve in n), runtime_keywords(tt))
+    end
+    # the resolver's rounds are not specialized on widened argument types (e.g. `::Array`)
+    precompile(Pkg.Resolve.resolve, (Pkg.Resolve.Graph,))
+    @test isempty(dynamic_calls(Pkg.Resolve._resolve, (Pkg.Resolve.Graph, Nothing, Nothing)))
+    for mi in Base.specializations(only(methods(Pkg.Resolve._resolve)))
+        mi isa Core.MethodInstance && @test Base.isdispatchtuple(mi.specTypes)
+    end
+end
+
 end # module APITests

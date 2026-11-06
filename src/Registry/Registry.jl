@@ -422,7 +422,7 @@ function rm(regs::Vector{RegistrySpec}; io::IO = stderr_f())
         if isfile(registry.path)
             d = TOML.parsefile(registry.path)
             if haskey(d, "path")
-                Base.rm(joinpath(dirname(registry.path), d["path"]); force = true)
+                Base.rm(joinpath(dirname(registry.path), d["path"]::String); force = true)
             end
         end
         Base.rm(registry.path; force = true, recursive = true)
@@ -754,7 +754,7 @@ function status(io::IO = stderr_f())
                 print(io, "    unknown registry format")
             end
             update_time = get(registry_update_log, string(reg.uuid), nothing)
-            if !isnothing(update_time)
+            if update_time isa Dates.DateTime
                 time_string = Dates.format(update_time, dateformat"yyyy-mm-dd HH:MM:SS")
                 print(io, ", last updated $(time_string)")
             end

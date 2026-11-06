@@ -1590,8 +1590,8 @@ end
 
 function check_artifacts_downloaded(pkg_root::String; platform::AbstractPlatform = HostPlatform())
     for (artifacts_toml, artifacts) in collect_artifacts(pkg_root; platform)
-        for name in keys(artifacts)
-            if !artifact_exists(Base.SHA1(artifacts[name]["git-tree-sha1"]))
+        for meta in values(artifacts)
+            if !artifact_exists(Base.SHA1((meta::Dict{String, Any})["git-tree-sha1"]::String))
                 return false
             end
             break

@@ -359,11 +359,11 @@ function destructure(manifest::Manifest)::Dict
         unique_name[entry.name] = !haskey(unique_name, entry.name)
     end
 
-    # maintain the format of the manifest when writing
-    if manifest.manifest_format.major == 1
-        raw = Dict{String, Vector{Dict{String, Any}}}()
-    elseif manifest.manifest_format.major == 2
-        raw = Dict{String, Any}()
+    # maintain the format of the manifest when writing: in format 1 the entries are at the
+    # top level, in format 2 they are under `deps`
+    raw = Dict{String, Any}()
+    deps = raw
+    if manifest.manifest_format.major == 2
         if !isnothing(manifest.julia_version)
             raw["julia_version"] = manifest.julia_version
         end
@@ -371,7 +371,8 @@ function destructure(manifest::Manifest)::Dict
             raw["project_hash"] = manifest.project_hash
         end
         raw["manifest_format"] = string(manifest.manifest_format.major, ".", manifest.manifest_format.minor)
-        raw["deps"] = Dict{String, Vector{Dict{String, Any}}}()
+        deps = Dict{String, Any}()
+        raw["deps"] = deps
         for (k, v) in manifest.other
             raw[k] = v
         end
@@ -388,7 +389,7 @@ function destructure(manifest::Manifest)::Dict
         # https://github.com/JuliaLang/Pkg.jl/issues/4086
         @assert !(entry.tree_hash !== nothing && entry.path !== nothing)
 
-        new_entry = something(entry.other, Dict{String, Any}())
+        new_entry = something(entry.other, Dict{String, Any}())::Dict{String, Any}
         new_entry["uuid"] = string(uuid)
         entry!(new_entry, "version", entry.version)
         entry!(new_entry, "git-tree-sha1", entry.tree_hash)
@@ -425,10 +426,11 @@ function destructure(manifest::Manifest)::Dict
                 if all(dep -> haskey(unique_name, first(dep)), deptype) && all(dep -> unique_name[first(dep)], deptype)
                     new_entry[depname] = sort(collect(keys(deptype)))
                 else
-                    new_entry[depname] = Dict{String, String}()
+                    dep_uuids = Dict{String, String}()
                     for (name, uuid) in deptype
-                        new_entry[depname][name] = string(uuid)
+                        dep_uuids[name] = string(uuid)
                     end
+                    new_entry[depname] = dep_uuids
                 end
             end
         end
@@ -439,7 +441,7 @@ function destructure(manifest::Manifest)::Dict
         end
 
         if !isempty(entry.apps)
-            new_entry["apps"] = Dict{String, Any}()
+            apps = Dict{String, Any}()
             for (appname, appinfo) in entry.apps
                 julia_command = @something appinfo.julia_command joinpath(Sys.BINDIR, "julia" * (Sys.iswindows() ? ".exe" : ""))
                 app_dict = Dict{String, Any}("julia_command" => julia_command)
@@ -449,14 +451,11 @@ function destructure(manifest::Manifest)::Dict
                 if !isempty(appinfo.julia_flags)
                     app_dict["julia_flags"] = appinfo.julia_flags
                 end
-                new_entry["apps"][appname] = app_dict
+                apps[appname] = app_dict
             end
+            new_entry["apps"] = apps
         end
-        if manifest.manifest_format.major == 1
-            push!(get!(raw, entry.name, Dict{String, Any}[]), new_entry)
-        elseif manifest.manifest_format.major == 2
-            push!(get!(raw["deps"], entry.name, Dict{String, Any}[]), new_entry)
-        end
+        push!(get!(Vector{Dict{String, Any}}, deps, entry.name)::Vector{Dict{String, Any}}, new_entry)
     end
     return raw
 end

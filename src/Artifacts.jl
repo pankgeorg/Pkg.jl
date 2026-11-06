@@ -326,8 +326,8 @@ function download_artifact(
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
-        progress::Union{Function, Nothing} = nothing,
-    )
+        progress::P = nothing,
+    ) where {P <: Union{Function, Nothing}}
     _artifact_paths = artifact_paths(tree_hash)
     pidfile = _artifact_paths[1] * ".pid"
     mkpath(dirname(pidfile))
@@ -447,9 +447,9 @@ function ensure_artifact_installed(
         pkg_server_eligible::Bool = true,
         verbose::Bool = false,
         quiet_download::Bool = false,
-        progress::Union{Function, Nothing} = nothing,
+        progress::P = nothing,
         io::IO = stderr_f()
-    )
+    ) where {P <: Union{Function, Nothing}}
     meta = artifact_meta(name, artifacts_toml; pkg_uuid = pkg_uuid, platform = platform)
     if meta === nothing
         entries = get(load_artifacts_toml(artifacts_toml; pkg_uuid), name, nothing)
@@ -472,10 +472,10 @@ function ensure_artifact_installed(
         platform::AbstractPlatform = HostPlatform(),
         verbose::Bool = false,
         quiet_download::Bool = false,
-        progress::Union{Function, Nothing} = nothing,
+        progress::P = nothing,
         io::IO = stderr_f()
-    )
-    hash = SHA1(meta["git-tree-sha1"])
+    ) where {P <: Union{Function, Nothing}}
+    hash = SHA1(meta["git-tree-sha1"]::String)
     if !artifact_exists(hash)
         if isnothing(progress) || verbose == true
             return try_artifact_download_sources(name, hash, meta, artifacts_toml; pkg_server_eligible, platform, verbose, quiet_download, io)
@@ -495,10 +495,10 @@ function try_artifact_download_sources(
         verbose::Bool = false,
         quiet_download::Bool = false,
         io::IO = stderr_f(),
-        progress::Union{Function, Nothing} = nothing
-    )
+        progress::P = nothing
+    ) where {P <: Union{Function, Nothing}}
 
-    errors = Any[]
+    errors = Tuple{String, Any}[]
     # first try downloading from Pkg server if the Pkg server knows about this package
     if pkg_server_eligible && (server = pkg_server()) !== nothing
         url = "$server/artifact/$hash"
@@ -524,9 +524,9 @@ function try_artifact_download_sources(
     end
 
     # Attempt to download from all sources
-    for entry in meta["download"]
-        url = entry["url"]
-        tarball_hash = entry["sha256"]
+    for entry in meta["download"]::Vector{Any}
+        url = (entry::Dict{String, Any})["url"]::String
+        tarball_hash = entry["sha256"]::String
         download_success = let url = url
             @debug "Downloading artifact" name artifacts_toml platform url
             with_show_download_info(io, name, quiet_download) do

@@ -1444,4 +1444,99 @@ if Sys.iswindows()
         end
     end
 end
+
+@testset "artifact downloads make static calls" begin
+    # Calls that are only resolved at run time can't be compiled ahead of time without
+    # Julia's runtime (e.g. by `juliac --trim`). The downloads are kept as typed jobs, and
+    # the `progress` callback is a type parameter, so that calling it is static.
+    # Returns the calls in the code of `f` for argument types `types` (and keyword argument
+    # types `kwtypes`, a `NamedTuple` type) that are dispatched at run time. The closures and
+    # keyword-argument bodies of `f` are included: those it calls, and the ones without
+    # arguments that it creates, e.g. for tasks, up to `maxdepth` levels.
+    function dynamic_calls(@nospecialize(f), @nospecialize(types); kwtypes = nothing, maxdepth = 10)
+        fname = String(nameof(f))
+        ofname(@nospecialize(T)) = (T = Base.unwrap_unionall(T); T isa DataType && occursin(fname, String(T.name.name)))
+        calls = String[]
+        seen = Set{Any}()
+        function visit(@nospecialize(tt), depth = 0)
+            (tt in seen || depth > maxdepth) && return
+            push!(seen, tt)
+            for (ci, _) in Base.code_typed_by_type(tt; optimize = true)
+                ci isa Core.CodeInfo || continue
+                for stmt in ci.code
+                    Meta.isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+                    if Meta.isexpr(stmt, :invoke)
+                        mi = stmt.args[1]
+                        mi isa Core.CodeInstance && (mi = mi.def)
+                        isdefined(Core, :ABIOverride) && mi isa Core.ABIOverride && (mi = mi.def)
+                        m = mi.def
+                        if m isa Method && startswith(String(m.name), "#") && occursin(fname, String(m.name))
+                            visit(mi.specTypes, depth + 1)
+                        end
+                        continue
+                    elseif Meta.isexpr(stmt, :new)
+                        T = stmt.args[1]
+                        T isa Core.SSAValue && (T = ci.ssavaluetypes[T.id])
+                        T isa Core.Const && (T = T.val)
+                        T isa Type && T <: Function && ofname(T) && visit(Tuple{T}, depth + 1)
+                        continue
+                    end
+                    Meta.isexpr(stmt, :call) || continue
+                    callee = stmt.args[1]
+                    ft = if callee isa GlobalRef
+                        isdefined(callee.mod, callee.name) ? Core.Typeof(getglobal(callee.mod, callee.name)) : Any
+                    elseif callee isa QuoteNode
+                        Core.Typeof(callee.value)
+                    elseif callee isa Core.SSAValue
+                        Core.Compiler.widenconst(ci.ssavaluetypes[callee.id])
+                    elseif callee isa Core.Argument
+                        Core.Compiler.widenconst(ci.slottypes[callee.n])
+                    elseif isdefined(Core, :BindingPartition) && callee isa Core.BindingPartition
+                        Core.Typeof(callee.restriction)
+                    else
+                        Core.Typeof(callee)
+                    end
+                    # a builtin is called directly, unless it applies a function to splatted arguments
+                    ft <: Core.Builtin && !(ft <: typeof(Core._apply_iterate)) && continue
+                    push!(calls, string(stmt))
+                end
+            end
+            return
+        end
+        visit(kwtypes === nothing ? Tuple{Core.Typeof(f), types...} : Tuple{typeof(Core.kwcall), kwtypes, Core.Typeof(f), types...})
+        return calls
+    end
+    Ops, PE = Pkg.Operations, Pkg.PlatformEngines
+    progress(total, current; status = "") = nothing
+    P = typeof(progress)
+    Platform = Base.BinaryPlatforms.Platform
+    @test isempty(dynamic_calls(Ops.run_artifact_download, (Ops.ArtifactDownload, IOContext{IO}, Bool, ReentrantLock)))
+    @test isempty(
+        dynamic_calls(
+            Ops.install_collected_artifacts!, (Pkg.Types.Context, Vector{Ops.CollectedArtifact});
+            kwtypes = @NamedTuple{server_registry_info::Nothing, verbose::Bool, io::IOContext{IO}}
+        )
+    )
+    # (apart from showing the caught errors, which can be of any type)
+    @test filter(
+        !contains("showerror"), dynamic_calls(
+            Pkg.Artifacts.try_artifact_download_sources, (String, SHA1, Dict{String, Any}, String);
+            kwtypes = @NamedTuple{pkg_server_eligible::Bool, quiet_download::Bool, io::IOContext{IO}, progress::P}
+        )
+    ) == []
+    @test isempty(
+        dynamic_calls(
+            Pkg.Artifacts.download_artifact, (SHA1, String, String);
+            kwtypes = @NamedTuple{verbose::Bool, quiet_download::Bool, io::IOContext{IO}, progress::P}
+        )
+    )
+    @test isempty(
+        dynamic_calls(
+            PE.download_verify_unpack, (String, String, String);
+            kwtypes = @NamedTuple{ignore_existence::Bool, verbose::Bool, quiet_download::Bool, io::IOContext{IO}, progress::P}
+        )
+    )
+    @test isempty(dynamic_calls(PE.get_auth_header, (String,)))
+end
+
 end # module
